@@ -150,6 +150,7 @@ async def hardened_negotiate_auto(session: Any) -> None:
     from clio_agent.tools.mcp_server_progress import (  # noqa: PLC0415
         mcp_max_wait_s,
         server_work,
+        waits_on_live_server,
     )
 
     version = LATEST_MODERN_VERSION
@@ -175,7 +176,7 @@ async def hardened_negotiate_auto(session: Any) -> None:
                 if (
                     work is not None
                     and (last_work is None or work - last_work >= 0.01)
-                    and waited < mcp_max_wait_s()
+                    and (waits_on_live_server() or waited < mcp_max_wait_s())
                 ):
                     last_work = work
                     logger.info(
@@ -186,6 +187,16 @@ async def hardened_negotiate_auto(session: Any) -> None:
                     )
                     continue
                 last_work = work
+                if waits_on_live_server():
+                    # A measured wait owns the verdict on a silent live server: it reports
+                    # the stall and keeps waiting on this process, never a respawn.
+                    logger.warning(
+                        "mcp_probe_server_silent reason=discover_timed_out_server_alive "
+                        "version=%s waited_s=%.0f action=keep_waiting_same_process",
+                        version,
+                        waited,
+                    )
+                    continue
                 if timeout_retries_left > 0:
                     timeout_retries_left -= 1
                     logger.warning(

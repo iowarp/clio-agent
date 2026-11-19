@@ -3,8 +3,8 @@
 Found live (leg B, 2026-10-01): a handshake row read "did not respond within 20s" -- a
 fixed wall-clock deadline, so a slow machine or a first launch (uv installing, Python
 importing) reads as a dead server. The wait now samples the awaited server's OWN process
-tree (the process the connect spawned): working -> keep waiting, up to
-``tools.mcp.max_wait_s``; a whole window with no answer and no work -> typed
+tree (the process the connect spawned): working -> keep waiting; silent but alive -> a
+reported stall, still waiting on that process; no server process alive -> typed
 ``NoProgressTimeout``. Real stdio MCP servers, real processes.
 """
 
@@ -77,34 +77,50 @@ def test_a_server_still_starting_is_waited_for_past_the_window(server_script: Pa
     assert tools == ["ping"]
 
 
-def test_a_hung_server_fails_typed_even_beside_a_busy_daemon(
+def test_a_silent_live_server_is_reported_stalled_and_waited_on_beside_a_busy_daemon(
     server_script: Path, busy_sibling: subprocess.Popen[bytes]
 ) -> None:
     """Only the awaited server's tree is measured: a busy sibling child (the clio_run
-    daemon) never makes a hung server look busy.
+    daemon) never makes a silent server look busy. A silent server still alive is
+    reported stalled each window and waited on, never abandoned into a respawn (dry 14:
+    a cold import from NFS read flat, and the retry started a second paraview).
 
     **Sabotage:** measure every descendant of this process (the old
-    ``descendants_work``) -> the busy sibling keeps the wait alive to the ceiling.
+    ``descendants_work``) -> the busy sibling reads as progress and no stall is reported;
+    raise on a flat window -> ``NoProgressTimeout`` instead of a third report.
     """
-    started = time.monotonic()
-    with pytest.raises(NoProgressTimeout) as info:
-        asyncio.run(
-            wait_while_server_works(_list(server_script, "hung"), op_name="list", slice_s=1.5)
+    stalls: list[tuple[float, tuple[int, ...]]] = []
+
+    async def watched() -> None:
+        waiting = wait_while_server_works(
+            _list(server_script, "hung"),
+            op_name="list",
+            slice_s=0.5,
+            on_stall=lambda waited, roots: stalls.append((waited, roots)),
         )
-    assert info.value.reason == "no_progress"
-    assert time.monotonic() - started < 30.0
+        task = asyncio.ensure_future(waiting)
+        while len(stalls) < 3:
+            assert not task.done(), task
+            await asyncio.sleep(0.1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(watched())
+    assert [roots for _waited, roots in stalls] == [stalls[0][1]] * 3, "one process, kept"
+    assert len(stalls[0][1]) == 1
     assert busy_sibling.poll() is None
 
 
-def test_the_ceiling_bounds_even_a_working_server(
+def test_no_ceiling_ends_the_wait_for_a_working_server(
     server_script: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """**Sabotage:** bound the wait by ``mcp_max_wait_s`` -> the 1 s ceiling raises."""
     monkeypatch.setattr(mcp_server_progress, "mcp_max_wait_s", lambda: 1.0)
-    with pytest.raises(NoProgressTimeout) as info:
-        asyncio.run(
-            wait_while_server_works(_list(server_script, "slow", "60"), op_name="list", slice_s=0.5)
-        )
-    assert info.value.reason == "ceiling"
+    tools = asyncio.run(
+        wait_while_server_works(_list(server_script, "slow", "3"), op_name="list", slice_s=0.5)
+    )
+    assert tools == ["ping"]
 
 
 def test_a_wait_with_no_server_process_at_all_is_no_progress() -> None:

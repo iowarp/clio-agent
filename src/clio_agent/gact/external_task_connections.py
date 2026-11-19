@@ -6,6 +6,7 @@ import asyncio
 import logging
 import weakref
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from functools import partial
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -62,14 +63,13 @@ async def connection(
     *,
     original: BackendReference | None = None,
     pool_owner: Any = None,
-    lease: object | None = None,
-    holder: bool = False,
 ) -> ExternalConnection:
     """Retain a fully configured direct transport on the application lifespan.
 
     ``pool_owner`` keeps a direct (stdio or SSE) connection open after its call, for
-    every later or parallel call through the same fleet proxy (:func:`lease_or_open`);
-    it opens leased by ``lease``, or held when ``holder``.
+    every later or parallel call through the same fleet proxy (:func:`lease_or_open`).
+    Its caller leases or holds it once it is open (:func:`_pooled`), so a caller that
+    stops waiting leaves no phantom lease or hold behind.
     """
     from clio_agent.gact.external_tasks import ExternalConnection
 
@@ -119,8 +119,6 @@ async def connection(
                 cache_key=key,
                 pool=pool,
                 owner_ref=pool_owner if pool is not None else None,
-                leases={lease: None} if pool is not None and lease is not None else {},
-                holders=1 if pool is not None and holder else 0,
             )
 
             async def observe(session: Any, task_id: str, reply: ClientGetTaskResult) -> None:
@@ -191,11 +189,24 @@ async def connection(
 
         opening = asyncio.create_task(open_client())
         self._opening[key] = opening
-    try:
-        return await asyncio.shield(opening)
-    finally:
-        if opening.done():
-            self._opening.pop(key, None)
+        if pool is not None:  # a later holder or lease of the pool joins this start
+            from clio_agent.tools.mcp_server_progress import current_tree  # noqa: PLC0415
+
+            self._pool_opening[pool] = (opening, current_tree())
+
+        def opened(
+            task: asyncio.Task[ExternalConnection], key: Any = key, pool: Any = pool
+        ) -> None:
+            # Even when every waiter was cancelled: the started server stays registered.
+            if self._opening.get(key) is task:
+                del self._opening[key]
+            if pool is not None and self._pool_opening.get(pool, (None,))[0] is task:
+                del self._pool_opening[pool]
+            if not task.cancelled() and task.exception() is not None:
+                logger.info("external_mcp_open_failed server=%s error=%r", server, task.exception())
+
+        opening.add_done_callback(opened)
+    return await asyncio.shield(opening)
 
 
 def accepted_call(host: ExternalConnection, handle: str) -> bool:
@@ -238,6 +249,36 @@ def lease_or_open(
     return _lease(self, server, configured, auth_scope, owner, token)
 
 
+async def _pooled(
+    self: ExternalTasks,
+    server: str,
+    configured: Client,
+    auth_scope: str,
+    owner: Any,
+    by: str,
+) -> ExternalConnection:
+    """The pool's open connection, joining its in-flight start, or a new one.
+
+    Under the pool's lock. A start whose waiter was cancelled (a stopped turn, a wait
+    that ended) keeps starting the same server; the next caller joins it instead of
+    spawning a second process, so the pool never has two servers alive at once.
+    """
+    pool = pool_key(server, auth_scope, owner)
+    starting = self._pool_opening.get(pool)
+    if starting is not None and not starting[0].done():
+        from clio_agent.tools.mcp_server_progress import follow_tree  # noqa: PLC0415
+
+        follow_tree(starting[1])  # this wait measures the server that start spawned
+        logger.info("external_mcp_kept_alive_joined server=%s by=%s pool=%s", server, by, pool[2])
+        with suppress(Exception):  # a failed start is replaced below; its error is logged
+            await asyncio.shield(starting[0])
+    ready = [host for host in self.connections.values() if host.pool == pool and _usable(host)]
+    if ready:
+        return max(ready, key=lambda candidate: candidate.holders)
+    logger.info("external_mcp_kept_alive_opened server=%s by=%s pool=%s", server, by, pool[2])
+    return await connection(self, server, configured, auth_scope, pool_owner=owner)
+
+
 async def _lease(
     self: ExternalTasks,
     server: str,
@@ -248,13 +289,9 @@ async def _lease(
 ) -> ExternalConnection:
     pool = pool_key(server, auth_scope, owner)
     async with self._pool_locks.setdefault(pool, asyncio.Lock()):
-        ready = [host for host in self.connections.values() if host.pool == pool and _usable(host)]
-        if ready:
-            host = max(ready, key=lambda candidate: candidate.holders)
-            host.leases[token] = None
-            return host
-        logger.info("external_mcp_kept_alive_opened server=%s by=call pool=%s", server, pool[2])
-        return await connection(self, server, configured, auth_scope, pool_owner=owner, lease=token)
+        host = await _pooled(self, server, configured, auth_scope, owner, "call")
+        host.leases[token] = None
+        return host
 
 
 def release(host: ExternalConnection, token: object) -> None:
@@ -321,19 +358,8 @@ async def hold(
     """
     pool = pool_key(server, auth_scope, owner)
     async with self._pool_locks.setdefault(pool, asyncio.Lock()):
-        open_hosts = [
-            host for host in self.connections.values() if host.pool == pool and _usable(host)
-        ]
-        if open_hosts:
-            host = max(open_hosts, key=lambda candidate: candidate.holders)
-            host.holders += 1
-        else:
-            logger.info(
-                "external_mcp_kept_alive_opened server=%s by=holder pool=%s", server, pool[2]
-            )
-            host = await connection(
-                self, server, configured, auth_scope, pool_owner=owner, holder=True
-            )
+        host = await _pooled(self, server, configured, auth_scope, owner, "holder")
+        host.holders += 1
     released = False
 
     async def release_hold() -> None:

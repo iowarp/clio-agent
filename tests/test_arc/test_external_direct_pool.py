@@ -208,6 +208,44 @@ async def test_calls_share_the_held_connection_instead_of_starting_the_server(en
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)  # Real stdio servers start and must retire.
+async def test_a_start_whose_holder_stopped_waiting_is_joined_not_repeated(env: _Env) -> None:
+    """Dry 14: a connect's wait ended while its server was still starting; the shielded
+    start went on, and the next connect started a second server beside it, so one call
+    opened a scene in one process and the next found none in the other.
+
+    SABOTAGE: drop the in-flight join in ``_pooled`` -> a second start; or give the
+    abandoned start a holder at creation -> ``holders == 2``.
+    """
+    slow = env.tmp / "slow_server.py"
+    slow.write_text("import time\ntime.sleep(2)\n" + SERVER, encoding="utf-8")
+
+    def client() -> Client:
+        transport = StdioTransport(
+            sys.executable, ["-B", str(slow), str(env.starts)], cwd=str(env.tmp)
+        )
+        return Client(transport, mode="legacy", timeout=20)
+
+    proxy = object()
+    abandoned = asyncio.create_task(env.external.hold("pooled", "scope", proxy, client()))
+    while not env.external._pool_opening:
+        await asyncio.sleep(0.01)
+    abandoned.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await abandoned
+
+    _client, release = await env.external.hold("pooled", "scope", proxy, client())
+    [start] = env.started()
+    [host] = env.external.connections.values()
+    assert host.holders == 1, "The abandoned start holds nothing"
+    reply = await env.call("pid", {}, proxy, "after-join")
+    await env.settle()
+    assert reply.structured_content == {"pid": start["pid"]}
+    assert [s["pid"] for s in env.started()] == [start["pid"]]
+    await release()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)  # Real stdio servers start and must retire.
 async def test_parallel_calls_reach_the_same_process(env: _Env) -> None:
     proxy = object()
     _client, release = await env.external.hold("pooled", "scope", proxy, env.client())
@@ -374,7 +412,9 @@ async def test_a_call_shares_a_working_connection_and_prefers_the_held_one() -> 
         _host(pool=pool, holders=2, closing=True),
         _host(pool=("s", "other", pool[2]), holders=2),
     ]
-    tasks = SimpleNamespace(connections=dict(enumerate([busy, held, *unusable])), _pool_locks={})
+    tasks = SimpleNamespace(
+        connections=dict(enumerate([busy, held, *unusable])), _pool_locks={}, _pool_opening={}
+    )
     token = object()
 
     assert await connections._lease(tasks, "s", None, "scope", owner, token) is held

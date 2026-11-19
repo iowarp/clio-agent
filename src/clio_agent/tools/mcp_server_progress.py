@@ -7,8 +7,11 @@ Every MCP connect/list wait here measures exactly the awaited server:
 * the stdio spawn hook (:func:`install_spawn_tracking`) adds each MCP server process
   spawned inside that wait as a root of the tree;
 * the wait samples that tree after each no-progress window: work advancing -> the server
-  is starting, keep waiting (up to ``tools.mcp.max_wait_s``); flat, or no server process
-  at all -> :class:`NoProgressTimeout`, typed.
+  is starting, keep waiting; flat while the server process is still alive -> a visible
+  ``mcp_server_stalled`` report, and the wait goes on with the same process (a cold
+  import from a network filesystem can look flat, and a respawn would only start over);
+  no server process alive at all -> :class:`NoProgressTimeout`, typed. There is no
+  ceiling: whoever waits can stop it (a Stop cancels the wait).
 
 Nothing else is measured: not the clio-core daemon (a psutil child of this process),
 not another namespace's server, not a shell or a CLI this process also runs.
@@ -20,12 +23,17 @@ import asyncio
 import contextvars
 import logging
 import time
+import weakref
+from collections.abc import Callable
 from typing import Any
 
-from clio_agent.arc.daemon_progress import CEILING, NO_PROGRESS
+from clio_agent.arc.daemon_progress import NO_PROGRESS
 from clio_agent.runtime.progress import ProcessTreeWork, progressed
 
 logger = logging.getLogger(__name__)
+
+#: A flat window while the awaited server process is still alive: reported, and waited on.
+MCP_SERVER_STALLED = "mcp_server_stalled"
 
 _DEFAULT_NO_PROGRESS_S = 30.0
 _DEFAULT_MAX_WAIT_S = 180.0
@@ -35,6 +43,8 @@ _SERVER_TREE: contextvars.ContextVar[ProcessTreeWork | None] = contextvars.Conte
     "clio_mcp_server_tree", default=None
 )
 _SPAWN_TRACKING_INSTALLED = False
+#: Trees bound by :func:`wait_while_server_works`: their connect waits on a live server.
+_PATIENT: weakref.WeakSet[ProcessTreeWork] = weakref.WeakSet()
 
 _PROGRESS_WAITS = (
     "Fixed MCP deadlines were replaced by progress-based waits "
@@ -56,11 +66,11 @@ REMOVED_DEADLINE_KEYS: tuple[tuple[str, str, str], ...] = (
 
 
 class NoProgressTimeout(TimeoutError):
-    """An MCP server answered nothing and its own process tree did no work for a whole
-    window, or it was still working at the ``tools.mcp.max_wait_s`` ceiling.
+    """An MCP server answered nothing for a whole window and no process of it is alive
+    (it never started, or it exited), or a connect outside a measured wait gave up.
 
     Attributes:
-        reason: ``no_progress`` or ``ceiling``.
+        reason: ``no_progress`` (``ceiling`` is kept for callers that still type it).
         waited_s: Seconds waited.
         op_name: What was awaited (``connect`` / ``list`` / ``reconnect`` ...).
     """
@@ -78,8 +88,9 @@ class NoProgressTimeout(TimeoutError):
 
 
 def mcp_max_wait_s() -> float:
-    """``tools.mcp.max_wait_s`` / ``CLIO_MCP_MAX_WAIT_S`` (180 s): the ceiling on waiting for
-    a server that is still visibly starting (its process tree working)."""
+    """``tools.mcp.max_wait_s`` / ``CLIO_MCP_MAX_WAIT_S`` (180 s): how long a connect
+    outside a measured wait (a proxy's clone, a page read) keeps probing a working server,
+    and the launcher cache lock's hold allowance. A measured wait has no ceiling."""
     from clio_agent import conf  # noqa: PLC0415
 
     value = conf.resolve(
@@ -111,6 +122,28 @@ def server_work() -> float | None:
     return tree.sample() if tree is not None else None
 
 
+def waits_on_live_server() -> bool:
+    """Whether the current connect is inside a measured wait whose server is alive.
+
+    Such a connect keeps waiting on that same process while it is silent, instead of
+    giving up into a respawn (:mod:`clio_agent.tools.mcp_probe_hardening`).
+    """
+    tree = _SERVER_TREE.get()
+    return tree is not None and tree in _PATIENT and tree.alive()
+
+
+def current_tree() -> ProcessTreeWork | None:
+    """The process tree the current wait measures (``None`` outside one)."""
+    return _SERVER_TREE.get()
+
+
+def follow_tree(other: ProcessTreeWork | None) -> None:
+    """Make the current wait also measure ``other``: it joined that wait's start."""
+    tree = _SERVER_TREE.get()
+    if tree is not None and other is not None:
+        tree.follow(other)
+
+
 def install_spawn_tracking() -> None:
     """Record every stdio MCP server spawned inside a wait as a root of that wait's tree.
 
@@ -130,6 +163,13 @@ def install_spawn_tracking() -> None:
         pid = getattr(process, "pid", None)
         if tree is not None and isinstance(pid, int):
             tree.add_root(pid)
+        command = str(args[0] if args else kwargs.get("command", ""))
+        logger.info(
+            "mcp_server_spawned pid=%s command=%s measured=%s",
+            pid,
+            command.rsplit("/", 1)[-1],
+            tree is not None,
+        )
         return process
 
     sdk_stdio._create_platform_compatible_process = _tracked_spawn  # type: ignore[assignment]
@@ -137,19 +177,25 @@ def install_spawn_tracking() -> None:
 
 
 async def wait_while_server_works(
-    awaitable: Any, *, op_name: str = "connect", slice_s: float | None = None
+    awaitable: Any,
+    *,
+    op_name: str = "connect",
+    slice_s: float | None = None,
+    on_stall: Callable[[float, tuple[int, ...]], None] | None = None,
 ) -> Any:
-    """Await ``awaitable`` while the MCP server it starts keeps working.
+    """Await ``awaitable`` while the MCP server it starts is alive.
 
     Each ``slice_s`` (default :func:`mcp_no_progress_s`) without an answer is checked
-    against the server's own process tree: work advancing keeps waiting, up to
-    :func:`mcp_max_wait_s`; a window with no progress (or no server process at all)
-    raises :class:`NoProgressTimeout`. The awaited task is cancelled on the way out.
+    against the server's own process tree: work advancing keeps waiting; a flat window
+    while a server process is still alive is reported (``mcp_server_stalled``, and
+    ``on_stall(waited_s, roots)`` for a visible state) and the wait goes on with that
+    same process; a window with no server process alive raises
+    :class:`NoProgressTimeout`. The awaited task is cancelled on the way out.
     """
     install_spawn_tracking()
     window = slice_s if slice_s is not None else mcp_no_progress_s()
-    ceiling = mcp_max_wait_s()
     tree = ProcessTreeWork()
+    _PATIENT.add(tree)
     token = _SERVER_TREE.set(tree)
     try:
         task = asyncio.ensure_future(awaitable)  # copies the context: the tree is bound
@@ -164,17 +210,27 @@ async def wait_while_server_works(
                 return task.result()
             waited = time.monotonic() - started
             work = await asyncio.to_thread(tree.sample)
-            if not progressed(work, last):
+            if progressed(work, last):
+                logger.info(
+                    "mcp_server_busy op=%s reason=server_working waited_s=%.0f roots=%s",
+                    op_name,
+                    waited,
+                    tree.roots,
+                )
+                last = work
+                continue
+            if not await asyncio.to_thread(tree.alive):
                 raise NoProgressTimeout(op_name, NO_PROGRESS, waited, window)
-            if waited >= ceiling:
-                raise NoProgressTimeout(op_name, CEILING, waited, window)
-            logger.info(
-                "mcp_server_busy op=%s reason=server_working waited_s=%.0f roots=%s",
+            logger.warning(
+                "%s op=%s reason=no_answer_no_measured_work waited_s=%.0f roots=%s "
+                "action=keep_waiting_same_process",
+                MCP_SERVER_STALLED,
                 op_name,
                 waited,
                 tree.roots,
             )
-            last = work
+            if on_stall is not None:
+                on_stall(waited, tree.roots)
     finally:
         if not task.done():
             task.cancel()
@@ -248,10 +304,13 @@ def install_connection_trees() -> None:
 
 
 __all__ = [
+    "MCP_SERVER_STALLED",
     "REMOVED_DEADLINE_KEYS",
     "NoProgressTimeout",
     "bind_connection_tree",
     "connection_context",
+    "current_tree",
+    "follow_tree",
     "install_connection_trees",
     "install_spawn_tracking",
     "mcp_max_wait_s",
@@ -259,4 +318,5 @@ __all__ = [
     "release_connection_tree",
     "server_work",
     "wait_while_server_works",
+    "waits_on_live_server",
 ]

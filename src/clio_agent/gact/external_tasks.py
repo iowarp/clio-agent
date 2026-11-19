@@ -99,6 +99,7 @@ class ExternalTasks:
         self.connections: dict[tuple[str, str, str], ExternalConnection] = {}
         self._opening: dict[tuple[str, str, str], asyncio.Task[ExternalConnection]] = {}
         self._pool_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
+        self._pool_opening: dict[tuple[str, str, str], tuple[asyncio.Task[Any], Any]] = {}
         self._retiring: set[asyncio.Task[None]] = set()
         self._closing = False
         # Read-only calls sent before their admission is written (external_read_only),

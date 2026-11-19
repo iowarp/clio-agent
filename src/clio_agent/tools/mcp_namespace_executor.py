@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager, suppress
+from functools import partial
 from typing import Any
 
 from clio_agent.runtime import trace
@@ -14,6 +15,26 @@ from clio_agent.tools.mcp_task_routing import (
     record_route_healed,
     resolve_namespace_route,
 )
+
+
+def _report_connect_stall(namespace: str, waited_s: float, roots: tuple[int, ...]) -> None:
+    """Show a silent start on the namespace's preparation row; the wait goes on."""
+    from clio_agent.tools import mcp_prepare  # noqa: PLC0415
+
+    row = mcp_prepare.preparation_state(namespace)
+    if row is None or row.get("state") != mcp_prepare.PREPARING:
+        return
+    pids = ", ".join(str(pid) for pid in roots)
+    mcp_prepare.record(
+        namespace,
+        mcp_prepare.PREPARING,
+        str(row.get("phase", "")),
+        detail=(
+            f"No answer and no measured work for {waited_s:.0f}s. Still waiting on the "
+            f"same server process (pid {pids}); stop the turn to give up."
+        ),
+    )
+    trace.event("TOOLS", "mcp_server_stalled namespace=%s waited_s=%.0f", namespace, waited_s)
 
 
 class AsyncNamespacePreparationMixin:
@@ -538,17 +559,24 @@ class SyncNamespacePreparationMixin:
     _timeout: float | None
     _run_coroutine: Any  # the executor's bounded run on its loop
 
-    def _run_while_server_works(self, coro: Any, *, action: str) -> Any:
-        """Run ``coro`` on the executor loop while the MCP server(s) it starts keep working.
+    def _run_while_server_works(
+        self,
+        coro: Any,
+        *,
+        action: str,
+        on_stall: Callable[[float, tuple[int, ...]], None] | None = None,
+    ) -> Any:
+        """Run ``coro`` on the executor loop while the MCP server(s) it starts are alive.
 
-        No fixed deadline: a server still starting on a slow machine is waited for while
-        its own process tree works, up to ``tools.mcp.max_wait_s``; a whole
-        ``tools.mcp.no_progress_s`` window with no answer and no server work raises the
-        typed :class:`~clio_agent.tools.mcp_server_progress.NoProgressTimeout`.
+        No fixed deadline and no ceiling: a server still starting on a slow machine is
+        waited for while its own process tree works, and a silent one that is still
+        alive is reported (``on_stall``) and waited on, never restarted. A whole
+        ``tools.mcp.no_progress_s`` window with no answer and no server process alive
+        raises the typed :class:`~clio_agent.tools.mcp_server_progress.NoProgressTimeout`.
         """
         from clio_agent.tools.mcp_server_progress import wait_while_server_works  # noqa: PLC0415
 
-        waiting = wait_while_server_works(coro, op_name=action)
+        waiting = wait_while_server_works(coro, op_name=action, on_stall=on_stall)
         return asyncio.run_coroutine_threadsafe(waiting, self._loop).result()
 
     def merge_namespace_tools(self, namespace: str, tools: Mapping[str, Any]) -> None:
@@ -588,6 +616,7 @@ class SyncNamespacePreparationMixin:
         self._run_while_server_works(
             self._async_executor.prepare_namespace(namespace),
             action=f"namespace {namespace!r} connect",
+            on_stall=partial(_report_connect_stall, namespace),
         )
 
     def is_namespace_prepared(self, namespace: str) -> bool:
