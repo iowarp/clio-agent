@@ -12,7 +12,7 @@ from starlette.concurrency import run_in_threadpool
 from clio_agent import conf
 from clio_agent.arc.task_types import QuestionReply
 from clio_agent.errors import ClioError
-from clio_agent.gact import agent_needs, connector_setup
+from clio_agent.gact import agent_needs, connector_setup, core_write_refusal
 from clio_agent.gact.a2ui_actions.record import last_action_wire
 from clio_agent.gact.human_controls import intervene
 from clio_agent.gact.off_loop import run_off_loop
@@ -489,6 +489,9 @@ def project_pending_interactions(
             }
         )
         pending = pending[:limit]
+    held = core_write_refusal.held_recording_degradation(app, root_session_id)
+    if held is not None:
+        degradations.append(held)
     return InteractionProjection(_stamp_request_sequence(pending), degradations)
 
 

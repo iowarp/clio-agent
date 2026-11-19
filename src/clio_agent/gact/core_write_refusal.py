@@ -124,6 +124,26 @@ def write_refusal(exc: BaseException, request: Any) -> JSONResponse | None:
     return recording_refusal(request)
 
 
+def held_recording_degradation(app: Any, session_id: str) -> dict[str, str] | None:
+    """The notice a conversation shows while refused writes hold its recordings.
+
+    A run that was working when clio-core began refusing writes cannot record its
+    outcome, so its conversation stayed "running" with nothing on screen (live
+    2026-11-19: a full store left a deep-research flow's task active for good). While
+    the task history waits to reconcile a lost write, the interactions listing carries
+    this typed degradation with the same sentence a refused send gets. It is live
+    state: it goes once the recovery confirms the writes.
+    """
+
+    history = getattr(getattr(app, "state", None), "task_history", None)
+    if history is None or not history.requires_recovery:
+        return None
+    info = _refusal(f"/v1/sessions/{session_id}/interactions")
+    if info is None:
+        return None
+    return {"reason": CORE_WRITES_REFUSED, "owner_session_id": session_id, "detail": info.message}
+
+
 def unhandled_refusal(exc: BaseException, scope: Any) -> JSONResponse | None:
     """The answer to a session record that never landed while writes are being lost."""
 
@@ -133,4 +153,10 @@ def unhandled_refusal(exc: BaseException, scope: Any) -> JSONResponse | None:
     return _response(info) if info is not None else None
 
 
-__all__ = ["CORE_WRITES_REFUSED", "recording_refusal", "unhandled_refusal", "write_refusal"]
+__all__ = [
+    "CORE_WRITES_REFUSED",
+    "held_recording_degradation",
+    "recording_refusal",
+    "unhandled_refusal",
+    "write_refusal",
+]

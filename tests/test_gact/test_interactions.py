@@ -352,6 +352,36 @@ def test_an_elicitation_names_the_call_that_waits_on_it(
     assert row["source"]["invocation_id"] == "call_search_1"
 
 
+def test_a_conversation_says_when_refused_writes_hold_its_work(
+    world: tuple[Any, TestClient, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live 2026-11-19: a full store refused a deep-research flow's writes; the flow's
+    task stayed active and its conversation read "running" for good, with no message.
+    While the task history holds recordings after a refused write, the conversation's
+    interactions carry the store-full sentence; once the hold clears, they do not."""
+    from clio_agent.arc import clio_core_retry
+    from clio_agent.gact import core_write_refusal
+
+    app, client, sid = world
+    refusal = RuntimeError("clio-core AsyncPutBlob('x') returned code 12")
+    refusal.native_code = 12  # type: ignore[attr-defined]
+    clio_core_retry._record_lost_write(name="segments/x", payload=b"x", exc=refusal)
+    try:
+        monkeypatch.setattr(app.state.task_history, "_requires_recovery", True)
+        held = client.get(f"/v1/sessions/{sid}/interactions", headers=HEADERS).json()
+        assert {
+            "reason": "clio_core_writes_refused",
+            "owner_session_id": sid,
+            "detail": core_write_refusal.MESSAGE_NO_ROOM,
+        } in held["degradations"]
+
+        monkeypatch.setattr(app.state.task_history, "_requires_recovery", False)
+        clear = client.get(f"/v1/sessions/{sid}/interactions", headers=HEADERS).json()
+        assert all(row["reason"] != "clio_core_writes_refused" for row in clear["degradations"])
+    finally:
+        clio_core_retry._reset_put_write_health_for_tests()
+
+
 def test_capabilities_advertise_normalized_interactions(world: tuple[Any, TestClient, str]) -> None:
     _app, client, _sid = world
     response = client.get("/v1/capabilities")
