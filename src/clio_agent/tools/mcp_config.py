@@ -636,6 +636,7 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
             profile=sandbox.PROFILE_FLEET,
             pdeathsig=False,
             cwd=cwd if cwd is not None else os.getcwd(),
+            egress_root=cwd,
         )
         # B5 #979.7 (the deferred B4 WRITER): this fleet proxy is ONE persistent confined child
         # per (workspace, namespace). Register its ``net_child_id`` (empty on the floor → no-op)

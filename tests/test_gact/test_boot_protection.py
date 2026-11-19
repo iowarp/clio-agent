@@ -144,3 +144,31 @@ async def test_cancelled_preparation_does_not_publish_a_late_fence(
     finally:
         release_detector.set()
         assert await asyncio.to_thread(detector_stopped.wait, 2)
+
+
+def test_egress_policy_is_wired_without_an_agent_and_cleared_only_by_its_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gate/recorder exist before any agent; a stopping app never clears a newer app's."""
+    from clio_agent.runtime import net_chokepoint as nc
+
+    monkeypatch.setattr(nc, "_GATE", None)
+    monkeypatch.setattr(nc, "_RECORDER", None)
+    decided: list[str] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.runtime.grants._egress_gate_decision",
+        lambda app, rec: decided.append(app.title) or "deny",
+    )
+    first, second = FastAPI(title="first"), FastAPI(title="second")
+    first.state.workspaces = second.state.workspaces = None
+    server_boot.wire_egress_policy(first)
+    assert nc._GATE is not None and nc._RECORDER is not None
+    assert nc._GATE(nc.EgressRecord("c", "github.com", 22, "", "connect", "", "", "")) == "deny"
+    assert decided == ["first"]
+
+    server_boot.wire_egress_policy(second)
+    server_boot.unwire_egress_policy(first)
+    assert nc._GATE is second.state.egress_hooks[0]
+    assert nc._RECORDER is second.state.egress_hooks[1]
+    server_boot.unwire_egress_policy(second)
+    assert nc._GATE is None and nc._RECORDER is None

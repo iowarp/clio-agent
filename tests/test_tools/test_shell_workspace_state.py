@@ -48,6 +48,7 @@ async def test_shell_passes_actual_cwd_to_fence_without_reordering_grants(
         assert seen[0]["cwd"] == nested
         assert seen[0]["write_roots"] == expected_roots
         assert Path(expected_roots[0]) != nested
+        assert seen[0]["egress_root"] == str(workspace)
     finally:
         conf.reload()
 

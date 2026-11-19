@@ -369,9 +369,12 @@ person's ssh config is kept, and a `ProxyJump` chain is rewritten so every hop g
 through the helper. The connection therefore crosses the chokepoint below like any
 other egress: it is recorded as `net.egress` with its host and port 22, and a host
 outside the workspace's network policy is refused with an explicit message instead
-of a hang. The person's keys, agent and `known_hosts` are used as they are; nothing
-is copied into the workspace. Remote commands run with the SSH account's
-permissions, and the local write fence does not constrain the remote filesystem.
+of a hang. In deny mode a host with no grant raises the same `network_egress`
+request as any other domain, and the connection waits open until the person allows
+it once or always (the helper says it is waiting) or declines it. The person's keys,
+agent and `known_hosts` are used as they are; nothing is copied into the workspace.
+Remote commands run with the SSH account's permissions, and the local write fence
+does not constrain the remote filesystem.
 On the floor (no fence) the shims are not installed and `ssh` connects directly.
 
 Results recorded by the former built-in SSH tool in old sessions keep their
@@ -380,11 +383,28 @@ recorded presentation and render through the generic tool view.
 Child egress defaults to **ALLOW + RECORD**: every spawned child routes through one
 clio-owned CONNECT-only proxy (`runtime/net_chokepoint.py`), and each connection is
 recorded as a trace-only `net.egress` event and joined into provenance as a
-`used web:<domain>@<time>` ingest edge. On the legacy Codex tier (Linux and Windows)
-CLIO labels egress `proxy-enforced`; native MXC records external proxy enforcement and direct host
-loopback separately; on macOS Codex and on Landlock/floor tiers egress is proxy-ENV
-cooperation only (`env-cooperative`, raw sockets bypass) — the per-edge label never
-claims enforcement the tier can't provide.
+`used web:<domain>@<time>` ingest edge. On the legacy Codex tier (Windows) CLIO
+labels egress `proxy-enforced`; native MXC records external proxy enforcement and
+direct host loopback separately; on macOS Codex and on Landlock/floor tiers egress is
+proxy-ENV cooperation only (`env-cooperative`, raw sockets bypass) — the per-edge
+label never claims enforcement the tier can't provide.
+
+On Linux the Codex fence runs each child in its own network namespace whose only
+route out is Codex's managed proxy (`[features] network_proxy`, SOCKS and local
+binding off), and that proxy chains every connection to the child's CLIO chokepoint
+port. An `ssh` called by absolute path, `curl --noproxy '*'` and raw sockets
+therefore fail, and everything that does connect is recorded and subject to deny
+mode. The fence probe (`sandbox_codex_probe.probe_codex_linux_fence`) proves this at
+startup: its child must fail to reach a listener on the host's loopback. Only then
+is the tier labelled `proxy-enforced`; if the child can still reach the host network,
+CLIO keeps the write fence, reports `codex_linux_net_unisolated` in
+`details["codex_net"]` and labels egress `env-cooperative`. If the per-child
+chokepoint port cannot be opened, the child's proxy is pointed at a closed port, so
+it stays offline rather than connecting unrecorded. Codex sends loopback and private
+addresses around any upstream proxy, so the Linux fence refuses them outright:
+fenced children cannot reach services on the host's loopback or on private networks
+(including SSH to private-address cluster nodes), and names that do not resolve
+publicly are refused too. The CONNECT helper says so when it happens.
 
 On macOS the Codex write fence does not restrict network routes. Tools that honor
 `HTTP(S)_PROXY`/`ALL_PROXY` (curl, Python, pip/uv, git over HTTPS) and the shell's
@@ -398,6 +418,7 @@ domain is granted, and the first connection to a new domain raises a
 vocabulary scopes a domain grant. Deny mode is decided at CLIO's proxy, so on macOS
 (and other `env-cooperative` tiers) it cannot stop a client that ignores the proxy
 variables; treat it as a policy for cooperating tools, not a network barrier there.
+On Linux, when the fence probe proves isolation, deny mode is a real barrier.
 
 ### Local listeners
 

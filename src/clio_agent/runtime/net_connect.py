@@ -52,15 +52,22 @@ _COPY_VALUE_FLAGS = {"scp": frozenset("cDFiJloPSX"), "sftp": frozenset("BbcDFiJl
 _MAX_REPLY_HEAD = 64 * 1024
 _CHUNK = 64 * 1024
 _DIAL_TIMEOUT_S = 30.0
+#: After this long without a reply to ``CONNECT`` the helper says it is waiting: CLIO holds the
+#: tunnel while the person answers a network permission request, however long that takes.
+_APPROVAL_NOTICE_S = 5.0
 
 
 class ProxyRefused(OSError):
-    """The proxy answered ``CONNECT`` with anything but ``200``."""
+    """The proxy answered ``CONNECT`` with anything but ``200``.
+
+    ``fence_error`` is Codex's ``x-proxy-error`` when the Linux fence's own proxy refused.
+    """
 
     def __init__(self, status: int, line: str) -> None:
         super().__init__(line)
         self.status = status
         self.line = line
+        self.fence_error = ""
 
 
 def _say(message: str) -> None:
@@ -86,11 +93,22 @@ def _authority(host: str, port: int) -> str:
     return f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
 
 
-def _read_head(sock: socket.socket) -> tuple[bytes, bytes]:
-    """Read a reply head up to the blank line; return ``(head, bytes after it)``."""
+def _read_head(sock: socket.socket, waiting_for: str = "") -> tuple[bytes, bytes]:
+    """Read a reply head up to the blank line; return ``(head, bytes after it)``.
+
+    With ``waiting_for`` set, a slow reply is reported once and then awaited without a limit.
+    """
     data = b""
     while b"\r\n\r\n" not in data:
-        chunk = sock.recv(4096)
+        try:
+            chunk = sock.recv(4096)
+        except TimeoutError:
+            if not waiting_for:
+                raise
+            _say(f"waiting for CLIO's proxy to open {waiting_for} (it may be asking to allow it)")
+            waiting_for = ""
+            sock.settimeout(None)
+            continue
         if not chunk:
             break
         data += chunk
@@ -111,14 +129,26 @@ def _http_connect(proxy: str, host: str, port: int) -> tuple[socket.socket, byte
         token = f"{unquote(parts.username)}:{unquote(parts.password or '')}"
         lines.append("Proxy-Authorization: Basic " + base64.b64encode(token.encode()).decode())
     sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
-    head, rest = _read_head(sock)
+    sock.settimeout(_APPROVAL_NOTICE_S)
+    head, rest = _read_head(sock, waiting_for=target)
     status_line = head.split(b"\r\n", 1)[0].decode("latin-1", "replace").strip()
     fields = status_line.split()
     status = int(fields[1]) if len(fields) > 1 and fields[1].isdigit() else 0
     if status != 200:
         sock.close()
-        raise ProxyRefused(status, status_line or "the proxy closed the connection")
+        refused = ProxyRefused(status, status_line or "the proxy closed the connection")
+        refused.fence_error = _header(head, "x-proxy-error")
+        raise refused
     return sock, rest
+
+
+def _header(head: bytes, name: str) -> str:
+    """The value of header ``name`` in a reply head (``""`` when absent)."""
+    for raw in head.split(b"\r\n")[1:]:
+        key, _sep, value = raw.decode("latin-1", "replace").partition(":")
+        if key.strip().lower() == name:
+            return value.strip()
+    return ""
 
 
 def _socks5_connect(proxy: str, host: str, port: int) -> tuple[socket.socket, bytes]:
@@ -177,8 +207,11 @@ def open_tunnel(host: str, port: int, proxy: str) -> tuple[socket.socket, bytes]
     return _http_connect(proxy, host, port)
 
 
-def _pump(sock: socket.socket, first: bytes) -> None:
-    """Join standard input and output to ``sock`` until the far side closes."""
+def _pump(sock: socket.socket, first: bytes) -> bool:
+    """Join standard input and output to ``sock`` until the far side closes.
+
+    Returns whether the far side sent anything at all.
+    """
     sock.settimeout(None)
     stdin, stdout = sys.stdin.fileno(), sys.stdout.fileno()
 
@@ -194,12 +227,15 @@ def _pump(sock: socket.socket, first: bytes) -> None:
             pass
 
     threading.Thread(target=upstream, daemon=True).start()
+    answered = bool(first)
     if first:
         os.write(stdout, first)
     while chunk := sock.recv(_CHUNK):
+        answered = True
         view = memoryview(chunk)
         while view:
             view = view[os.write(stdout, view) :]
+    return answered
 
 
 def connect_main(host: str, port_text: str) -> int:
@@ -213,7 +249,13 @@ def connect_main(host: str, port_text: str) -> int:
     try:
         sock, first = open_tunnel(host, port, proxy)
     except ProxyRefused as exc:
-        if exc.status == 403:
+        if exc.fence_error:
+            _say(
+                f"the Linux sandbox refused {_authority(host, port)} ({exc.fence_error}): it "
+                "reaches only public hosts, through CLIO's proxy; loopback, private and "
+                "unresolvable addresses are blocked"
+            )
+        elif exc.status == 403:
             _say(f"the sandbox network policy refused {_authority(host, port)} ({exc.line})")
         else:
             _say(f"the sandbox proxy did not open {_authority(host, port)} ({exc.line})")
@@ -223,11 +265,19 @@ def connect_main(host: str, port_text: str) -> int:
         _say(f"could not reach {_authority(host, port)} {route}: {exc}")
         return 1
     try:
-        _pump(sock, first)
+        answered = _pump(sock, first)
     except OSError:
         return 1
     finally:
         sock.close()
+    if proxy and not answered:
+        # Behind the Linux fence Codex's proxy accepts the tunnel before CLIO decides, so a
+        # refusal or an unreachable host shows up here as a tunnel closed before any byte.
+        _say(
+            f"the tunnel to {_authority(host, port)} closed before the server answered: CLIO's "
+            "network policy refused it, the request was declined, or the host did not answer"
+        )
+        return 1
     return 0
 
 

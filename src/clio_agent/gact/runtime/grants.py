@@ -29,7 +29,7 @@ import logging
 import threading
 import uuid
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from clio_agent.gact.permission_delivery import publish_permission_event as publish_permission
 from clio_agent.gact.runtime.grant_revocation import revoke_root_grant
@@ -752,20 +752,25 @@ def _record_egress_denied(app: "FastAPI", workspace_id: str, host: str, *, reaso
         logger.debug("egress deny record skipped error=%r", exc)
 
 
-def install_egress_gate(app: "FastAPI") -> None:
+def install_egress_gate(app: "FastAPI") -> Optional[Callable[["EgressRecord"], str]]:
     """Wire the chokepoint's CONNECT-time deny-mode gate to THIS app (server lifespan, guarded).
 
     Registers a closure over ``app`` so the runtime-side chokepoint never imports gact. The
     gate is consulted at connection OPEN, before the upstream dial; a workspace NOT in deny mode
     always returns allow (the B4 default is ALLOW + RECORD), so wiring it is inert until a
-    workspace opts in.
+    workspace opts in. Returns the installed closure (``None`` when wiring failed).
     """
     try:
         from clio_agent.runtime.net_chokepoint import set_egress_gate  # noqa: PLC0415
 
-        set_egress_gate(lambda rec: _egress_gate_decision(app, rec))
+        def gate(rec: "EgressRecord") -> str:
+            return _egress_gate_decision(app, rec)
+
+        set_egress_gate(gate)
+        return gate
     except Exception as exc:  # noqa: BLE001 - gate wiring is best-effort, never blocks boot
         logger.warning("egress gate wiring skipped reason=egress_gate_wire_failed error=%r", exc)
+        return None
 
 
 __all__ = [

@@ -117,8 +117,22 @@ def synthesize_codex_profile(
         # Full permits HTTP methods, not domains. CLIO's upstream chokepoint
         # owns domain decisions; the managed proxy must actually be enabled.
         profile["network"].update(allow_local_binding=True, domains={"*": "allow"})
+    elif platform.startswith("linux"):
+        profile["network"].update(_LINUX_MANAGED_NET)
     validate_codex_profile(profile)
     return profile
+
+
+#: Linux runs the child in Codex's managed-proxy network namespace: its only route out is
+#: Codex's proxy, which chains every public CONNECT to CLIO's per-child chokepoint. Codex dials
+#: loopback and private targets directly instead of through that upstream, so local binding
+#: stays off (refused, never unrecorded) and SOCKS is off (Codex does not chain it to CLIO).
+_LINUX_MANAGED_NET: dict[str, Any] = {
+    "enable_socks5": False,
+    "enable_socks5_udp": False,
+    "allow_local_binding": False,
+    "domains": {"*": "allow"},
+}
 
 
 #: The top-level keys clio's synthesizer is allowed to emit. clio validates its OWN table
@@ -132,6 +146,7 @@ _ALLOWED_NET_MODES = frozenset({"full", "limited"})
 #: The exact closed key set clio's ``network`` table carries (like the filesystem grants).
 _ALLOWED_NET_KEYS = frozenset({"enabled", "mode", "allow_upstream_proxy"})
 _MXC_NET_KEYS = _ALLOWED_NET_KEYS | {"allow_local_binding", "domains"}
+_LINUX_NET_KEYS = _ALLOWED_NET_KEYS | set(_LINUX_MANAGED_NET)
 
 
 def validate_codex_profile(profile: Any) -> None:
@@ -178,7 +193,8 @@ def _validate_codex_network(profile: dict[str, Any]) -> None:
     clio always synthesizes ``network`` (egress recording is not optional), so a MISSING table is
     drift like a missing ``filesystem`` — a typed ``codex_profile_rejected``, never a silent no-op
     leaving egress unrecorded. Must carry EXACTLY ``{enabled, mode, allow_upstream_proxy}``:
-    the two flags bool, ``mode`` in :data:`_ALLOWED_NET_MODES`.
+    the two flags bool, ``mode`` in :data:`_ALLOWED_NET_MODES`. MXC and Linux add their managed
+    proxy keys, each pinned to the one value CLIO's chokepoint relies on.
     """
     if "network" not in profile:
         raise CodexProfileError("codex profile requires a 'network' table")
@@ -186,7 +202,7 @@ def _validate_codex_network(profile: dict[str, Any]) -> None:
     if not isinstance(network, dict):
         raise CodexProfileError("codex profile 'network' must be a table")
     keys = set(network)
-    if keys not in (_ALLOWED_NET_KEYS, _MXC_NET_KEYS):
+    if keys not in (_ALLOWED_NET_KEYS, _MXC_NET_KEYS, _LINUX_NET_KEYS):
         raise CodexProfileError(
             f"codex profile network keys must be exactly {sorted(_ALLOWED_NET_KEYS)}, "
             f"got {sorted(keys)}"
@@ -198,6 +214,13 @@ def _validate_codex_network(profile: dict[str, Any]) -> None:
         network["allow_local_binding"] is not True or network["domains"] != {"*": "allow"}
     ):
         raise CodexProfileError("MXC requires local binding and CLIO's upstream domain policy")
+    if keys == _LINUX_NET_KEYS and any(
+        type(network[key]) is not type(value) or network[key] != value
+        for key, value in _LINUX_MANAGED_NET.items()
+    ):
+        raise CodexProfileError(
+            "Linux requires Codex's proxy without SOCKS or local binding, chained to CLIO"
+        )
     mode = network["mode"]
     # ``isinstance`` guard FIRST so a drifted unhashable mode (list/dict) raises the typed
     # CodexProfileError, never a bare TypeError from the ``in`` membership test.
@@ -254,7 +277,8 @@ def _render_layer_toml(
     lines: list[str] = []
     if windows_sandbox not in ("", "mxc", "elevated"):
         raise CodexProfileError(f"Unsupported Windows sandbox: {windows_sandbox}")
-    if windows_sandbox == "mxc":
+    network = profile["network"]
+    if windows_sandbox == "mxc" or "enable_socks5" in network:
         lines.extend(["[features]", "network_proxy = true", ""])
     if elevated or windows_sandbox:
         lines.append("[windows]")
@@ -265,13 +289,14 @@ def _render_layer_toml(
         lines.append(f"{_toml_str(path)} = {_toml_str(mode)}")
     lines.append("")
     # Recipe A egress table — emit profile values (never hardcoded); ``mitm`` absent by design.
-    network = profile["network"]
     lines.append(f"[permissions.{profile_name}.network]")
     lines.append(f"enabled = {_toml_bool(network['enabled'])}")
     lines.append(f"mode = {_toml_str(network['mode'])}")
     lines.append(f"allow_upstream_proxy = {_toml_bool(network['allow_upstream_proxy'])}")
-    if "allow_local_binding" in network:
-        lines.append("allow_local_binding = true")
+    for flag in ("enable_socks5", "enable_socks5_udp", "allow_local_binding"):
+        if flag in network:
+            lines.append(f"{flag} = {_toml_bool(network[flag])}")
+    if "domains" in network:
         lines.append('domains = { "*" = "allow" }')
     lines.append("")
     return "\n".join(lines)

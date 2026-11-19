@@ -301,7 +301,7 @@ def test_wrap_confined_active_fence_redirects_child_cache_env(
     monkeypatch.setattr(
         sandbox_net,
         "open_child_egress",
-        lambda state, roots: ("child_x", 4321, {"HTTP_PROXY": "http://127.0.0.1:4321"}),
+        lambda state, roots, **kwargs: ("child_x", 4321, {"HTTP_PROXY": "http://127.0.0.1:4321"}),
     )
     composed: list[tuple[list[str], str, Path | str | None]] = []
 
@@ -374,7 +374,7 @@ def test_landlock_abi_one_fleet_keeps_native_uv_cache_paths(
     monkeypatch.setattr(
         sandbox_net,
         "open_child_egress",
-        lambda state, roots: ("child_x", 4321, {}),
+        lambda state, roots, **kwargs: ("child_x", 4321, {}),
     )
     state = sandbox.SandboxResult(
         mechanism=sandbox.MECHANISM_LANDLOCK,
