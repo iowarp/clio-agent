@@ -10,9 +10,9 @@ tool calls it made.
 Running a script is one non-read call, approved before it runs with the code shown
 (``run_code`` asks the permission gate itself, as native tools that act do). Its nested
 calls are decided by the gate under the script's grant (:mod:`.grants`). In plan mode
-it runs only where the sandbox enforces the write fence, in a kernel that may write only
-the session's scratch folder and temp (its nested calls still meet the plan ACL), else
-it refuses with ``code_plan_mode_unconfined``.
+and Deep research mode it runs only where the sandbox enforces the write fence, in a kernel
+that may write only the session's scratch folder and temp (its nested calls still meet the
+mode's ACL), else it refuses with ``code_plan_mode_unconfined``.
 
 Nothing bounds a script's time or its number of calls: it ends when it finishes or when
 the agent or the person cancels it (taskable run_code CT3; CLIO is a human-observed
@@ -46,8 +46,10 @@ __all__ = [
     "run_script",
 ]
 
-#: Typed refusal: plan mode, and the sandbox does not enforce the write fence.
+#: Typed refusal: plan or Deep research mode, and the sandbox does not enforce the write fence.
 CODE_PLAN_MODE_UNCONFINED = "code_plan_mode_unconfined"
+#: The session modes whose scripts run read-only (``architect`` is the person's Deep research).
+_READ_ONLY_SCRIPT_MODES = {"plan": "Plan", "architect": "Deep research"}
 #: Typed refusal: the gate denied the script with its own reason (a deny policy, the plan
 #: ACL, a read-only session), which the model is given.
 CODE_SCRIPT_DENIED = "code_script_denied"
@@ -129,29 +131,34 @@ def _approve(app: Any, code: str) -> None:
 
 def run_code_unavailable(app: Any, session_id: str) -> str:
     """Why ``run_code`` cannot run a script in this session now (``""`` when it can):
-    :data:`CODE_PLAN_MODE_UNCONFINED` in plan mode on a host whose sandbox does not
-    enforce the write fence. The tool settings then offer ``code`` tools directly."""
+    :data:`CODE_PLAN_MODE_UNCONFINED` in plan or Deep research mode on a host whose sandbox
+    does not enforce the write fence. The tool settings then offer ``code`` tools directly."""
     from clio_agent.runtime import sandbox  # noqa: PLC0415
 
     sessions = getattr(getattr(app, "state", None), "sessions", None)
     session = sessions.get(session_id) if sessions is not None and session_id else None
-    if str(getattr(session, "mode", "") or "") != "plan" or sandbox.fence_enforced():
+    if _session_mode(session) not in _READ_ONLY_SCRIPT_MODES or sandbox.fence_enforced():
         return ""
     return CODE_PLAN_MODE_UNCONFINED
 
 
+def _session_mode(session: Any) -> str:
+    return str(getattr(session, "mode", "") or "")
+
+
 def _plan_mode_refusal(app: Any, session_id: str) -> bool:
-    """Whether the session is in plan mode (the script then runs read-only); refuses when
-    plan mode has no enforced fence."""
+    """Whether the session is in a read-only mode (the script then runs read-only); refuses
+    when that mode has no enforced fence."""
+    session = app.state.sessions.get(session_id)
     if run_code_unavailable(app, session_id):
         raise CodeError(
-            "run_code is not available in Plan mode here: this host's sandbox does not "
-            "enforce the write fence, so nothing would keep a script read-only. Call the "
-            "read tools directly; tools offered only to scripts can be called directly too.",
+            f"run_code is not available in {_READ_ONLY_SCRIPT_MODES[_session_mode(session)]} "
+            "mode here: this host's sandbox does not enforce the write fence, so nothing would "
+            "keep a script read-only. Call the read tools directly; tools offered only to "
+            "scripts can be called directly too.",
             CODE_PLAN_MODE_UNCONFINED,
         )
-    session = app.state.sessions.get(session_id)
-    return str(getattr(session, "mode", "") or "") == "plan"
+    return _session_mode(session) in _READ_ONLY_SCRIPT_MODES
 
 
 def _workspace() -> Path:
