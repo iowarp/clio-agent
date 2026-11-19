@@ -105,12 +105,16 @@ def shell_environment(workspace: Path, *, session_id: str | None = None) -> dict
     """Return only this process's verified workspace binding, never workspace input.
 
     ``TMPDIR``/``TEMP``/``TMP`` point at the session's own scratch folder (TD56) when a
-    session owns the call (``session_id``, else the active one); ``UV_CACHE_DIR`` and
+    session owns the call (``session_id``, else the active one), through a short ``/tmp``
+    alias when that folder is too deep for a unix socket; ``UV_CACHE_DIR`` and
     ``CLIO_DOCUMENT_SCRATCH`` stay on the workspace scratch.
     """
     with _LOCK:
         environment = dict(_ENVIRONMENTS.get(workspace.resolve(), {}))
     environment.update(_session_temp(session_id))
+    from clio_agent.runtime.session_scratch import socket_safe_temp  # noqa: PLC0415
+
+    environment.update(socket_safe_temp(environment))
     environment.update(_clio_tools(environment))
     _bundled_git(environment)
     environment.update(_without_command_line_tools_stubs(environment))

@@ -10,6 +10,11 @@ so this file gives it a ``ProxyCommand`` that does:
 * ``net_connect.py <shim-dir> ssh|scp|sftp <args>`` runs the real program with that helper as
   its ``ProxyCommand``. ``scp`` and ``sftp`` get ``-S <shim-dir>/ssh``. A ``ProxyJump`` is
   rewritten as a chain of these launchers, so every hop crosses the proxy too.
+* ``net_connect.py <shim-dir> forward [--hosts=name=addr,...] <bind:port=host:port>... --
+  <program>`` listens on each ``bind:port`` inside the sandbox, carries every connection to
+  ``host:port`` the same way, and runs the program, which finds each ``--hosts`` name at the
+  forwarder's address. Raw TCP clients that ignore proxies (a batch scheduler's ``sbatch``)
+  reach a declared endpoint through it (:mod:`clio_agent.runtime.fence_forward`).
 
 The proxy records each tunnel as ``net.egress`` with the host and port, and a host the policy
 refuses gets ``403``, which the helper reports on standard error.
@@ -507,9 +512,14 @@ def _run(argv: list[str]) -> int:
 
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
-        _say("usage: net_connect.py <shim-dir> connect <host> <port> | ssh|scp|sftp [args]")
+        _say(
+            "usage: net_connect.py <shim-dir> connect <host> <port> | ssh|scp|sftp [args]"
+            " | forward <bind:port=host:port>... -- <program>"
+        )
         return 2
     shim_dir, tool, args = argv[0], argv[1], argv[2:]
+    if tool == "forward":
+        return forward_main(args)
     if tool == "connect":
         if len(args) != 2:
             _say("usage: net_connect.py <shim-dir> connect <host> <port>")
@@ -525,6 +535,217 @@ def main(argv: list[str]) -> int:
     if tool == "ssh":
         return _run(ssh_argv(real, shim_dir, args))
     return _run(copy_argv(real, shim_dir, args, tool))
+
+
+# --------------------------------------------------------------------------- #
+# The TCP forwarder: raw TCP clients (a batch scheduler's commands) through the proxy.
+# --------------------------------------------------------------------------- #
+
+
+def parse_forward(spec: str) -> tuple[str, int, str, int]:
+    """``bind-host:port=host:port`` (IPv6 hosts in brackets) as its four parts."""
+    local, sep, remote = spec.partition("=")
+    if not sep:
+        raise ValueError(f"{spec!r} is not bind-host:port=host:port")
+    bind_host, bind_port = _split_authority(local)
+    host, port = _split_authority(remote)
+    return bind_host, bind_port, host, port
+
+
+def _split_authority(text: str) -> tuple[str, int]:
+    host, colon, port = text.strip().rpartition(":")
+    if not colon or not host or not port.isdigit() or not 0 < int(port) < 65536:
+        raise ValueError(f"{text!r} is not host:port")
+    return host.strip("[]"), int(port)
+
+
+def _copy(source: socket.socket, sink: socket.socket) -> None:
+    try:
+        while chunk := source.recv(_CHUNK):
+            sink.sendall(chunk)
+    except OSError:
+        pass
+    try:
+        sink.shutdown(socket.SHUT_WR)
+    except OSError:
+        pass
+
+
+def _bridge(client: socket.socket, host: str, port: int, proxy: str, relay: str) -> None:
+    """Join one accepted connection to ``host:port`` through the proxy (the relay tunnel)."""
+    try:
+        upstream, first = open_tunnel(host, port, proxy, relay)
+    except ProxyRefused as exc:
+        _say(f"CLIO did not open {_authority(host, port)} ({exc.line})")
+        client.close()
+        return
+    except OSError as exc:
+        _say(f"could not reach {_authority(host, port)} through the sandbox proxy: {exc}")
+        client.close()
+        return
+    upstream.settimeout(None)
+    try:
+        if first:
+            client.sendall(first)
+        other = threading.Thread(target=_copy, args=(client, upstream), daemon=True)
+        other.start()
+        _copy(upstream, client)
+        other.join()
+    except OSError:
+        pass
+    finally:
+        client.close()
+        upstream.close()
+
+
+def _serve(listener: socket.socket, host: str, port: int, proxy: str, relay: str) -> None:
+    while True:
+        try:
+            client, _address = listener.accept()
+        except OSError:
+            return
+        threading.Thread(
+            target=_bridge, args=(client, host, port, proxy, relay), daemon=True
+        ).start()
+
+
+def _listen(bind_host: str, bind_port: int) -> socket.socket:
+    family = socket.AF_INET6 if ":" in bind_host else socket.AF_INET
+    listener = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind((bind_host, bind_port))
+        listener.listen(64)
+    except OSError:
+        listener.close()
+        raise
+    return listener
+
+
+def _die_with_parent(parent: int) -> None:
+    """Ask Linux to end this process when its parent does; exit now if it already has."""
+    try:
+        import ctypes  # noqa: PLC0415 - only in the forwarder
+        import signal  # noqa: PLC0415
+
+        ctypes.CDLL(None, use_errno=True).prctl(1, int(signal.SIGTERM), 0, 0, 0)  # SET_PDEATHSIG
+    except (OSError, AttributeError):
+        pass
+    if os.getppid() != parent:
+        os._exit(0)
+
+
+def _hosts_text(original: str, remap: dict[str, str]) -> str:
+    """``original`` (an ``/etc/hosts``) with each remapped name pointing only at its address."""
+    names = set(remap)
+    lines = [f"{address} {name}" for name, address in remap.items()]
+    for line in original.splitlines():
+        body, hashmark, comment = line.partition("#")
+        tokens = body.split()
+        if len(tokens) >= 2 and names.intersection(tokens[1:]):
+            kept = [token for token in tokens[1:] if token not in names]
+            if not kept:
+                continue
+            line = " ".join([tokens[0], *kept]) + (f" #{comment}" if hashmark else "")
+        lines.append(line)
+    return "\n".join(lines) + "\n"
+
+
+def _remap_hosts(remap: dict[str, str]) -> str:
+    """Give this process a private ``/etc/hosts`` naming the forwarder's addresses.
+
+    A user and mount namespace of its own (same uid and gid, no added privilege; mounts the
+    fence made read-only stay so) lets it bind a copy over ``/etc/hosts``, so a client that
+    looks the name up finds the listener. Returns ``""``, or why the kernel refused before
+    anything changed. A failure after the namespace exists raises ``OSError``.
+    """
+    import ctypes  # noqa: PLC0415 - only in the forwarder
+    import tempfile  # noqa: PLC0415
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    uid, gid = os.getuid(), os.getgid()
+    with open("/etc/hosts", encoding="utf-8", errors="surrogateescape") as handle:
+        text = _hosts_text(handle.read(), remap)
+    if libc.unshare(0x10000000 | 0x00020000) != 0:  # CLONE_NEWUSER | CLONE_NEWNS
+        return os.strerror(ctypes.get_errno())
+    for name, value in (("setgroups", "deny"), ("uid_map", f"{uid} {uid} 1")):
+        with open(f"/proc/self/{name}", "w", encoding="ascii") as handle:
+            handle.write(value)
+    with open("/proc/self/gid_map", "w", encoding="ascii") as handle:
+        handle.write(f"{gid} {gid} 1")
+    libc.mount(b"none", b"/", None, 0x4000 | 0x40000, None)  # MS_REC | MS_PRIVATE
+    fd, path = tempfile.mkstemp(prefix="clio-hosts-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape") as handle:
+            handle.write(text)
+        if libc.mount(path.encode(), b"/etc/hosts", None, 0x1000, None) != 0:  # MS_BIND
+            raise OSError(ctypes.get_errno(), "could not mount the forwarded /etc/hosts")
+    finally:
+        os.unlink(path)  # the mount keeps the file
+    return ""
+
+
+def forward_main(args: list[str]) -> int:
+    """``forward [--hosts=name=addr,...] <bind:port=host:port>... -- <program> [args]``.
+
+    Each pair listens on ``bind:port`` inside the sandbox and carries every connection to
+    ``host:port`` through the proxy, as the ssh helper does, so CLIO records it and asks the
+    person about a host its policy does not cover. A forked process serves the listeners and
+    ends with the program, which replaces this process (same pid, same standard streams).
+    ``--hosts`` names the forwarded hosts the program should find at those addresses.
+    """
+    if "--" not in args or args.index("--") == len(args) - 1:
+        _say("usage: net_connect.py <shim-dir> forward <bind:port=host:port>... -- <program>")
+        return 2
+    split = args.index("--")
+    specs, program = args[:split], args[split + 1 :]
+    remap: dict[str, str] = {}
+    for option in [spec for spec in specs if spec.startswith("--hosts=")]:
+        specs.remove(option)
+        for item in filter(None, option.removeprefix("--hosts=").split(",")):
+            name, _sep, address = item.partition("=")
+            remap[name] = address
+    proxy = proxy_from_environment(os.environ)
+    relay = (os.environ.get(RELAY_VARIABLE) or "").strip()
+    listeners: list[tuple[socket.socket, str, int]] = []
+    for spec in specs if proxy and hasattr(os, "fork") else ():
+        try:
+            bind_host, bind_port, host, port = parse_forward(spec)
+            listeners.append((_listen(bind_host, bind_port), host, port))
+        except (ValueError, OSError) as exc:
+            _say(f"not forwarding {spec}: {exc}")
+    if listeners:
+        parent = os.getpid()
+        if os.fork() == 0:
+            try:
+                _die_with_parent(parent)
+                null = os.open(os.devnull, os.O_RDWR)
+                os.dup2(null, 0)
+                os.dup2(null, 1)
+                for listener, host, port in listeners:
+                    threading.Thread(
+                        target=_serve, args=(listener, host, port, proxy, relay), daemon=True
+                    ).start()
+                while os.getppid() == parent:
+                    threading.Event().wait(1.0)
+            finally:
+                os._exit(0)
+        for listener, _host, _port in listeners:
+            listener.close()
+        if remap:
+            try:
+                refused = _remap_hosts(remap)
+            except OSError as exc:
+                _say(f"could not name the forwarded hosts: {exc}")
+                return 126
+            if refused:
+                _say(f"forwarded hosts keep their addresses ({refused}); see CLIO_FORWARDED_TCP")
+    try:
+        os.execvp(program[0], program)
+    except OSError as exc:
+        _say(f"could not run {program[0]}: {exc}")
+        return 127
+    return 127  # pragma: no cover - execvp does not return
 
 
 if __name__ == "__main__":

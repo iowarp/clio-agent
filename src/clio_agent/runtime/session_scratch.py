@@ -22,9 +22,11 @@ from __future__ import annotations
 
 import functools
 import logging
+import os
 import re
 import shutil
 import socket
+import stat
 import tempfile
 import time
 from collections.abc import Callable
@@ -171,12 +173,92 @@ def active_scratch_dir(*, create: bool = False) -> Path | None:
     return session_scratch_dir(sid, create=create) if sid else None
 
 
+#: Unix socket paths hold 107 bytes; a ``TMPDIR`` longer than this leaves too little room for a
+#: ``mkdtemp`` folder and a socket name (ssh's ``ControlPath`` adds about 35 bytes).
+_SOCKET_DIR_LIMIT = 64
+#: Typed reason: a short alias for a deep scratch folder could not be made; the folder is used.
+SOCKET_ALIAS_FAILED_REASON = "session_scratch_socket_alias_failed"
+
+
+def _socket_alias_path(folder: Path) -> Path:
+    import hashlib  # noqa: PLC0415
+
+    base = Path("/tmp" if Path("/tmp").is_dir() else tempfile.gettempdir())
+    digest = hashlib.sha256(str(folder).encode()).hexdigest()[:16]
+    return base / f"clio-{os.getuid()}-{digest}"
+
+
+def _is_own_alias(alias: Path, folder: Path) -> bool:
+    try:
+        info = alias.lstat()
+        return (
+            stat.S_ISLNK(info.st_mode)
+            and info.st_uid == os.getuid()
+            and os.readlink(alias) == str(folder)
+        )
+    except OSError:
+        return False
+
+
+def socket_safe_dir(folder: Path) -> Path:
+    """``folder``, or a short alias of it when a unix socket below it would not fit.
+
+    The alias is a symlink in ``/tmp`` owned by this user, so files and sockets made through
+    it stay in ``folder`` (its write roots, lifecycle and sweep are unchanged). A name that
+    exists but is not this user's link to ``folder`` is never followed: ``folder`` is used.
+    """
+
+    if os.name != "posix" or len(str(folder)) <= _SOCKET_DIR_LIMIT:
+        return folder
+    alias = _socket_alias_path(folder)
+    if _is_own_alias(alias, folder):
+        return alias
+    try:
+        os.symlink(folder, alias)
+    except OSError as exc:
+        trace.event("SCRATCH", "%s path=%s error=%r", SOCKET_ALIAS_FAILED_REASON, folder, exc)
+        return folder
+    return alias if _is_own_alias(alias, folder) else folder
+
+
+def socket_safe_temp(environment: dict[str, str]) -> dict[str, str]:
+    """Each deep ``TMPDIR``/``TEMP``/``TMP`` moved to its :func:`socket_safe_dir` alias.
+
+    Returns only the changed keys (empty when nothing changes), so ssh's ``ControlMaster``
+    socket, munge, ``multiprocessing`` and other ``mkdtemp`` sockets fit the 107-byte limit.
+    """
+
+    if os.name != "posix":
+        return {}
+    changed: dict[str, str] = {}
+    for key in ("TMPDIR", "TEMP", "TMP"):
+        current = environment.get(key, "")
+        if len(current) <= _SOCKET_DIR_LIMIT or not Path(current).is_dir():
+            continue
+        short = str(socket_safe_dir(Path(current)))
+        if short != current:
+            changed[key] = short
+    return changed
+
+
+def _remove_socket_alias(folder: Path) -> None:
+    if os.name != "posix":
+        return
+    alias = _socket_alias_path(folder)
+    if _is_own_alias(alias, folder):
+        try:
+            alias.unlink()
+        except OSError:
+            pass
+
+
 def remove_session_scratch(session_id: str, *, why: str) -> bool:
     """Remove one session's scratch folder on this machine; return whether one was removed."""
 
     folder = session_scratch_dir(session_id, create=False)
     if folder is None or not folder.is_dir():
         return False
+    _remove_socket_alias(folder)
     try:
         shutil.rmtree(win_extended_path(folder))
     except OSError as exc:

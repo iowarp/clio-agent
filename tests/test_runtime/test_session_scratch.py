@@ -188,9 +188,65 @@ def test_tmpdir_points_at_the_session_folder_for_the_kernel(root: Path, workspac
     mine = (root / "node-a" / "sess_k").resolve()
     _python, env = kernels._environment(workspace, "sess_k")
     for key in ("TMPDIR", "TEMP", "TMP"):
-        assert env[key] == str(mine)
+        assert Path(env[key]).resolve() == mine  # a short alias when the folder is deep
+        assert len(env[key]) <= max(len(str(mine)), 64)
     assert mine.is_dir()
     assert shell_environment(workspace).get("TMPDIR") != str(mine)  # off-session: unchanged
+
+
+@pytest.mark.skipif(os.name != "posix", reason="unix socket paths are a POSIX limit")
+def test_a_deep_scratch_folder_gets_a_short_private_alias_for_unix_sockets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import socket as socket_module
+
+    deep = tmp_path.joinpath(*(["d" * 20] * 6), "sess_deep")
+    deep.mkdir(parents=True)
+    alias = session_scratch.socket_safe_dir(deep)
+    try:
+        assert alias != deep and len(str(alias)) <= 64
+        assert alias.is_symlink() and alias.resolve() == deep.resolve()
+        assert session_scratch.socket_safe_dir(deep) == alias  # reused, not duplicated
+        server = socket_module.socket(socket_module.AF_UNIX)
+        server.bind(tempfile.mkdtemp(dir=str(alias)) + "/cm.sock")
+        server.close()
+        changed = session_scratch.socket_safe_temp(
+            {"TMPDIR": str(deep), "TEMP": str(deep), "TMP": "/elsewhere"}
+        )
+        assert changed == {"TMPDIR": str(alias), "TEMP": str(alias)}
+        short = tmp_path / "s"
+        short.mkdir()
+        if len(str(short)) <= 64:
+            assert session_scratch.socket_safe_dir(short) == short
+    finally:
+        session_scratch._remove_socket_alias(deep)
+    assert not alias.exists() and not alias.is_symlink()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="unix socket paths are a POSIX limit")
+def test_a_socket_alias_never_follows_a_name_it_does_not_own(tmp_path: Path) -> None:
+    deep = tmp_path.joinpath(*(["e" * 20] * 6), "sess_squat")
+    deep.mkdir(parents=True)
+    alias = session_scratch._socket_alias_path(deep)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    os.symlink(elsewhere, alias)  # squatted: the name points somewhere else
+    try:
+        assert session_scratch.socket_safe_dir(deep) == deep
+        assert session_scratch.socket_safe_temp({"TMPDIR": str(deep)}) == {}
+        session_scratch._remove_socket_alias(deep)
+        assert alias.is_symlink()  # someone else's link is left alone
+    finally:
+        alias.unlink()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="unix socket paths are a POSIX limit")
+def test_deleting_a_session_removes_its_socket_alias(root: Path) -> None:
+    folder = session_scratch.session_scratch_dir("sess_" + "a" * 60)
+    alias = session_scratch.socket_safe_dir(folder)
+    assert alias != folder and alias.is_symlink()
+    assert session_scratch.remove_session_scratch("sess_" + "a" * 60, why="session_deleted")
+    assert not alias.is_symlink()
 
 
 def test_a_kernel_starts_with_its_own_session_environment(

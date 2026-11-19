@@ -94,6 +94,12 @@ runtime.environment: "dev"
 # trusted local dev where sandbox setup gets in the way.
 sandbox.enabled: true
 
+# CLIO_SANDBOX_FORWARD_TCP  (list)  <- src/clio_agent/runtime/fence_forward.py
+# Raw TCP host:port endpoints (a Slurm controller) that Linux-fenced
+# children reach through CLIO's proxy, which records them and asks the
+# person; empty forwards nothing.
+# sandbox.forward_tcp:  # default unset; resolved in code
+
 # CLIO_RELEASE_MANIFEST_URL  (str)  <- src/clio_agent/gact/routes/latest_release.py
 # Release manifest the server reads to report the latest CLIO release to
 # clients; point at a mirror or a fork's releases feed.

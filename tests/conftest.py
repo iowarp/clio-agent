@@ -243,6 +243,31 @@ def floor_sandbox(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _remove_socket_aliases(monkeypatch):
+    """Remove the ``/tmp`` socket aliases a test's deep scratch folders were given.
+
+    :func:`session_scratch.socket_safe_dir` links a short ``/tmp`` name to a folder too deep
+    for a unix socket; every ``tmp_path`` is that deep, so without this each shell
+    environment a test builds would leave a link outside the test runtime.
+    """
+    from clio_agent.runtime import session_scratch as _scratch
+
+    made: list[tuple[Path, Path]] = []
+    original = _scratch.socket_safe_dir
+
+    def _tracked(folder: Path) -> Path:
+        alias = original(folder)
+        if alias != folder:
+            made.append((alias, folder))
+        return alias
+
+    monkeypatch.setattr(_scratch, "socket_safe_dir", _tracked)
+    yield
+    for _alias, folder in made:
+        _scratch._remove_socket_alias(folder)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_provider_dependency_install(request, monkeypatch):
     """Refuse real optional-dependency installs (claude-agent-sdk, globus-sdk).
 

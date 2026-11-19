@@ -331,9 +331,49 @@ def test_linux_profile_enables_the_managed_proxy_without_local_or_socks() -> Non
         "enable_socks5": False,
         "enable_socks5_udp": False,
         "allow_local_binding": False,
+        "dangerously_allow_all_unix_sockets": True,
         "domains": {"*": "allow"},
     }
     sc.validate_codex_profile(profile)
+
+
+def test_linux_profile_masks_host_control_sockets(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unix sockets are local IPC, so the host's control sockets are denied by path."""
+    from clio_agent.runtime import sandbox_codex_profile as scp
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/4242")
+    monkeypatch.setattr(scp, "_present", lambda path: path)
+    profile = sc.synthesize_codex_profile(["/ws", "/tmp"], platform="linux")
+    filesystem = profile["filesystem"]
+    for mask in ("/run/user/4242", "/run/dbus", "/var/run/docker.sock", "/run/systemd"):
+        assert filesystem[mask] == "deny"
+    assert filesystem["/tmp/.X11-unix"] == "deny"
+    assert "/run/munge" not in filesystem
+    # A mask never hides the writable territory.
+    assert "/run/user/4242" not in scp.linux_control_socket_masks(["/run/user/4242/ws"])
+    assert (
+        "/run/user/4242"
+        not in sc.synthesize_codex_profile(["/ws"], platform="darwin")["filesystem"]
+    )
+
+
+def test_linux_masks_only_existing_paths_by_their_real_location(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """bubblewrap cannot mask a missing path, and a symlinked alias masks the same target."""
+    from clio_agent.runtime import sandbox_codex_profile as scp
+
+    real = {"/run/dbus": "/run/dbus", "/var/run/dbus": "/run/dbus"}
+    monkeypatch.setattr(scp, "_present", lambda path: real.get(path, ""))
+    assert scp.linux_control_socket_masks([]) == ["/run/dbus"]
+
+
+def test_linux_layer_renders_the_unix_socket_flag() -> None:
+    profile = sc.synthesize_codex_profile(["/ws"], platform="linux")
+    from clio_agent.runtime import sandbox_codex_profile as scp
+
+    body = scp._render_layer_toml("clio", profile, elevated=False)
+    assert "dangerously_allow_all_unix_sockets = true" in body
 
 
 @pytest.mark.parametrize(
@@ -342,6 +382,7 @@ def test_linux_profile_enables_the_managed_proxy_without_local_or_socks() -> Non
         ("allow_local_binding", True),
         ("enable_socks5", True),
         ("enable_socks5_udp", 0),
+        ("dangerously_allow_all_unix_sockets", 1),
         ("domains", {"example.com": "allow"}),
     ],
 )
