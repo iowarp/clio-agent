@@ -6,6 +6,8 @@ import pytest
 from fastmcp_tasks.client_models import ClientGetTaskResult
 
 from clio_agent.tools.task_receipt import (
+    FOLLOW_HANDLE,
+    UNCERTAIN_HANDLE,
     AcceptedTaskResult,
     TaskResultValidationError,
     accepted_result,
@@ -37,7 +39,12 @@ def test_acceptance_never_validates_as_backend_payload_and_invalid_result_fails(
     }
     receipt = accepted_result({"accepted": True, "kind": "MCP", "handle": "task_owned"})
     assert isinstance(receipt, AcceptedTaskResult)
-    assert receipt.structured_content == {"accepted": True, "kind": "MCP", "handle": "task_owned"}
+    assert receipt.structured_content == {
+        "accepted": True,
+        "kind": "MCP",
+        "handle": "task_owned",
+        "next": FOLLOW_HANDLE,
+    }
     current = terminal(
         {
             "content": [],
@@ -54,6 +61,32 @@ def test_acceptance_never_validates_as_backend_payload_and_invalid_result_fails(
     )
     with pytest.raises(TaskResultValidationError, match="declared schema"):
         validate_terminal(schema, terminal(receipt.model_dump(mode="json", by_alias=True)))
+
+
+def test_a_receipt_tells_the_caller_how_to_follow_its_handle() -> None:
+    """Found live: a model given only ``{kind, status: running}`` redid the work by hand
+    instead of waiting on the task. The receipt now says what to do with the handle."""
+    running = accepted_result(
+        {"handle": "task_run", "kind": "MCP", "accepted": True, "status": "running"}
+    )
+    assert running.structured_content is not None
+    assert running.structured_content["next"] == FOLLOW_HANDLE
+    assert "wait_tasks" in running.content[0].text  # type: ignore[union-attr]
+
+    unsure = accepted_result(
+        {
+            "handle": "task_unsure",
+            "kind": "MCP",
+            "accepted": None,
+            "acceptance": "uncertain",
+            "retry_safe": False,
+        }
+    )
+    assert unsure.structured_content is not None
+    assert unsure.structured_content["next"] == UNCERTAIN_HANDLE
+
+    stored = accepted_result(dict(running.structured_content))
+    assert stored.structured_content == running.structured_content
 
 
 def test_missing_declared_terminal_payload_is_a_contract_failure() -> None:
