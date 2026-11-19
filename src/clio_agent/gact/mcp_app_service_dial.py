@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 import httpcore
 import httpx
 
+from clio_agent.errors import ClioError
 from clio_agent.runtime.fence_service import (
     FencedNamespace,
     connect_in_namespace,
@@ -40,16 +41,19 @@ _CONNECT_TIMEOUT_S = 10.0
 def _serving_child(app: FastAPI, record: Any) -> str:
     """The egress channel of the fenced child serving ``record``'s namespace, or ``""``."""
 
-    try:
-        session = app.state.sessions.get(record.session_id)
-        workspace_id = str(getattr(session, "workspace_id", "") or "")
-        workspace = app.state.workspaces.get(workspace_id) if workspace_id else None
-        root = str(getattr(workspace, "root_path", "") or "")
-        from clio_agent.runtime.sandbox_net import resolve_namespace_child  # noqa: PLC0415
+    from clio_agent.runtime.sandbox_net import resolve_namespace_child  # noqa: PLC0415
 
-        return resolve_namespace_child(root, record.source_namespace or "")
-    except Exception:  # noqa: BLE001 - without a known child, the namespace search is unscoped
-        logger.debug("fenced service child unknown reason=serving_child_unavailable", exc_info=True)
+    sessions = getattr(app.state, "sessions", None)
+    workspaces = getattr(app.state, "workspaces", None)
+    try:
+        session = sessions.get(record.session_id) if sessions is not None else None
+        workspace_id = str(getattr(session, "workspace_id", "") or "")
+        workspace = workspaces.get(workspace_id) if workspace_id and workspaces else None
+        root = str(getattr(workspace, "root_path", "") or "")
+        return resolve_namespace_child(root, getattr(record, "source_namespace", "") or "")
+    except (ClioError, OSError, RuntimeError, ValueError) as exc:
+        # Without a known child the namespace search is unscoped, not refused.
+        logger.debug("fenced service child unknown reason=serving_child_unavailable error=%r", exc)
         return ""
 
 

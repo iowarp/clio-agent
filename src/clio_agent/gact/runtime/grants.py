@@ -32,6 +32,24 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from clio_agent.gact.permission_delivery import publish_permission_event as publish_permission
+from clio_agent.gact.runtime.egress_workspace import (
+    DENY_MODE_CONFIG_KEY,
+    NETWORK_WRITE_GATE_CONFIG_KEY,
+    REASON_EGRESS_DECISION_ERROR,
+    REASON_EGRESS_DENIED_THIS_TURN,
+    REASON_EGRESS_POLICY_DENY,
+    REASON_EGRESS_PROMPT_CAP,
+    REASON_EGRESS_PROMPT_UNWRITABLE,
+    REASON_EGRESS_STORE_UNRESOLVED,
+    REASON_EGRESS_TIMEOUT,
+    REASON_EGRESS_WRITE_GATE_ERROR,
+    REASON_EGRESS_WRITE_POLICY_DENY,
+    WRITE_METHODS,
+    _active_session_for_workspace,
+    _workspace_id_for_root,
+    workspace_deny_mode,
+    workspace_write_gate,
+)
 from clio_agent.gact.runtime.grant_revocation import revoke_root_grant
 from clio_agent.gact.runtime.permission_actions import POLICY_ALLOWING, allows
 from clio_agent.gact.runtime.permission_policies import (
@@ -80,14 +98,6 @@ REASON_GRANT_RECORDED_NO_FENCE = "grant_recorded_no_active_fence"  # floor: advi
 REASON_GRANT_RESTART_FAILED = "grant_restart_failed"
 REASON_GRANT_ROOT_MISSING = "grant_root_missing"  # absent, not creatable: no fence rules on it
 
-#: Deny-mode flag key on the workspace ``config`` (opt-in per workspace; config/state, not env).
-DENY_MODE_CONFIG_KEY = "network_deny_mode"
-#: Write-gate flag key on the workspace ``config`` (opt-in, DEFAULT OFF — N2). When set, a
-#: WRITE-SHAPED egress to an un-granted host escalates to a human ask; reads/opaque CONNECTs stay open.
-NETWORK_WRITE_GATE_CONFIG_KEY = "network_write_gate"
-#: The plain-HTTP request verbs clio classifies as WRITE-SHAPED (N2). A CONNECT tunnel carries
-#: ``method=""`` (opaque) so it is NEVER write-shaped — clio never over-claims a write-gate on it.
-WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 #: Persisted list of granted write roots on the workspace ``config`` (replayed into the live
 #: registry at boot so a recorded grant survives a restart — RULE 4, no new store).
 GRANTED_ROOTS_CONFIG_KEY = "granted_write_roots"
@@ -108,44 +118,13 @@ _PENDING_EGRESS: dict[tuple[str, str], dict[str, Any]] = {}
 _PENDING_EGRESS_LOCK = threading.Lock()
 
 #: Egress answers held past their connection (a "Deny" for the turn, an "Allow" for the turn or
-#: session) live in :mod:`clio_agent.gact.runtime.egress_holds`.
-
-#: Typed deny reasons recorded on the trace when a deny-mode egress is blocked (no silent
-#: fallback — every boundary denial reaches the trace via :func:`_record_egress_denied`).
-REASON_EGRESS_POLICY_DENY = "policy_deny"
-REASON_EGRESS_TIMEOUT = "egress_gate_timeout"
-REASON_EGRESS_PROMPT_CAP = "egress_gate_prompt_cap_reached"
-REASON_EGRESS_STORE_UNRESOLVED = "egress_gate_store_unresolved"
-REASON_EGRESS_DECISION_ERROR = "egress_gate_decision_error"
-REASON_EGRESS_PROMPT_UNWRITABLE = "egress_gate_prompt_unwritable"
-REASON_EGRESS_DENIED_THIS_TURN = "egress_denied_this_turn"
-#: N2 write-gate typed reasons (never a silent path). A write-gate decision that RAISES fails
-#: CLOSED (deny) for a write-shaped egress — a wiring bug must not silently allow a write; a
-#: matching ``deny`` host policy on a write is recorded distinctly from the deny-mode read deny.
-REASON_EGRESS_WRITE_GATE_ERROR = "egress_write_gate_error"
-REASON_EGRESS_WRITE_POLICY_DENY = "write_policy_deny"
+#: session) live in :mod:`clio_agent.gact.runtime.egress_holds`; the workspace flags, typed
+#: deny reasons and workspace lookups the gate reads, in :mod:`.egress_workspace`.
 
 
 # --------------------------------------------------------------------------- #
 # boundary.* semantic events
 # --------------------------------------------------------------------------- #
-
-
-def _active_session_for_workspace(app: "FastAPI", workspace_id: str) -> str:
-    """Return a representative live session id for ``workspace_id`` (recency), else ``""``.
-
-    The ``boundary.*`` SSE stream is per-session (``GET /v1/sessions/{sid}/events``), so a
-    workspace-scoped grant attributes to the workspace's most-recent session to reach the
-    user's live stream. Durable trace + ARC capture the event regardless of attribution.
-    """
-    sessions = getattr(app.state, "sessions", None)
-    if sessions is None:
-        return ""
-    from clio_agent.gact.session_records import PageQuery  # noqa: PLC0415
-
-    # The newest created session of the workspace, from the index: no row is read.
-    ids = sessions.ids(PageQuery(workspace_id=workspace_id, archived=None))
-    return ids[0] if ids else ""
 
 
 def _emit_boundary(
@@ -449,67 +428,6 @@ def replay_persisted_root_grants(app: "FastAPI") -> None:
 # --- Deny-mode egress gate (opt-in per workspace) ------------------------------- #
 
 
-def workspace_deny_mode(app: "FastAPI", workspace_id: str) -> bool:
-    """Whether ``workspace_id`` opts into network deny mode (default ALLOW+RECORD, B4)."""
-    ws = app.state.workspaces.get(workspace_id) if workspace_id else None
-    if ws is None:
-        return False
-    for source in (getattr(ws, "config", {}) or {}, getattr(ws, "metadata", {}) or {}):
-        if bool(source.get(DENY_MODE_CONFIG_KEY)):
-            return True
-    return False
-
-
-def workspace_write_gate(app: "FastAPI", workspace_id: str) -> bool:
-    """Whether ``workspace_id`` opts into the network WRITE-gate (default OFF — N2).
-
-    Mirrors :func:`workspace_deny_mode`: a per-workspace opt-in flag on ``config``/``metadata``,
-    DEFAULT FALSE so this adds the write-gating CAPABILITY without changing the B4 default
-    posture or breaking legitimate fleet POSTs. When on, a write-shaped egress to an un-granted
-    host is escalated for human permission (see :func:`_write_gate_decision`).
-    """
-    ws = app.state.workspaces.get(workspace_id) if workspace_id else None
-    if ws is None:
-        return False
-    for source in (getattr(ws, "config", {}) or {}, getattr(ws, "metadata", {}) or {}):
-        if bool(source.get(NETWORK_WRITE_GATE_CONFIG_KEY)):
-            return True
-    return False
-
-
-def _workspace_id_for_root(app: "FastAPI", workspace_root: str) -> str:
-    """Resolve the workspace whose ``root_path`` contains ``workspace_root``.
-
-    Path-BOUNDARY aware (review finding 3): a raw ``startswith`` would let ``/ws`` match
-    ``/ws2`` — an adjacent, differently-permissioned workspace. Match only on real path
-    containment (equality or ``is_relative_to``). A ``workspaces.list()`` store error is NOT
-    swallowed here — it bubbles to :func:`_egress_gate_decision`, which fails CLOSED in deny
-    context (never a silent allow on an unevaluable boundary).
-    """
-    if not workspace_root:
-        return ""
-    from pathlib import Path  # noqa: PLC0415
-
-    try:
-        target = Path(workspace_root).expanduser().resolve(strict=False)
-    except OSError:
-        target = Path(workspace_root)
-    workspaces = getattr(app.state, "workspaces", None)
-    if workspaces is None:
-        return ""
-    for ws in workspaces.list():
-        root = str(getattr(ws, "root_path", "") or "")
-        if not root:
-            continue
-        try:
-            resolved = Path(root).expanduser().resolve(strict=False)
-        except OSError:
-            resolved = Path(root)
-        if target == resolved or target.is_relative_to(resolved):
-            return str(getattr(ws, "id", "") or "")
-    return ""
-
-
 def _egress_gate_decision(app: "FastAPI", rec: "EgressRecord") -> str:
     """Decide allow/deny for one deny-mode CONNECT (B5 #979.5). Returns ``"allow"``/``"deny"``.
 
@@ -538,7 +456,7 @@ def _egress_gate_decision(app: "FastAPI", rec: "EgressRecord") -> str:
 
     NON-PUBLIC TARGETS. A private, link-local or loopback host (``rec.network`` set, reached
     only through the Linux fence's relay tunnel) always needs consent, whether or not the
-    workspace is in deny mode: see :func:`_non_public_egress_decision`.
+    workspace is in deny mode: see :func:`_policy_egress_decision`.
     """
     if rec.method in WRITE_METHODS:
         try:
@@ -558,7 +476,7 @@ def _egress_gate_decision(app: "FastAPI", rec: "EgressRecord") -> str:
             return write_decision
         # write-gate OFF / not applicable → fall through to the existing read/deny-mode path.
     if rec.network:
-        return _non_public_egress_decision(app, rec)
+        return _policy_egress_decision(app, rec, None)
     try:
         workspace_id = _workspace_id_for_root(app, rec.workspace_root)
         deny = workspace_deny_mode(app, workspace_id)
@@ -573,48 +491,31 @@ def _egress_gate_decision(app: "FastAPI", rec: "EgressRecord") -> str:
         return "deny"
     if not deny:
         return "allow"  # default is ALLOW + RECORD (B4); deny mode is strictly opt-in
-    try:
-        host = (rec.host or "").strip().lower()
-        action = _host_action_for(app, workspace_id=workspace_id, host=host)
-        if action == "deny":
-            _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_POLICY_DENY)
-            return "deny"
-        if action in POLICY_ALLOWING:
-            return "allow"
-        return _prompt_egress(app, workspace_id, rec)
-    except Exception as exc:  # noqa: BLE001 — a deny-mode decision error must fail closed, typed
-        _record_egress_denied(
-            app, workspace_id, (rec.host or ""), reason=REASON_EGRESS_DECISION_ERROR
-        )
-        logger.warning(
-            "egress deny-mode decision failed reason=%s host=%s error=%r — failing closed",
-            REASON_EGRESS_DECISION_ERROR,
-            rec.host,
-            exc,
-        )
-        return "deny"
+    return _policy_egress_decision(app, rec, workspace_id)
 
 
-def _non_public_egress_decision(app: "FastAPI", rec: "EgressRecord") -> str:
-    """Decide a connection to a private, link-local or loopback host (``rec.network`` set).
+def _policy_egress_decision(app: "FastAPI", rec: "EgressRecord", workspace_id: str | None) -> str:
+    """Decide by the workspace's ``host_pattern`` policies, else ask the person.
 
-    Only the Linux fence's relay tunnel reaches such a host, and only with consent, whether or
-    not the workspace is in deny mode: a matching workspace ``host_pattern`` policy decides,
-    otherwise the person is asked. Any error refuses the connection.
+    Used for a deny-mode workspace and for a private, link-local or loopback host
+    (``rec.network`` set, ``workspace_id`` ``None``): only the Linux fence's relay tunnel
+    reaches such a host, and only with consent, whether or not the workspace is in deny mode.
+    Any error refuses the connection with a typed reason.
     """
-    workspace_id = ""
+    resolved = workspace_id or ""
     host = (rec.host or "").strip().lower()
     try:
-        workspace_id = _workspace_id_for_root(app, rec.workspace_root)
-        action = _host_action_for(app, workspace_id=workspace_id, host=host)
+        if workspace_id is None:
+            resolved = _workspace_id_for_root(app, rec.workspace_root)
+        action = _host_action_for(app, workspace_id=resolved, host=host)
         if action == "deny":
-            _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_POLICY_DENY)
+            _record_egress_denied(app, resolved, host, reason=REASON_EGRESS_POLICY_DENY)
             return "deny"
         if action in POLICY_ALLOWING:
             return "allow"
-        return _prompt_egress(app, workspace_id, rec)
-    except Exception as exc:  # noqa: BLE001 — a non-public target fails closed, typed
-        _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_DECISION_ERROR)
+        return _prompt_egress(app, resolved, rec)
+    except Exception as exc:  # noqa: BLE001 — an egress decision error must fail closed, typed
+        _record_egress_denied(app, resolved, host, reason=REASON_EGRESS_DECISION_ERROR)
         logger.warning(
             "egress decision failed reason=%s host=%s network=%s error=%r — failing closed",
             REASON_EGRESS_DECISION_ERROR,

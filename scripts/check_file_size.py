@@ -1107,7 +1107,7 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/runtime/sandbox_codex.py": 862,
     # (tools/gateway.py entry retired: removing ssh_execute brought it to 799 lines, under the
     # flat 800 cap.)
-    "src/clio_agent/tools/mcp_prepare.py": 1221,
+    "src/clio_agent/tools/mcp_prepare.py": 1199,
 }
 
 # Root of the source tree to scan, relative to the repository root.
