@@ -164,13 +164,24 @@ status() {
   done
 }
 
+stop_agent() {
+  stop_one agent
+  # A server that ran past its shutdown budget (a turn held by refused writes) ends
+  # without stopping its clio-core daemon, which runs in its own session; installed
+  # CLIO cleans that up at its next start, but this stack's state is deleted instead.
+  # The same owner-safe cleanup stops only a daemon this state started, and only when
+  # no live client remains (seen 2026-11-19: clio_run and its log pump outlived stop).
+  (cd "$ROOT" && uv run --no-sync python -c 'from clio_agent.arc.storage import cleanup_runtime_after_client_crash as c; print("clio-core: stopped" if c(wait_timeout_seconds=10.0) else "clio-core: nothing of ours running")') 2>/dev/null \
+    || echo "clio-core: cleanup did not run; check for a leftover clio_run"
+}
+
 case "${1:-status}" in
   start) start_fixture && start_agent && start_ui ;;
-  stop) stop_one ui; stop_one agent; stop_one fixture ;;
-  restart) stop_one ui; stop_one agent; stop_one fixture; start_fixture && start_agent && start_ui ;;
+  stop) stop_one ui; stop_agent; stop_one fixture ;;
+  restart) stop_one ui; stop_agent; stop_one fixture; start_fixture && start_agent && start_ui ;;
   status) status ;;
   agent-start) start_agent ;;
-  agent-stop) stop_one agent ;;
+  agent-stop) stop_agent ;;
   ui-start) start_ui ;;
   ui-stop) stop_one ui ;;
   logs) tail -n 40 "$STATE/agent.log" "$STATE/ui.log" "$STATE/fixture.log" 2>/dev/null ;;
