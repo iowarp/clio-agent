@@ -6,6 +6,8 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.8] - 2026-11-19
+
 ### Added
 
 - Run CLIO agents and flows from Python: `pip install clio-agent` ships the `clio`
@@ -34,8 +36,28 @@ TUI/HTTP surface aren't tracked here.
 - A file a flow writes with `ctx.workspace.write` is recorded as an artifact of the
   flow's session.
 
+- Connectors: per-conversation connectors, Discover cards, connector needs with
+  `offer_plugin` and `set_connector_value`, and connectors started through clio-kit
+  (#2358, #2362, #2364).
+- MCP Apps: a connector's live view in the conversation, in its own tab and in
+  dashboards, with view state reported back to the agent (#2358).
+- Stop and restart: Stop asks before stopping work the conversation started; a
+  restart follows the run it restarts and says what it cancels (#2354, #2363).
+- Report a problem, failure reasons and recovery for interrupted replies, and the
+  plugin offer list (#2365).
+- Storage and data: S3 connected sources, NDP data access through source semantics
+  with windowed reads and storage release (#2358, #2381).
+- Chemistry (Alembic), ocean and weather science, KiCad and the layered map, served
+  through the 0.9.0 marketplace and clio-kit 2.13.0 (#2370, #2373, #2383).
+
 ### Changed
 
+- Installers no longer build the agents' clio-kit tool servers at install time:
+  CLIO asks in the conversation before enabling one (lazy install).
+- A turn ended by service shutdown is recorded as `interrupted` and resumed after
+  restart.
+- Pin `clio-kit==2.13.0`, `clio-schemas==0.8.0`, gact-tui 0.14.0 and marketplace
+  0.9.0.
 - `metadata` on session create and update refuses server-owned keys (`agent_flow`,
   `unattended`, `run_limits`, ...) with `metadata_reserved`.
 - A flow refuses options it does not declare (`flow_options_invalid`).
@@ -48,16 +70,6 @@ TUI/HTTP surface aren't tracked here.
 
 - `routing_mode` in the Python client, and the `"main"` default of a session
   request's `agent.id`.
-
-- Pin `clio-kit==2.12.7`. Every MCP server picks up opentelemetry-api 1.45.2
-  (CVE-2026-126360). The adios and paraview servers install ADIOS2 from wheels
-  on macOS, the hdf5 server keeps its metrics under its granted cache directory
-  instead of creating `~/.hdf5_mcp`, and every Python server runs on Python
-  3.12. `install.sh` keeps its own pin.
-- Pin `clio-kit==2.12.5`. The ADIOS server no longer builds ADIOS2 from source on
-  Windows (no Windows wheels exist); its ADIOS2 tools report `Adios2Unavailable`
-  there instead. This cuts the first ADIOS prepare on a new Windows install from
-  minutes to seconds. `install.sh` keeps its own pin.
 
 ## [0.9.7.1] - 2026-11-13
 
