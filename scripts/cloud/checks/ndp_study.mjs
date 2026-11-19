@@ -96,7 +96,8 @@ export default async function (page, shot) {
   const minutes = Number(process.env.STUDY_MINUTES || 60);
   const followups = JSON.parse(process.env.STUDY_FOLLOWUPS || "[]");
   const continuing = Boolean(process.env.STUDY_SESSION);
-  const workspace = continuing
+  // STUDY_WORKSPACE alone opens a new conversation in that existing workspace.
+  const workspace = process.env.STUDY_WORKSPACE
     ? { id: process.env.STUDY_WORKSPACE }
     : await api("POST", "/v1/workspaces", { name: path.basename(root), root_path: root });
   // No STUDY_AGENT: the session gets CLIO's default agent, as a new conversation does.
