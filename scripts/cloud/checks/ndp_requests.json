@@ -1,7 +1,7 @@
 {
   "_comment": "Plain requests for the NDP qualification (docs/design/ndp-ledger.md). No tool, skill, dataset id, URL or step is named. October requests are copied verbatim from docs/verification/ndp-scientific-outcomes-2026-10-18.md. case01 drops the README example's procedural wording ('resolve the geography, query bounded live features'), which would make it a tool-directed prompt. discovery.task1 and task5 are verbatim from docs/verification/ndp-agent-discovery-benchmark-2026-10-18.md; tasks 2-4 need private Endpoints (Ares SSH, an on-demand stream) this container cannot reach.",
   "october": {
-    "alta": "Has the snow-to-liquid ratio at Alta-Collins changed in the 2023\u201324 winter compared with its historical record? I think NDP has the observations. Please investigate and show the evidence, with a chart and the limitations of the comparison.",
+    "alta": "Has the snow-to-liquid ratio at Alta-Collins changed in the 2023–24 winter compared with its historical record? I think NDP has the observations. Please investigate and show the evidence, with a chart and the limitations of the comparison.",
     "konza": "Can the NDP observations from the 2022 Konza Prairie burn tell us whether the smoke or CO2 signal changed with the wind? Investigate what the measurements actually support and show me an evidence-based result.",
     "tahoe": "What can NDP tell us about how much of the Lake Tahoe basin is wetland or riparian habitat, and how that relates spatially to the lake? Use the available scientific data to make a small map and quantify what you can, with clear caveats."
   },
@@ -38,6 +38,10 @@
     "snow_depth": [
       "How did that compare with other years you can find in the data? Show me the change on the map.",
       "Where in the observatory was snow deepest, and how does that relate to elevation and slope? Bring in the terrain."
+    ],
+    "benchmark.case01": [
+      "The air quality part is useful, but I need the other hazards too: fire, heat, flooding or the coast. Bring in whatever NDP has for those and put everything on one map I can explore.",
+      "Which parts of the area come out worst when you put the hazards together? Rank them, show me on the map, and tell me how far I can trust it given how old and how complete each dataset is."
     ]
   }
 }

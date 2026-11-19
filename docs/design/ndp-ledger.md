@@ -946,17 +946,31 @@ Multi-turn (follow-ups in the same conversation):
   DEM as the only later surface. It then waited on a file-write permission with no
   harness to answer it and was cancelled; the second follow-up was not sent.
 
-Seen in this wave and not yet fixed:
+Seen in this wave, and what became of it:
 
-- **Harness browsers crash on long live turns.** A conversation tab holds about
-  1 GB; while a turn streams for 45-75 minutes the renderer grew to 3.5-4 GB and was
-  killed (Konza, BCO, Tahoe follow-ups). Opening a finished conversation is fine.
-  Likely a leak in live streaming in gact-tui.
-- **Restart resumes every interrupted turn**, including runs a person had left;
-  two duplicates were cancelled by hand.
-- **No storage view for the agent.** Disk was reclaimed by hand three times (old
-  snapshots, session scratch). CLIO needs a way for the agent to see and release
-  what it downloaded.
-- **Sonnet shows results as PNG links more often than Opus**, with the same
-  guidance in its prompt (case 04, Tahoe R6i).
-
+- **Harness browsers crashed on long live turns.** Measured with
+  `scripts/cloud/checks/memory_observe.mjs`: on the Vite dev server a conversation
+  tab grew from 1.06 to 2.48 GB in 10 minutes of streaming; on the production build
+  (`scripts/cloud/serve_web_build.mjs`) the same live Tahoe turn stayed flat at
+  800-850 MB for 45 minutes. The growth is the dev server's module graph and HMR
+  state, not gact-tui's streaming; Desktop and Web ship the production build.
+  Harness runs now use the production build.
+- **Restart resumes every interrupted turn.** Intended: a turn the server lost is
+  resumed so no work is silently dropped; a person cancels the ones they left.
+  Not a bug (earlier note retracted).
+- **The agent could not see or release its storage.** Fixed:
+  `connected_data_status` reports free bytes and each source's bytes on disk
+  (counting hard-linked files once), and `connected_data_release` removes older
+  snapshots and unfinished staging and, with `paths`, files of the current
+  read-only download it no longer needs. The live check (a plain request on
+  Konza) is pending.
+- **Each session kept its own uv cache** in its scratch folder: 4 GB across 30
+  sessions, which filled the disk again. Fixed in `97012f2cb`: an unprepared
+  workspace's shells share one uv cache in the workspace's sandbox cache, which
+  the write fence already grants.
+- **Sonnet showed results as PNG links more often than Opus, and Opus ended
+  answers with lists of what it had not done.** Prompt fragments can now target
+  models (`when.models`, `8cfd547cc`); the core plugin tells Opus that an answer
+  listing undone steps it could take is unfinished, and tells Sonnet to keep going
+  and to present results as views. Verified by tests; live effect is measured by
+  the case 01 rerun and the snow follow-ups below.
