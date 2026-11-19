@@ -20,12 +20,21 @@ import threading
 from typing import Any
 
 from clio_agent import injections
+from clio_agent.runtime import trace
 
-__all__ = ["ORGANIZATION_BRANCHES_SOURCE", "note_organization"]
+__all__ = [
+    "BRANCHES_NO_SPAWN_TOOL",
+    "BRANCHES_NO_TURN",
+    "ORGANIZATION_BRANCHES_SOURCE",
+    "note_organization",
+]
 
 #: The injection's name (its file in the core plugin's injections folder).
 ORGANIZATION_BRANCHES_SOURCE = "organization_branches"
 _DEFAULT_AFTER = 3
+#: Typed trace reasons for an organization that was counted but noted nothing.
+BRANCHES_NO_TURN = "organization_branches_no_turn"
+BRANCHES_NO_SPAWN_TOOL = "organization_branches_no_spawn_tool"
 _LOCK = threading.Lock()
 
 
@@ -44,6 +53,7 @@ def note_organization(organization: str) -> None:
 
     loop = active_loop()
     if loop is None:
+        trace.event("INJECTION", "%s organization=%s", BRANCHES_NO_TURN, name)
         return
     with _LOCK:
         if getattr(loop, "_clio_branches_noted", False):
@@ -59,13 +69,21 @@ def note_organization(organization: str) -> None:
         if after <= 0 or len(seen) < after:
             return
         spawn = _spawn_tool(loop)
-        if not spawn:
-            return
-        loop._clio_branches_noted = True
+        loop._clio_branches_noted = True  # decided once per turn, noted or not
         names = list(seen.values())
+    if not spawn:
+        trace.event("INJECTION", "%s organizations=%d", BRANCHES_NO_SPAWN_TOOL, len(names))
+        return
     text = injections.render(
         ORGANIZATION_BRANCHES_SOURCE,
         {"count": len(names), "organizations": ", ".join(names), "spawn_tool": f"`{spawn}`"},
     )
     if text:  # an event note: recorded even when an earlier turn's note had these words
         loop.recorder.injections([(ORGANIZATION_BRANCHES_SOURCE, injections.fired(text))])
+    trace.event(
+        "INJECTION",
+        "organization_branches_noted organizations=%d spawn=%s rendered=%s",
+        len(names),
+        spawn,
+        bool(text),
+    )
