@@ -75,10 +75,42 @@ def _fake_socks_proxy(reply: int) -> tuple[int, list[bytes]]:
     return server.getsockname()[1], seen
 
 
+def _fake_relay_proxy(inner: bytes) -> tuple[int, list[bytes]]:
+    """One-shot proxy that accepts the relay tunnel, then answers the inner CONNECT ``inner``."""
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    seen: list[bytes] = []
+
+    def head(conn: socket.socket) -> bytes:
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = conn.recv(1)
+            if not chunk:
+                return data
+            data += chunk
+        return data
+
+    def serve() -> None:
+        conn, _ = server.accept()
+        with conn, server:
+            seen.append(head(conn))
+            conn.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            seen.append(head(conn))
+            conn.sendall(b"HTTP/1.1 " + inner + b"\r\n\r\n")
+            if inner.startswith(b"200"):
+                while chunk := conn.recv(1024):
+                    conn.sendall(chunk)
+
+    threading.Thread(target=serve, daemon=True).start()
+    return server.getsockname()[1], seen
+
+
 @pytest.fixture(autouse=True)
 def _clean_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in net_connect.PROXY_VARIABLES:
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv(net_connect.RELAY_VARIABLE, raising=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -196,6 +228,34 @@ def test_a_tunnel_closed_before_any_byte_is_reported() -> None:
     )
     assert done.returncode == 1
     assert b"closed before the server answered" in done.stderr
+
+
+def test_the_relay_carries_the_real_connect_inside_its_tunnel() -> None:
+    credentials = "user:pw"
+    port, seen = _fake_relay_proxy(b"200 Connection established")
+    sock, first = net_connect.open_tunnel(
+        "ares.local", 22, f"http://{credentials}@127.0.0.1:{port}", net_connect.RELAY_AUTHORITY
+    )
+    with sock:
+        sock.sendall(b"SSH-2.0-test\r\n")
+        assert first + sock.recv(64) == b"SSH-2.0-test\r\n"
+    assert seen[0].startswith(b"CONNECT [2001:db8::c110]:443 HTTP/1.1\r\n")
+    assert b"Proxy-Authorization: Basic " in seen[0]
+    assert seen[1].startswith(b"CONNECT ares.local:22 HTTP/1.1\r\n")
+    assert b"Proxy-Authorization" not in seen[1]
+
+
+def test_a_refusal_inside_the_relay_names_clio(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    port, seen = _fake_relay_proxy(b"403 Forbidden")
+    monkeypatch.setenv("HTTPS_PROXY", f"http://127.0.0.1:{port}")
+    monkeypatch.setenv(net_connect.RELAY_VARIABLE, net_connect.RELAY_AUTHORITY)
+    assert net_connect.main(["/nowhere", "connect", "10.0.0.5", "22"]) == 1
+    assert seen[1].startswith(b"CONNECT 10.0.0.5:22 ")
+    err = capsys.readouterr().err
+    assert "CLIO refused 10.0.0.5:22" in err
+    assert "the request to allow it was declined" in err
 
 
 # --------------------------------------------------------------------------- #

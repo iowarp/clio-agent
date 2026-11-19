@@ -531,6 +531,10 @@ def _egress_gate_decision(app: "FastAPI", rec: "EgressRecord") -> str:
     The write-gate fails CLOSED asymmetrically: if its decision RAISES, a write-shaped egress
     denies (a wiring bug must not silently allow a write) while a read is untouched by it and
     keeps failing OPEN (the chokepoint residual) — mirrors the B5 deny-mode fail-safe lesson.
+
+    NON-PUBLIC TARGETS. A private, link-local or loopback host (``rec.network`` set, reached
+    only through the Linux fence's relay tunnel) always needs consent, whether or not the
+    workspace is in deny mode: see :func:`_non_public_egress_decision`.
     """
     if rec.method in WRITE_METHODS:
         try:
@@ -549,6 +553,8 @@ def _egress_gate_decision(app: "FastAPI", rec: "EgressRecord") -> str:
         if write_decision is not None:
             return write_decision
         # write-gate OFF / not applicable → fall through to the existing read/deny-mode path.
+    if rec.network:
+        return _non_public_egress_decision(app, rec)
     try:
         workspace_id = _workspace_id_for_root(app, rec.workspace_root)
         deny = workspace_deny_mode(app, workspace_id)
@@ -580,6 +586,36 @@ def _egress_gate_decision(app: "FastAPI", rec: "EgressRecord") -> str:
             "egress deny-mode decision failed reason=%s host=%s error=%r — failing closed",
             REASON_EGRESS_DECISION_ERROR,
             rec.host,
+            exc,
+        )
+        return "deny"
+
+
+def _non_public_egress_decision(app: "FastAPI", rec: "EgressRecord") -> str:
+    """Decide a connection to a private, link-local or loopback host (``rec.network`` set).
+
+    Only the Linux fence's relay tunnel reaches such a host, and only with consent, whether or
+    not the workspace is in deny mode: a matching workspace ``host_pattern`` policy decides,
+    otherwise the person is asked. Any error refuses the connection.
+    """
+    workspace_id = ""
+    host = (rec.host or "").strip().lower()
+    try:
+        workspace_id = _workspace_id_for_root(app, rec.workspace_root)
+        action = _host_action_for(app, workspace_id=workspace_id, host=host)
+        if action == "deny":
+            _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_POLICY_DENY)
+            return "deny"
+        if action in POLICY_ALLOWING:
+            return "allow"
+        return _prompt_egress(app, workspace_id, rec)
+    except Exception as exc:  # noqa: BLE001 — a non-public target fails closed, typed
+        _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_DECISION_ERROR)
+        logger.warning(
+            "egress decision failed reason=%s host=%s network=%s error=%r — failing closed",
+            REASON_EGRESS_DECISION_ERROR,
+            rec.host,
+            rec.network,
             exc,
         )
         return "deny"
@@ -643,11 +679,18 @@ def _prompt_egress(
                 _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_PROMPT_CAP)
                 return "deny"
             pid = f"perm_{uuid.uuid4().hex[:12]}"
-            summary = (
-                f"network WRITE egress ({rec.method}) to {host}:{rec.port} requested (write gate)"
-                if write
-                else f"network egress to {host}:{rec.port} requested (deny mode)"
-            )
+            if write:
+                summary = (
+                    f"network WRITE egress ({rec.method}) to {host}:{rec.port} requested "
+                    "(write gate)"
+                )
+            elif rec.network:
+                summary = (
+                    f"network egress to {host}:{rec.port} requested ({rec.network} address, "
+                    "not a public host)"
+                )
+            else:
+                summary = f"network egress to {host}:{rec.port} requested (deny mode)"
             prompt = {
                 "pid": pid,
                 "event": threading.Event(),
@@ -663,6 +706,7 @@ def _prompt_egress(
                             "port": rec.port,
                             "method": rec.method,
                             "write": write,
+                            "network": rec.network,
                         },
                     },
                     "summary": summary,

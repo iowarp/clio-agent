@@ -360,7 +360,8 @@ cannot enforce these exclusions, shell execution fails before starting a child.
 
 **SSH from the shell.** Remote work uses the ordinary `ssh`, `scp`, `sftp` and
 git-over-SSH commands in `shell_bash`; CLIO has no separate SSH tool. Inside an
-enforced fence the shell's `ssh`, `scp` and `sftp` resolve to small shims
+enforced fence the shell's `ssh`, `scp` and `sftp`, and those of fenced MCP servers,
+resolve to small shims
 (`runtime/fence_ssh.py`) that run the real program with CLIO's CONNECT helper
 (`runtime/net_connect.py`) as its `ProxyCommand`. Git reaches the same shim through
 `PATH`, or through `GIT_SSH` when the person has not set an ssh command of their own
@@ -400,11 +401,23 @@ is the tier labelled `proxy-enforced`; if the child can still reach the host net
 CLIO keeps the write fence, reports `codex_linux_net_unisolated` in
 `details["codex_net"]` and labels egress `env-cooperative`. If the per-child
 chokepoint port cannot be opened, the child's proxy is pointed at a closed port, so
-it stays offline rather than connecting unrecorded. Codex sends loopback and private
-addresses around any upstream proxy, so the Linux fence refuses them outright:
-fenced children cannot reach services on the host's loopback or on private networks
-(including SSH to private-address cluster nodes), and names that do not resolve
-publicly are refused too. The CONNECT helper says so when it happens.
+it stays offline rather than connecting unrecorded. Codex's proxy passes only public
+hosts on to CLIO, so for everything else the fenced `ssh`, `scp`, `sftp` and Git over
+SSH use a relay: the CONNECT helper (told by `CLIO_EGRESS_RELAY`) first opens a
+tunnel to the never-routed documentation address `[2001:db8::c110]:443`, which Codex
+forwards to the child's chokepoint port, and CLIO's proxy answers that tunnel itself
+and reads the real `CONNECT` from inside it. A private, link-local or loopback host
+reached this way (an SSH login node on a cluster network, say) always needs consent,
+in or out of deny mode: unless a workspace `host_pattern` policy already decides it,
+the person gets a `network_egress` request naming the address kind and can allow it
+once, allow it for the workspace, or decline. The connection is recorded as
+`proxy-enforced` with its `network` kind. CLIO resolves the name once and dials the
+addresses it classified, and refuses any relayed connection that would land on a port
+CLIO itself serves. Other programs (`curl`, Python clients) keep Codex's rule:
+loopback, private and non-public names are refused, and the CONNECT helper says so
+when it happens. Fenced MCP servers get the same `ssh` shims as the shell, so a
+server that runs `ssh` (a remote-site adapter, say) takes the same route and asks the
+same question.
 
 On macOS the Codex write fence does not restrict network routes. Tools that honor
 `HTTP(S)_PROXY`/`ALL_PROXY` (curl, Python, pip/uv, git over HTTPS) and the shell's

@@ -14,6 +14,13 @@ so this file gives it a ``ProxyCommand`` that does:
 The proxy records each tunnel as ``net.egress`` with the host and port, and a host the policy
 refuses gets ``403``, which the helper reports on standard error.
 
+Behind the Linux fence the child's proxy is Codex's, which reaches only public hosts and sends
+nothing else to CLIO. There CLIO also sets :data:`RELAY_VARIABLE`: the helper then opens a
+tunnel to :data:`RELAY_AUTHORITY`, an IPv6 documentation address that is never routed, which
+Codex passes to CLIO's proxy like any public host. CLIO's proxy answers that tunnel itself and
+reads the real ``CONNECT`` inside it, so a private or local host can still be reached, after
+the person allows it.
+
 This module runs as a script on CLIO's interpreter in isolated mode (``python -I``), so it
 imports only the standard library: it must start fast inside the fence and never import CLIO.
 :mod:`clio_agent.runtime.fence_ssh` writes the ``ssh``/``scp``/``sftp`` shims that call it.
@@ -43,6 +50,14 @@ PROXY_VARIABLES = (
     "HTTP_PROXY",
     "http_proxy",
 )
+
+#: Names the relay tunnel when the fence's proxy reaches only public hosts (the Linux fence).
+RELAY_VARIABLE = "CLIO_EGRESS_RELAY"
+#: The relay tunnel's target: in 2001:db8::/32 (RFC 3849), so it never reaches a real host.
+#: CLIO's proxy answers it and reads the real ``CONNECT`` from inside the tunnel.
+RELAY_HOST = "2001:db8::c110"
+RELAY_PORT = 443
+RELAY_AUTHORITY = f"[{RELAY_HOST}]:{RELAY_PORT}"
 
 #: ssh(1) short options that take a value (OpenSSH 8 to 10 getopt string).
 _SSH_VALUE_FLAGS = frozenset("BbcDEeFIiJLlmOoPpQRSWw")
@@ -118,28 +133,42 @@ def _read_head(sock: socket.socket, waiting_for: str = "") -> tuple[bytes, bytes
     return head, rest
 
 
-def _http_connect(proxy: str, host: str, port: int) -> tuple[socket.socket, bytes]:
+def _http_connect(proxy: str, host: str, port: int, relay: str = "") -> tuple[socket.socket, bytes]:
+    """``CONNECT host:port`` through ``proxy``; with ``relay``, inside a tunnel to it."""
     parts = urlsplit(proxy)
     sock = socket.create_connection(
         (parts.hostname or "127.0.0.1", parts.port or 8080), timeout=_DIAL_TIMEOUT_S
     )
-    target = _authority(host, port)
-    lines = [f"CONNECT {target} HTTP/1.1", f"Host: {target}"]
+    auth: list[str] = []
     if parts.username is not None:
         token = f"{unquote(parts.username)}:{unquote(parts.password or '')}"
-        lines.append("Proxy-Authorization: Basic " + base64.b64encode(token.encode()).decode())
+        auth.append("Proxy-Authorization: Basic " + base64.b64encode(token.encode()).decode())
+    try:
+        if relay:
+            _connect_request(sock, relay, auth, wait=False)
+            auth = []
+        return sock, _connect_request(sock, _authority(host, port), auth, wait=True)
+    except BaseException:
+        sock.close()
+        raise
+
+
+def _connect_request(sock: socket.socket, target: str, auth: list[str], *, wait: bool) -> bytes:
+    """Send ``CONNECT target`` on ``sock`` and return the bytes after a ``200`` reply head."""
+    lines = [f"CONNECT {target} HTTP/1.1", f"Host: {target}", *auth]
     sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
-    sock.settimeout(_APPROVAL_NOTICE_S)
-    head, rest = _read_head(sock, waiting_for=target)
+    sock.settimeout(_APPROVAL_NOTICE_S if wait else _DIAL_TIMEOUT_S)
+    head, rest = _read_head(sock, waiting_for=target if wait else "")
     status_line = head.split(b"\r\n", 1)[0].decode("latin-1", "replace").strip()
     fields = status_line.split()
     status = int(fields[1]) if len(fields) > 1 and fields[1].isdigit() else 0
     if status != 200:
-        sock.close()
         refused = ProxyRefused(status, status_line or "the proxy closed the connection")
         refused.fence_error = _header(head, "x-proxy-error")
         raise refused
-    return sock, rest
+    if not wait and rest:
+        raise ProxyRefused(0, "the relay tunnel sent data before the real CONNECT")
+    return rest
 
 
 def _header(head: bytes, name: str) -> str:
@@ -197,14 +226,18 @@ def _recv_exact(sock: socket.socket, size: int) -> bytes:
     return data
 
 
-def open_tunnel(host: str, port: int, proxy: str) -> tuple[socket.socket, bytes]:
-    """A socket joined to ``host:port``: through ``proxy`` when one is set, else direct."""
+def open_tunnel(host: str, port: int, proxy: str, relay: str = "") -> tuple[socket.socket, bytes]:
+    """A socket joined to ``host:port``: through ``proxy`` when one is set, else direct.
+
+    ``relay`` (an HTTP proxy only) names the tunnel CLIO's proxy answers itself; the real
+    ``CONNECT`` then travels inside it.
+    """
     if not proxy:
         return socket.create_connection((host, port), timeout=_DIAL_TIMEOUT_S), b""
     scheme = urlsplit(proxy).scheme.lower()
     if scheme.startswith("socks"):
         return _socks5_connect(proxy, host, port)
-    return _http_connect(proxy, host, port)
+    return _http_connect(proxy, host, port, relay)
 
 
 def _pump(sock: socket.socket, first: bytes) -> bool:
@@ -246,14 +279,20 @@ def connect_main(host: str, port_text: str) -> int:
         _say(f"port {port_text!r} is not a number")
         return 2
     proxy = proxy_from_environment(os.environ)
+    relay = (os.environ.get(RELAY_VARIABLE) or "").strip()
     try:
-        sock, first = open_tunnel(host, port, proxy)
+        sock, first = open_tunnel(host, port, proxy, relay)
     except ProxyRefused as exc:
         if exc.fence_error:
             _say(
                 f"the Linux sandbox refused {_authority(host, port)} ({exc.fence_error}): it "
                 "reaches only public hosts, through CLIO's proxy; loopback, private and "
                 "unresolvable addresses are blocked"
+            )
+        elif exc.status == 403 and relay:
+            _say(
+                f"CLIO refused {_authority(host, port)}: its network policy does not allow it, "
+                "the request to allow it was declined, or it is CLIO's own service"
             )
         elif exc.status == 403:
             _say(f"the sandbox network policy refused {_authority(host, port)} ({exc.line})")
@@ -271,6 +310,9 @@ def connect_main(host: str, port_text: str) -> int:
     finally:
         sock.close()
     if proxy and not answered:
+        if relay:
+            _say(f"{_authority(host, port)} closed the connection before it answered")
+            return 1
         # Behind the Linux fence Codex's proxy accepts the tunnel before CLIO decides, so a
         # refusal or an unreachable host shows up here as a tunnel closed before any byte.
         _say(

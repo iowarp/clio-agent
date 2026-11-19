@@ -96,3 +96,26 @@ def test_configured_stdio_preserves_inherited_directory_through_active_fence(
         {"transport": "stdio", "command": sys.executable, "args": ["-c", "pass"]}
     )
     assert_preserved_directory_and_grants(transport, workspace, roots)
+
+
+def test_a_fenced_server_routes_ssh_through_the_fence_helper(
+    confined_workspace: tuple[Path, tuple[Path, ...]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A server's ssh, scp, sftp and Git over SSH leave the fence the way a shell's do."""
+    import os
+
+    from clio_agent.runtime import fence_ssh
+
+    real_which = fence_ssh.shutil.which
+    monkeypatch.setattr(
+        fence_ssh.shutil,
+        "which",
+        lambda name, *, path=None: "/usr/bin/ssh" if name == "ssh" else real_which(name, path=path),
+    )
+    monkeypatch.delenv("GIT_SSH", raising=False)
+    spec = spec_from_declaration("owned", {"command": sys.executable, "args": ["-c", "pass"]})
+    transport = transport_for(spec, cwd=str(confined_workspace[0]))
+    shims = fence_ssh.shim_directory()
+    assert shims is not None
+    assert transport.env["PATH"].split(os.pathsep)[0] == str(shims)
+    assert transport.env["GIT_SSH"].startswith(str(shims))

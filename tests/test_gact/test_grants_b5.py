@@ -726,6 +726,88 @@ def test_deny_mode_prompt_cap_fails_closed_over_limit(
     assert grants.REASON_EGRESS_PROMPT_CAP in reasons
 
 
+def _local_record(host: str, workspace_root: str, network: str = "loopback"):
+    from dataclasses import replace
+
+    return replace(_egress_record(host, workspace_root), port=22, network=network)
+
+
+def _await_egress_prompt(app) -> str:
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        for pid, row in list(app.state.permissions.items()):
+            if row.get("kind") == "network_egress" and row.get("status") == "pending":
+                return pid
+        time.sleep(0.02)
+    return ""
+
+
+@pytest.mark.parametrize(("action", "decision"), [("allow", "allow"), ("deny", "deny")])
+def test_a_local_host_asks_the_person_outside_deny_mode(
+    tmp_path, captured_events, action: str, decision: str
+) -> None:
+    """A private or loopback target is never allowed by default: the person decides."""
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    ws = app.state.workspaces.create(name="p", root_path=str(root))
+    app.state.sessions.create(workspace_id=ws.id)
+    result: dict = {}
+
+    def _run() -> None:
+        result["decision"] = grants._egress_gate_decision(
+            app, _local_record("ares.local", str(root))
+        )
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    pid = _await_egress_prompt(app)
+    assert pid, "a loopback target must open an interactive permission request"
+    row = app.state.permissions[pid]
+    assert row["tool_call"]["input"]["network"] == "loopback"
+    assert "loopback address, not a public host" in row["summary"]
+    row["status"] = "resolved"
+    row["action"] = action
+    app.state.permission_events[pid].set()
+    t.join(timeout=5)
+    assert result["decision"] == decision
+
+
+@pytest.mark.parametrize(("policy", "decision"), [("allow", "allow"), ("deny", "deny")])
+def test_a_workspace_host_policy_decides_a_local_host(
+    tmp_path, captured_events, policy: str, decision: str
+) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    ws = app.state.workspaces.create(name="p", root_path=str(root))
+    app.state.permission_policies.append(
+        {"scope": "workspace", "scope_id": ws.id, "action": policy, "host_pattern": "ares.local"}
+    )
+    rec = _local_record("ares.local", str(root), network="private")
+    assert grants._egress_gate_decision(app, rec) == decision
+    assert "permission.requested" not in _types(captured_events)
+
+
+def test_a_local_host_decision_error_fails_closed(tmp_path, captured_events, monkeypatch) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    app.state.workspaces.create(name="p", root_path=str(root))
+
+    def _boom(*a, **k):
+        raise RuntimeError("policy engine down")
+
+    monkeypatch.setattr(grants, "_host_action_for", _boom)
+    assert grants._egress_gate_decision(app, _local_record("10.0.0.5", str(root))) == "deny"
+    reasons = {
+        e["payload"].get("reason")
+        for e in captured_events
+        if e["event_type"] == "permission.resolved"
+    }
+    assert grants.REASON_EGRESS_DECISION_ERROR in reasons
+
+
 # --------------------------------------------------------------------------- #
 # N2 — read-allow / WRITE-GATE (codex-net) : reads never blocked, writes escalated
 # --------------------------------------------------------------------------- #

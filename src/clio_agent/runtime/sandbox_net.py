@@ -189,7 +189,24 @@ def open_child_egress(
         )
     if not port:
         return "", None, _closed_upstream(state)
-    return child_id, port, _proxy_overlay(f"http://{_LOOPBACK_HOST}:{port}")
+    overlay = _proxy_overlay(f"http://{_LOOPBACK_HOST}:{port}")
+    if _linux_proxy_fence(state):
+        # Codex's proxy passes only public hosts on; the SSH helper reaches the rest through
+        # the relay tunnel CLIO's chokepoint answers itself (see net_connect).
+        from clio_agent.runtime.net_connect import RELAY_AUTHORITY, RELAY_VARIABLE  # noqa: PLC0415
+
+        overlay[RELAY_VARIABLE] = RELAY_AUTHORITY
+    return child_id, port, overlay
+
+
+def _linux_proxy_fence(state: "SandboxResult") -> bool:
+    """Whether ``state`` is the Linux fence whose network leaves only through the proxy."""
+    from clio_agent.runtime.sandbox import NET_ENFORCEMENT_PROXY  # noqa: PLC0415
+
+    details = state.details if isinstance(state.details, dict) else {}
+    return details.get("net_enforcement") == NET_ENFORCEMENT_PROXY and str(
+        details.get("platform", "")
+    ).startswith("linux")
 
 
 def _closed_upstream(state: "SandboxResult") -> dict[str, str]:
@@ -199,12 +216,7 @@ def _closed_upstream(state: "SandboxResult") -> dict[str, str]:
     chokepoint failure into unrecorded egress. Pointing it at a port nobody listens on makes
     every tunnel fail instead. Other tiers keep the old behavior (no overlay).
     """
-    from clio_agent.runtime.sandbox import NET_ENFORCEMENT_PROXY  # noqa: PLC0415
-
-    details = state.details if isinstance(state.details, dict) else {}
-    if details.get("net_enforcement") != NET_ENFORCEMENT_PROXY or not str(
-        details.get("platform", "")
-    ).startswith("linux"):
+    if not _linux_proxy_fence(state):
         return {}
     logger.warning("egress channel unavailable: the Linux fence keeps the child offline")
     return _proxy_overlay(f"http://{_LOOPBACK_HOST}:{_CLOSED_PORT}")

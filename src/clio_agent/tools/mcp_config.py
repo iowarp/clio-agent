@@ -624,6 +624,11 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
             final_command, final_args = diet_command, diet_args
         else:
             final_command, final_args = resolved, resolved_args
+        # A fenced server's ssh, scp, sftp and Git over SSH take the same route out as a
+        # fenced shell's: through the CONNECT helper and the chokepoint's network policy.
+        from clio_agent.runtime.fence_ssh import fence_ssh_environment  # noqa: PLC0415
+
+        env = {**env, **fence_ssh_environment(env)}
         # Route post-spawn-diet argv through the shared confinement owner (#975),
         # preserving cwd independently of grants and the existing pdeathsig=False lifetime.
         from clio_agent.runtime import sandbox  # noqa: PLC0415 - avoid import cycle
