@@ -43,28 +43,41 @@ def _schema_types(schema: dict[str, Any] | None) -> list[str]:
     return types
 
 
-def _decoded(value: Any, schema: dict[str, Any] | None) -> Any:
-    """A JSON-encoded object or array given as text, decoded: a format fix only.
+#: The Python types a JSON-schema type admits for :func:`_decoded` (``bool`` is not a number).
+_DECODED_TYPES: dict[str, tuple[type, ...]] = {
+    "object": (dict,),
+    "array": (list,),
+    "integer": (int,),
+    "number": (int, float),
+    "boolean": (bool,),
+}
 
-    Models sometimes send an object argument as its JSON text
-    (``options='{"max_rounds": 0}'``). When the argument takes an object or array
-    and not text, and the text is exactly one, the value is that object; nothing
-    else changes. Any other text is left for validation to refuse.
+
+def _decoded(value: Any, schema: dict[str, Any] | None) -> Any:
+    """A JSON value given as its text, decoded: a format fix only.
+
+    Models sometimes send a structured or scalar argument as its JSON text
+    (``options='{"max_rounds": 0}'``, ``limit="15"``, ``exact="true"``). When the
+    argument does not take text and the text is exactly one JSON value of a type it
+    does take, the value is that; nothing else changes. Any other text is left for
+    validation to refuse.
     """
 
     if not isinstance(value, str):
         return value
     types = _schema_types(schema)
-    if "string" in types or not {"object", "array"} & set(types):
+    if "string" in types or not set(_DECODED_TYPES) & set(types):
         return value
     try:
         decoded = json.loads(value)
     except ValueError:
         return value
-    if (isinstance(decoded, dict) and "object" in types) or (
-        isinstance(decoded, list) and "array" in types
-    ):
-        return decoded
+    for kind in types:
+        admitted = _DECODED_TYPES.get(kind, ())
+        if isinstance(decoded, admitted) and not (
+            isinstance(decoded, bool) and kind in {"integer", "number"}
+        ):
+            return decoded
     return value
 
 
@@ -211,7 +224,7 @@ class ClioNativeTool(dspy.Tool):
             if decoded is not value:
                 logger.info(
                     "tool_argument_json_text_decoded tool=%s argument=%s "
-                    "reason=json_text_for_structured_argument",
+                    "reason=json_text_for_typed_argument",
                     self.name,
                     key,
                 )
