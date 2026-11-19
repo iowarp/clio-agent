@@ -39,10 +39,14 @@ def add_listener(listener: Listener) -> Callable[[], None]:
     return remove
 
 
-def resource_updated(namespace: str, uri: str) -> None:
-    """Report one ``notifications/resources/updated`` from ``namespace``."""
+def resource_updated(namespace: str, uri: str, *, via: str = "push") -> None:
+    """Report one ``notifications/resources/updated`` from ``namespace``.
 
-    trace.event("TOOLS", "mcp_resource_updated namespace=%s uri=%s", namespace, uri)
+    ``via`` names the path it arrived on (``listen`` stream, unsolicited ``push``, or a
+    ``catch_up`` after a watch reconnected), for the trace only.
+    """
+
+    trace.event("TOOLS", "mcp_resource_updated namespace=%s uri=%s via=%s", namespace, uri, via)
     with _lock:
         listeners = list(_listeners)
     for listener in listeners:

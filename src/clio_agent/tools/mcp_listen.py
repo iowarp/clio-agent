@@ -231,10 +231,10 @@ async def watch_resource(
             async with listen(client.session, resource_subscriptions=[uri]) as subscription:
                 delay = retry_after
                 if resumed:
-                    resource_updated(namespace, uri)
+                    resource_updated(namespace, uri, via="catch_up")
                 async for event in subscription:
                     if isinstance(event, ResourceUpdated):
-                        resource_updated(namespace, uri)
+                        resource_updated(namespace, uri, via="listen")
         except ListenNotSupportedError:
             trace.event("TOOLS", "mcp_listen_resource_push namespace=%s uri=%s", namespace, uri)
             return

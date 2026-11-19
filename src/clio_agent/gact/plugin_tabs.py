@@ -746,6 +746,8 @@ class PluginTabs:
                     name,
                     context,
                     apply=lambda raw: self._apply_result(key, raw),
+                    place="page" if state.declared.get("placement") == "primary" else "tab",
+                    place_title=str(state.declared.get("title") or ""),
                 )
                 if outcome.task_handle:
                     with self._lock:

@@ -41,6 +41,7 @@ from clio_agent.gact.runtime.grant_resolver import (
     _VALID_KINDS as VALID_KINDS,  # kind enumeration owner (B4 #1057 — validate at the boundary)
 )
 from clio_agent.gact.runtime.grant_resolver import (
+    EXTERNAL_MCP_CONTEXT_KIND,
     KIND_BROWSER_CERTIFICATE,
     KIND_BROWSER_HOST,
     KIND_DOMAIN,
@@ -342,6 +343,53 @@ def _append_permission_policy_from_resolution(
     if path:
         policy["path_pattern"] = path
     return _appended(app, policy)
+
+
+def append_surface_consent_policies(
+    app: "FastAPI", *, row: Mapping[str, Any], policy: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Grant the other view-only tools a surface consent covers, beside ``policy``.
+
+    A person who let a server act from its surface (``row["consent"]``) answered for
+    every view-only tool of that server, so each one gets the same sticky allow as the
+    tool that asked. A tool already allowed in that scope is not granted twice.
+    """
+
+    from clio_agent.gact import surface_consent  # noqa: PLC0415
+
+    if str(row.get("kind") or "") != EXTERNAL_MCP_CONTEXT_KIND or policy.get("path_pattern"):
+        return []
+    tools = surface_consent.granted_tools(row)
+    asked = str(policy.get("tool_name_pattern") or "")
+    if not tools or asked not in tools:
+        return []
+    scope, scope_id = policy.get("scope"), policy.get("scope_id")
+    held = {
+        str(existing.get("tool_name_pattern") or "")
+        for existing in app.state.permission_policies
+        if existing.get("scope") == scope
+        and existing.get("scope_id") == scope_id
+        and existing.get("action") == "allow"
+        and not existing.get("path_pattern")
+        and not existing.get("kind")
+    }
+    granted: list[dict[str, Any]] = []
+    for tool in tools:
+        if tool in held:
+            continue
+        granted.append(
+            _appended(
+                app,
+                {
+                    "scope": scope,
+                    "scope_id": scope_id,
+                    "tool_name_pattern": tool,
+                    "action": "allow",
+                    "created_from_permission_id": str(row.get("id") or ""),
+                },
+            )
+        )
+    return granted
 
 
 def _appended(app: "FastAPI", policy: dict[str, Any]) -> dict[str, Any]:

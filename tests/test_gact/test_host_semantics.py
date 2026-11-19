@@ -281,6 +281,54 @@ def test_surface_actions_resolve_from_the_servers_own_tool_list() -> None:
         assert caught.value.reason == "a2ui_server_tool_not_app_visible"
 
 
+def test_a_surface_action_lists_once_and_asks_one_consent_for_its_place(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.gact import mcp_apps, surface_consent
+
+    app_only = {"ui": {"visibility": ["app"]}}
+    listed = [
+        SimpleNamespace(name="bump", meta=app_only),
+        SimpleNamespace(name="probe", meta=app_only),
+        SimpleNamespace(name="describe", meta=None),
+    ]
+    lists: list[str] = []
+    seen: dict[str, Any] = {}
+
+    def lister(namespace: str) -> list[Any]:
+        lists.append(namespace)
+        return listed
+
+    def call_tool_result(full: str, args: dict[str, Any]) -> dict[str, Any]:
+        seen["consent"] = surface_consent.covering(full)
+        return {"content": []}
+
+    executor = SimpleNamespace(
+        list_namespace_tools=lister,
+        call_tool_result=call_tool_result,
+        get_all_tool_definitions=lambda: {},
+    )
+
+    async def run_bound(app: Any, session_id: str, fn: Any) -> Any:
+        return fn(executor)
+
+    monkeypatch.setattr(mcp_apps, "_run_bound", run_bound)
+    scope = ServerScope(
+        plugin="host-fixture", server="hostfx", namespace="hostfx", host={"title": "Fixture"}
+    )
+
+    asyncio.run(
+        server_actions.call_server_action(
+            None, "s", scope, "bump", {}, place="page", place_title="Board"
+        )
+    )
+
+    assert lists == ["hostfx"]  # the definition and the consent come from one tools/list
+    consent = seen["consent"]
+    assert consent.tools == ("hostfx_bump", "hostfx_probe")
+    assert consent.summary == "Let Fixture act on what you do in its Board page"
+
+
 def test_an_outcome_reports_what_the_action_did() -> None:
     applied = ServerActionOutcome(tool="bump", outcome="applied", surface_ids=["s"])
     pending = ServerActionOutcome(tool="slow", outcome="task_pending", task_handle="task_1")

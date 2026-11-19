@@ -212,6 +212,43 @@ async def test_a_page_opens_in_one_host_owned_context(
     assert listed[0]["context_session_id"] == "ctx1"
 
 
+async def test_reopening_a_page_brings_its_context_onto_the_installed_plugins(
+    page_app: tuple[Any, _Executor, _Sessions], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A page is read before anything watches its context, so the background follow
+    (which looks only at watched conversations) has not moved it after an update: the
+    open itself does, before the tab is read from the server mounted now.
+
+    **Sabotage:** drop the ``_follow_updates`` call from ``PluginPages.context`` -> a
+    reopened page reads from the plugin copy its context pinned before the update.
+    """
+
+    app, _executor, _sessions = page_app
+    order: list[tuple[str, str]] = []
+    real_open = tabs_module.PluginTabs.open
+
+    async def open_tab(self: Any, sid: str, plugin: str, tab: str) -> Any:
+        order.append(("read", sid))
+        return await real_open(self, sid, plugin, tab)
+
+    def follow(_app: Any, sid: str, records: list[Any]) -> list[str]:
+        assert [record.id for record in records] == ["plain", "host-fixture", "stranger"]
+        order.append(("follow", sid))
+        return []
+
+    monkeypatch.setattr(tabs_module.PluginTabs, "open", open_tab)
+    monkeypatch.setattr("clio_agent.gact.plugin_update_follow.follow_session", follow)
+    pages = pages_module.plugin_pages(app)
+    try:
+        await pages.open("host-fixture", "page")
+        await pages.open("host-fixture", "page")
+        await pages.close("host-fixture", "page")
+    finally:
+        _shutdown(app)
+
+    assert order == [("read", "ctx1"), ("follow", "ctx1"), ("read", "ctx1")]
+
+
 async def test_concurrent_first_opens_share_one_context(
     page_app: tuple[Any, _Executor, _Sessions],
 ) -> None:

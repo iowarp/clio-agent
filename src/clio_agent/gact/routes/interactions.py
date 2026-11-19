@@ -218,6 +218,7 @@ def _permission_interaction(app: FastAPI, row: Mapping[str, Any]) -> PendingInte
             **({"execution": execution} if execution else {}),
             **({"access": row["access"]} if isinstance(row.get("access"), Mapping) else {}),
             **({"script": row["script"]} if isinstance(row.get("script"), Mapping) else {}),
+            **({"consent": row["consent"]} if isinstance(row.get("consent"), Mapping) else {}),
         },
         actions=(list(row.get("actions") or STANDARD_ANSWERS) if status == "pending" else []),
     )

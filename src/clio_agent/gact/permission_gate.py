@@ -107,6 +107,7 @@ from clio_agent.gact.runtime.permission_policies import (
     _append_permission_policy_from_resolution,
     _flush_permission_policies,
     _permission_path_from_args,
+    append_surface_consent_policies,
 )
 from clio_agent.gact.runtime.retention import enforce_dict_bound
 from clio_agent.gact.side_sessions import policy_deny_reason, policy_mode
@@ -432,6 +433,8 @@ def _resolve_permission(
     )
     if policy is not None:
         row["policy"] = policy
+        if consented := append_surface_consent_policies(app, row=row, policy=policy):
+            row["consent_policies"] = consented
         # iowarp/clio-agent#759: sticky grants must survive a server restart, so flush
         # the derived policy to disk.
         _flush_permission_policies(app)
@@ -534,6 +537,12 @@ def _ask_and_wait(
     }
     if _is_external_mcp_permission_context(context):
         row["kind"] = _EXTERNAL_MCP_PERMISSION_CONTEXT_KIND
+        from clio_agent.gact import surface_consent  # noqa: PLC0415
+
+        # A person acting on a server's surface answers once for all its view-only tools.
+        if (consent := surface_consent.covering(name)) is not None:
+            row["summary"] = consent.summary
+            row["consent"] = consent.wire()
     row.update(answer_fields(context))  # its answers, and a run_code script's grant
     # #1044: the ai-review reviewer runs only when there is no explicit ``ask`` policy —
     # an explicit ``ask`` is a deliberate "always confirm THIS tool with a HUMAN" and beats

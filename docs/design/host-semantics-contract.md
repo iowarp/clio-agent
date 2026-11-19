@@ -219,7 +219,9 @@ When the surface has a server owner:
    agent's own calls are unchanged; a turn always creates their owner. The call goes
    through the normal tool approval: a tool
    that needs it raises the usual `permission.requested` (kind `external_mcp`), and the
-   HTTP request waits until the user answers it (`POST /v1/permissions/{id}`).
+   HTTP request waits until the user answers it (`POST /v1/permissions/{id}`). For the
+   server's view-only tools this is one question per server, not one per tool; see
+   "One consent per server surface" below.
 4. If the call is task-augmented, CLIO follows the task. An `input_required` becomes a
    question in the session, like any task input; its answer goes back to the task.
 5. A2UI in the result is applied as in HS1, but only to surfaces this server owns. New
@@ -259,6 +261,34 @@ needs to be connected.
 
 The context is opaque to CLIO. A server that needs to bind an action to what it rendered
 (for example a single-use token) puts that in the context it renders.
+
+### One consent per server surface
+
+A surface usually drives several of its server's view-only tools: tools whose
+`_meta.ui.visibility` lets apps call them and hides them from the model. Opening a form,
+checking it and saving it are three such tools. The model can never call them, so CLIO asks
+one question per server: may this server act on what the person does on its surface?
+
+When an action on a server-owned surface (a page, a tab, or the server's surface in a
+conversation) reaches a view-only tool that needs approval, the `permission.requested` it
+raises (kind `external_mcp`) covers all of that server's view-only tools at once:
+
+```json
+{"kind": "external_mcp", "tool_name": "srv_open_form",
+ "summary": "Let Example act on what you do in its Settings page",
+ "consent": {"scope": "server_surface", "namespace": "srv", "server_title": "Example",
+             "place": "page", "place_title": "Settings",
+             "tools": ["srv_open_form", "srv_check_form", "srv_save_form"]}}
+```
+
+`place` is `page`, `tab` or `conversation`. For a conversation the summary reads "Let
+<server> act on what you do in its view". A client shows `summary` as the question and may
+list `tools` under it. An `allow_session` or `allow_workspace` answer grants every tool in
+`consent.tools` at that scope, so the next action on any of the server's controls runs
+without asking. An `allow_once` or `deny` answer applies to the one call, as before. A tool
+the model can also see keeps its own per-tool question, and the agent's own calls are
+unchanged. The question goes to the session the action runs in; for a page, that is the
+page's context session. Nothing here names a particular server.
 
 ## HS3: plugin tabs
 

@@ -78,8 +78,8 @@ def login_context(app: Any, session_id: str) -> dict[str, str]:
     return {"clio_id": str(service.store.clio_id), "workspace_id": str(session.workspace_id)}
 
 
-def _server_tool(executor: Any, namespace: str, name: str) -> Any:
-    """The server's own definition of its tool ``name``, else ``None``.
+def server_tools(executor: Any, namespace: str) -> list[Any]:
+    """The server's own tool definitions, as bare-named entries.
 
     Read from the server's current ``tools/list`` over the namespace's connection, not
     from the executor's turn catalog: that catalog is empty until the session's first
@@ -87,17 +87,29 @@ def _server_tool(executor: Any, namespace: str, name: str) -> Any:
     An executor that cannot list one namespace falls back to its catalog.
     """
 
+    from clio_agent.tools.tool_ui_metadata import _tool_ui_metadata  # noqa: PLC0415
+
     lister = getattr(executor, "list_namespace_tools", None)
-    if not callable(lister):
-        return executor.get_all_tool_definitions().get(f"{namespace}_{name}")
-    for tool in lister(namespace):
-        listed = tool.get("name") if isinstance(tool, Mapping) else getattr(tool, "name", "")
-        if str(listed or "") == name:
-            return tool
-    return None
+    if callable(lister):
+        return list(lister(namespace))
+    prefix = f"{namespace}_"
+    return [
+        {**dict(tool), "name": full[len(prefix) :]}
+        if isinstance(tool, Mapping)
+        else {"name": full[len(prefix) :], "_meta": {"ui": dict(_tool_ui_metadata(tool))}}
+        for full, tool in executor.get_all_tool_definitions().items()
+        if full.startswith(prefix)
+    ]
 
 
-def resolve_server_tool_definition(executor: Any, namespace: str, name: str) -> tuple[str, Any]:
+def _listed_name(tool: Any) -> str:
+    listed = tool.get("name") if isinstance(tool, Mapping) else getattr(tool, "name", "")
+    return str(listed or "")
+
+
+def resolve_server_tool_definition(
+    executor: Any, namespace: str, name: str, *, listed: list[Any] | None = None
+) -> tuple[str, Any]:
     """``(<namespace>_<name>, definition)`` when the server has the tool and apps may call it.
 
     Raises:
@@ -106,7 +118,8 @@ def resolve_server_tool_definition(executor: Any, namespace: str, name: str) -> 
 
     from clio_agent.gact.mcp_apps import _tool_visible_to_app  # noqa: PLC0415
 
-    tool = _server_tool(executor, namespace, name) if name else None
+    tools = server_tools(executor, namespace) if listed is None and name else listed or []
+    tool = next((tool for tool in tools if _listed_name(tool) == name), None) if name else None
     if tool is None or not _tool_visible_to_app(tool):
         raise ServerActionError(
             403,
@@ -161,16 +174,38 @@ def error_text(raw_result: Any) -> str:
 
 
 async def call_server_action(
-    app: Any, session_id: str, scope: ServerScope, name: str, context: Mapping[str, Any]
+    app: Any,
+    session_id: str,
+    scope: ServerScope,
+    name: str,
+    context: Mapping[str, Any],
+    *,
+    place: str = "",
+    place_title: str = "",
 ) -> Any:
-    """Send ``tools/call`` for one action, as a view call outside any turn."""
+    """Send ``tools/call`` for one action, as a view call outside any turn.
 
+    The call asks one consent for all the server's view-only tools, worded with the
+    server's title and the ``place`` (page, tab or conversation) it was acted on in.
+    """
+
+    from clio_agent.gact import surface_consent  # noqa: PLC0415
     from clio_agent.gact.mcp_apps import _run_bound  # noqa: PLC0415
     from clio_agent.tools import view_only_results  # noqa: PLC0415
 
     def call(executor: Any) -> Any:
-        full, definition = resolve_server_tool_definition(executor, scope.namespace, name)
-        with view_only_results.scope(full, definition):
+        listed = server_tools(executor, scope.namespace)
+        full, definition = resolve_server_tool_definition(
+            executor, scope.namespace, name, listed=listed
+        )
+        consent = surface_consent.for_surface(
+            scope.namespace,
+            str(scope.host.get("title") or scope.plugin or scope.namespace),
+            listed,
+            place=place or surface_consent.PLACE_CONVERSATION,
+            place_title=place_title,
+        )
+        with view_only_results.scope(full, definition), surface_consent.scope(consent):
             return executor.call_tool_result(full, dict(context))
 
     try:
@@ -191,11 +226,13 @@ async def deliver_server_action(
     context: Mapping[str, Any],
     *,
     apply: Callable[[Any], list[PayloadOutcome] | None],
+    place: str = "",
+    place_title: str = "",
 ) -> ServerActionOutcome:
     """Call the server for one action and apply the A2UI its result carries.
 
     ``apply`` applies the result's A2UI where the surface lives (the conversation or a
-    tab) and runs off the event loop.
+    tab) and runs off the event loop. ``place`` and ``place_title`` word the consent.
 
     Raises:
         ServerActionError: 403, 503, or 422 with the HS1 reason when every A2UI payload
@@ -204,7 +241,9 @@ async def deliver_server_action(
 
     from clio_agent.gact.off_loop import run_off_loop  # noqa: PLC0415
 
-    raw = await call_server_action(app, session_id, scope, name, context)
+    raw = await call_server_action(
+        app, session_id, scope, name, context, place=place, place_title=place_title
+    )
     handle = task_handle(raw)
     if handle:
         return ServerActionOutcome(tool=name, outcome="task_pending", task_handle=handle)
@@ -233,5 +272,6 @@ __all__ = [
     "login_provider",
     "resolve_server_tool",
     "resolve_server_tool_definition",
+    "server_tools",
     "task_handle",
 ]

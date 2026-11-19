@@ -127,6 +127,19 @@ def _adopt_default_model(app: Any, sid: str) -> None:
         app.state.sessions.update(sid, model=model)
 
 
+def _follow_updates(app: Any, sid: str) -> None:
+    """Pin the context again when a plugin it holds was updated since it was last read.
+
+    A conversation follows updates while someone watches it; a page is read before
+    its watcher connects, so the open itself brings it up to date.
+    """
+
+    from clio_agent.gact.agents.resolution import plugin_service  # noqa: PLC0415
+    from clio_agent.gact.plugin_update_follow import follow_session  # noqa: PLC0415
+
+    follow_session(app, sid, plugin_service(app).store.records())
+
+
 def _create_context(app: Any, row: Mapping[str, Any]) -> str:
     """Create the hidden session a page lives in: the default agent plus the plugin."""
 
@@ -212,6 +225,8 @@ class PluginPages:
                         404, "plugin_page_not_open", f"page {plugin}/{page} is not open"
                     )
                 await run_off_loop(_adopt_default_model, self._app, found)
+                if create:
+                    await run_off_loop(_follow_updates, self._app, found)
                 return found
             try:
                 context = await run_off_loop(_create_context, self._app, row)
