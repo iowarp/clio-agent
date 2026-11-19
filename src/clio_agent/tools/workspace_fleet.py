@@ -74,11 +74,20 @@ def resolve_workspace_executor(agent: Any) -> Any:
         configuration_switched = (
             executor is not None
             and not stale
-            and (
-                executor_epoch != current_epoch
-                or server_set_spec_changed(agent, executor, root, server_set)
-            )
+            and server_set_spec_changed(agent, executor, root, server_set)
         )
+        if (
+            executor is not None
+            and not stale
+            and not configuration_switched
+            and executor_epoch != current_epoch
+        ):
+            # A saved configuration change reaches the fleet server by server: only the
+            # namespaces whose declaration moved restart; the rest keep their state. A
+            # failure raises before the revision is stamped, so the next resolve retries.
+            from clio_agent.tools.fleet_reconcile import reconcile_configuration  # noqa: PLC0415
+
+            reconcile_configuration(agent, executor, root, current_epoch)
         reaper = getattr(agent, "_workspace_reaper", None)
         if (
             configuration_switched

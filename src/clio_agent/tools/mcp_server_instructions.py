@@ -185,10 +185,20 @@ async def rediscover_instructions(namespace: str, client: Any, *, timeout: float
     send = getattr(getattr(client, "session", None), "send_discover", None)
     if not version or not callable(send):
         return False
+    from anyio import BrokenResourceError, ClosedResourceError  # noqa: PLC0415
+    from mcp.shared.exceptions import MCPError  # noqa: PLC0415
+
     try:
         async with asyncio.timeout(timeout):
             raw = await send(version)
-    except Exception as exc:  # noqa: BLE001 - the recorded text stays; the turn goes on
+    except (
+        TimeoutError,
+        MCPError,
+        OSError,
+        RuntimeError,
+        BrokenResourceError,
+        ClosedResourceError,
+    ) as exc:  # the recorded text stays; the turn goes on
         logger.info(
             "mcp_instructions_rediscover_failed namespace=%s error=%s",
             namespace,
