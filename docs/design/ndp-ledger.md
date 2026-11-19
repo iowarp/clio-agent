@@ -1068,8 +1068,8 @@ Same plain request, Opus, three runs:
 | 2 (skill: parallel branches, concurrent reads) | `sess_85bbfd98ef53` | 11 min | 51 of 58 tiles refused (below); fell back to LANDFIRE 30 m | inconsistent (outlier) | none |
 | 3 (all fixes below) | `sess_7ae5906d10e5` | 22 min | geoservices reported ~38 GB for a whole-basin read of tiles without overviews; the agent chose NASA WERK 10 m (California side, 68%) and said so | 8.1% / 1.5% | none |
 
-Runs 1 and 3 agree (Lower Saxon Creek and Echo Lake mostly burned); run 2's "seven PACs at 99%"
-came from broken terrain. In run 1 the hour was not search (78 queries ran in one batch in
+Runs 1 and 3 agree (Lower Saxon Creek and Echo Lake mostly burned). Run 2's "seven PACs at 99%"
+is unexplained: burn shares do not depend on terrain, so its fire or PAC inputs need checking. In run 1 the hour was not search (78 queries ran in one batch in
 about 2 minutes) but one script reading 0.5 m windows one round trip at a time, again per PAC.
 
 Fixed (branch `claude/ndp-parallel-branches`; clio-kit `claude/geoservices-read-budget`):
