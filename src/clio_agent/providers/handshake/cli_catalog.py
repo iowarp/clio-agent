@@ -414,6 +414,34 @@ class CodexCatalogHandshake(CliCatalogHandshake):
 class ClaudeCodeCatalogHandshake(CliCatalogHandshake):
     """Claude Code handshake gated by installed SDK and a fresh live probe."""
 
+    async def discover_model_config(
+        self, client: Any, ctx: HandshakeContext, raw: dict[str, Any]
+    ) -> DiscoveredModelFacts:
+        """Report the window Claude Code serves, not the catalog's largest.
+
+        The overlay row carries the catalog maximum (1M for models with an extended
+        window); Claude Code serves that only to a ``[1m]`` selection, so a plain row
+        reports :data:`~.dialects.claude_code.STANDARD_CONTEXT_WINDOW`. Reporting the
+        maximum let auto compaction wait for 80% of 1M while requests failed at 200k.
+        """
+        from clio_agent.providers.capabilities.dialects import (  # noqa: PLC0415
+            claude_code as claude_code_dialect,
+        )
+
+        window = raw.get("context_window")
+        model_id = str(raw.get("id") or "")
+        served = claude_code_dialect.served_context_window(
+            model_id, window if isinstance(window, int) else None
+        )
+        if isinstance(window, int) and served != window:
+            raw = {
+                **raw,
+                "context_window": served,
+                "context_source": claude_code_dialect.STANDARD_WINDOW_SOURCE,
+                "catalog_context_window": window,
+            }
+        return await super().discover_model_config(client, ctx, raw)
+
     async def check_connectivity(self, client: Any, ctx: HandshakeContext) -> ConnectivityResult:
         """Reject synthetic readiness until Claude Code answers a live probe."""
 

@@ -20,10 +20,15 @@ __all__ = ["final_agent_prompt"]
 
 
 def final_agent_prompt(
-    agent_def: "AgentDef", resolution: "Resolution", tools: Iterable[Any], *, provider: str = ""
+    agent_def: "AgentDef",
+    resolution: "Resolution",
+    tools: Iterable[Any],
+    *,
+    provider: str = "",
+    model: str = "",
 ) -> str:
     """``agent_def``'s prompt with only the fragments its final ``tools`` and the turn's
-    ``provider`` (the provider id the agent's model runs on) need."""
+    ``provider`` and ``model`` (the provider id and model id it runs on) need."""
     from clio_agent.gact import context as _ctx  # noqa: PLC0415
     from clio_agent.gact.agents.resolution import session_is_delegated  # noqa: PLC0415
 
@@ -36,4 +41,5 @@ def final_agent_prompt(
         names,
         delegated=delegated,
         provider=provider,
+        model=model,
     ).strip()

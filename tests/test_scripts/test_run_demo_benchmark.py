@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -3070,9 +3071,14 @@ def test_earthscope_cases_target_the_single_agent_and_its_skills() -> None:
 @pytest.mark.marketplace
 def test_earthscope_case_skills_ship_in_the_earthscope_agents_plugins() -> None:
     plugins = ("earthscope", "geodesy")
+    # geodesy requires geospatial, which carries the shared resolve-region skill.
+    geodesy = json.loads(
+        (MARKETPLACE_ROOT / "plugins" / "geodesy" / "plugin.json").read_text(encoding="utf-8")
+    )
+    assert "geospatial" in geodesy["extensions"]["ai.iowarp.clio"]["requires"]
     shipped = {
         path.parent.name
-        for plugin in plugins
+        for plugin in (*plugins, "geospatial")
         for path in (MARKETPLACE_ROOT / "plugins" / plugin / "skills").glob("*/SKILL.md")
     }
     agent_source = (MARKETPLACE_ROOT / "agents" / "earthscope.py").read_text(encoding="utf-8")

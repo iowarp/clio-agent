@@ -661,6 +661,13 @@ def test_every_core_tool_and_a_plain_tool_lands_a_tool_call_part(
             # discovery, while still proving that every native tool is observed.
             "connected_data_search_ndp": {"offset": -1},
             "connected_data_ndp_organizations": {"query": "x" * 1001},
+            "connected_data_ndp_tiles_covering": {
+                "dataset_id": "missing",
+                "west": 10,
+                "south": 0,
+                "east": 5,
+                "north": 1,
+            },
             "connected_data_ndp_endpoint_connect": {"name": "Missing", "url": "invalid"},
             "connected_data_ndp_endpoint_operations": {"endpoint_id": "missing"},
             "connected_data_ndp_upload_artifact": {

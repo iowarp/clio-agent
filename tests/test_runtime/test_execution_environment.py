@@ -174,7 +174,17 @@ def test_every_shell_names_clios_own_python_and_uv(
     environment = execution.shell_environment(tmp_path / "workspace")
     assert environment["CLIO_PYTHON"] == sys.executable  # nothing prepared: CLIO's own
     assert environment["CLIO_UV"] == str(bundled_uv)
-    assert environment["UV_CACHE_DIR"] == str(tmp_path / "s" / "uv-cache")
+    # Shared by the workspace's sessions in the fence-granted cache, not per session folder.
+    from clio_agent import paths
+
+    shared = str(paths.workspace_cache_dir(tmp_path / "workspace") / "uv-cache")
+    assert environment["UV_CACHE_DIR"] == shared
+    from clio_agent.tools import write_scope
+
+    monkeypatch.setattr(write_scope, "active_tool_read_only", lambda: True)
+    environment = execution.shell_environment(tmp_path / "workspace")
+    assert environment["UV_CACHE_DIR"] == str(tmp_path / "s" / "uv-cache")  # read-only: scratch
+    monkeypatch.setattr(write_scope, "active_tool_read_only", lambda: False)
     prepared = {"CLIO_EXECUTION_PYTHON": "/clio/python/bin/python", "UV_CACHE_DIR": "/ws/.tmp/uv"}
     monkeypatch.setitem(execution._ENVIRONMENTS, (tmp_path / "w2").resolve(), prepared)
     environment = execution.shell_environment(tmp_path / "w2")

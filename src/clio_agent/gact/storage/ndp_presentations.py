@@ -76,6 +76,39 @@ def _table(headers: list[str], rows: list[list[Any]]) -> str:
     )
 
 
+def _coverage_lines(coverage: Mapping[str, Any]) -> list[str]:
+    """The record's own location and time statements, naming the field they came from."""
+    lines = []
+    location, time = coverage.get("location"), coverage.get("time")
+    if location:
+        where = (
+            ", ".join(str(v) for v in location["bbox"])
+            if location.get("bbox")
+            else location.get("unparsed", "")
+        )
+        lines.append(f"Location ({location.get('field')}): {where}")
+    elif coverage:
+        lines.append("Location: not stated in the record")
+    if time:
+        when = (
+            time.get("issued")
+            or time.get("text")
+            or (f"{time.get('start') or '?'} to {time.get('end') or '?'}")
+        )
+        lines.append(f"Time ({time.get('field')}): {when}")
+    elif coverage:
+        lines.append("Time: not stated in the record")
+    return lines
+
+
+def _resource_format(item: Mapping[str, Any]) -> str:
+    if item.get("format"):
+        return str(item["format"])
+    if item.get("name_suffix"):
+        return f"format not stated; {item['name_suffix']} from the file name"
+    return "unspecified format"
+
+
 def ndp_presentation(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, Any]:
     """Show the actual discovery page, its resource identities, warnings and next page."""
     row = _row(result, structured)
@@ -100,6 +133,9 @@ def ndp_presentation(args: Mapping[str, Any], result: Any, structured: Any) -> d
             ("query", "Search terms"),
             ("organization", "Publisher"),
             ("endpoint_id", "Catalog"),
+            ("dataset_id", "Dataset"),
+            ("resource_format", "Resource format"),
+            ("resource_offset", "Resources from"),
         )
         if args.get(key)
     )
@@ -116,6 +152,16 @@ def ndp_presentation(args: Mapping[str, Any], result: Any, structured: Any) -> d
             ]
             if dataset.get("access"):
                 detail.append(f"Access: {dataset['access']}")
+            detail.extend(_coverage_lines(dataset.get("coverage") or {}))
+            if dataset.get("resources_listed"):
+                formats = ", ".join(
+                    f"{name} {count}" for name, count in dataset.get("resource_formats", {}).items()
+                )
+                detail.append(
+                    f"Resources listed: {dataset['resources_listed']} (formats: {formats})"
+                )
+                if dataset.get("next_resource_offset") is not None:
+                    detail.append(f"Next resource offset: {dataset['next_resource_offset']}")
             blocks.append(
                 {
                     "id": f"dataset-{index}",
@@ -127,8 +173,9 @@ def ndp_presentation(args: Mapping[str, Any], result: Any, structured: Any) -> d
                     "items": [
                         _safe(
                             f"{item.get('name') or item.get('path', '')}"
-                            f" ({item.get('format') or 'unspecified format'}, "
+                            f" ({_resource_format(item)}, "
                             f"{item.get('size', 0)} bytes)\nResource ID: {item.get('id', '')}"
+                            + (f"\n{item['description']}" if item.get("description") else "")
                         )
                         for item in resources
                     ],

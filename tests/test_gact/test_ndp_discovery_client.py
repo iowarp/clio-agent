@@ -24,7 +24,8 @@ def test_invalid_organization_response_is_not_an_empty_catalog(
 
     original = httpx.AsyncClient
 
-    def client(*, timeout: httpx.Timeout) -> httpx.AsyncClient:
+    def client(*, timeout: httpx.Timeout, verify: object = True) -> httpx.AsyncClient:
+        assert verify is not True, "NDP clients verify with the OS trust store, not certifi"
         return original(timeout=timeout, transport=httpx.MockTransport(serve))
 
     monkeypatch.setattr(ndp_discovery_client.httpx, "AsyncClient", client)

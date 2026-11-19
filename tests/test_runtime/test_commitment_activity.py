@@ -84,3 +84,15 @@ def test_track_clears_even_when_the_body_raises() -> None:
     except _Boom:
         pass
     assert commitment_activity.commitment_wait_in_flight() is False
+
+
+def test_progress_reaches_only_this_sessions_watchdog() -> None:
+    # A running script's tool call or a range read is work the turn owns.
+    with commitment_activity.observe_completions("sess_a") as latest_a:
+        with commitment_activity.observe_completions("sess_b") as latest_b:
+            assert latest_a() == 0.0
+            commitment_activity.note_progress("sess_a")
+            assert latest_a() > 0.0 and latest_b() == 0.0
+    commitment_activity.note_progress("sess_a")  # no watcher: nothing is kept
+    commitment_activity.note_progress("")
+    assert "sess_a" not in commitment_activity._COMPLETIONS

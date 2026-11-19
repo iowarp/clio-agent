@@ -7,6 +7,7 @@ import json
 import os
 import re
 import threading
+from collections import Counter
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -16,7 +17,18 @@ from pydantic import Field, field_validator, model_validator
 from clio_agent.gact.storage import ndp_discovery_client as catalog_client
 from clio_agent.gact.storage.models import StorageModel
 from clio_agent.gact.storage.ndp_ckan import PUBLIC_CATALOG_URL, NDPCkanCatalog, catalog_description
+from clio_agent.gact.storage.ndp_record_coverage import record_coverage
+from clio_agent.gact.storage.ndp_tls import system_tls
 from clio_agent.runtime.fresh_loop import run_in_new_loop
+
+# Resources kept per dataset; also the most resource IDs one selection may carry.
+MAX_DATASET_RESOURCES = 1000
+# Resources each search hit lists. A tiled dataset holds hundreds, and listing them all
+# put megabytes into every search; the rest are paged with ``resource_page``.
+SEARCH_RESOURCES = 20
+#: Characters of a resource's own description kept for search results.
+RESOURCE_TEXT = 300
+RESOURCE_PAGE = 200
 
 # Former built-in Endpoint API default. It never was a public service and no longer answers.
 _RETIRED_DEFAULT_API_URL = "http://155.101.6.191:8003"
@@ -89,6 +101,8 @@ class NDPResource(StorageModel):
     format: str = ""
     size: int = 0
     revision: str = ""
+    #: The record's own words for the resource (cut at RESOURCE_TEXT characters).
+    description: str = ""
 
 
 class NDPDataset(StorageModel):
@@ -102,6 +116,9 @@ class NDPDataset(StorageModel):
     endpoint: NDPEndpoint
     resources: list[NDPResource]
     access: Literal["viewer", "request_access"] | None = None
+    #: Where and when the record says its data is, as the record states it
+    #: (:mod:`ndp_record_coverage`); empty when the catalog path gives no extras.
+    coverage: dict[str, Any] = Field(default_factory=dict)
 
 
 class NDPSelection(StorageModel):
@@ -109,6 +126,38 @@ class NDPSelection(StorageModel):
 
     id: str
     dataset: NDPDataset
+
+
+def _name_suffix(item: NDPResource) -> str:
+    """The file suffix of a resource's name or URL path (``.img``), or ``""``."""
+    for text in (item.name, urlsplit(item.url).path):
+        tail = text.rsplit("/", 1)[-1]
+        if "." in tail:
+            suffix = "." + tail.rsplit(".", 1)[-1].lower()
+            if 1 < len(suffix) <= 8 and suffix[1:].isalnum():
+                return suffix
+    return ""
+
+
+def _format_label(item: NDPResource) -> str:
+    """The record's format; when the record leaves it blank, the file suffix, so labelled."""
+    if item.format:
+        return item.format
+    suffix = _name_suffix(item)
+    return f"unspecified ({suffix} from the file name)" if suffix else "unspecified"
+
+
+def _visible_resource(item: NDPResource) -> dict[str, Any]:
+    """A resource without its URL; a blank record format carries the file's suffix.
+
+    NDP records often leave ``format`` blank for tiled rasters and point clouds. The
+    suffix of the file name (``.img``, ``.laz``) is what the data says it is; it is
+    reported as such, and the record's own field is left as the record states it.
+    """
+    row = item.model_dump(exclude={"url"})
+    if not item.format and (suffix := _name_suffix(item)):
+        row["name_suffix"] = suffix
+    return row
 
 
 class NDPCatalog:
@@ -155,7 +204,7 @@ class NDPCatalog:
         if not token or not endpoint.authenticated:
             return None, ""
         try:
-            with httpx.Client(timeout=15, follow_redirects=False) as client:
+            with httpx.Client(timeout=15, follow_redirects=False, verify=system_tls()) as client:
                 response = client.get(
                     endpoint.url + "/user/info", headers={"Authorization": "Bearer " + token}
                 )
@@ -185,8 +234,14 @@ class NDPCatalog:
         organization: str = "",
         offset: int = 0,
         limit: int = 50,
+        resource_format: str = "",
     ) -> dict[str, Any]:
-        """Search configured catalogs and preserve exact selections without downloading bytes."""
+        """Search configured catalogs and preserve exact selections without downloading bytes.
+
+        ``resource_format`` keeps datasets with at least one resource of that format
+        (the record's ``format``, case-insensitive): a catalog filter on public
+        catalogs, a filter of the returned rows on an Endpoint's own search.
+        """
         if offset < 0 or not 1 <= limit <= 100:
             raise ValueError("Use a nonnegative offset and a page size from 1 to 100")
         endpoints = [item for item in self.endpoints() if not endpoint_id or item.id == endpoint_id]
@@ -206,13 +261,22 @@ class NDPCatalog:
                         "Only my groups requires a successful live Endpoint access check."
                     )
                 continue
+            coverage: dict[str, dict[str, Any]] = {}
             try:
                 client = catalog_client.NDPClient(base_url=endpoint.url)
                 client.timeout = httpx.Timeout(15, connect=5)
                 if endpoint.catalog_url:
                     records, count = self._public_catalog.search(
-                        endpoint.catalog_url, query, organization, offset, limit
+                        endpoint.catalog_url,
+                        query,
+                        organization,
+                        offset,
+                        limit,
+                        resource_format=resource_format,
                     )
+                    coverage = {
+                        str(record.get("id")): record_coverage(record) for record in records
+                    }
                     rows = [
                         catalog_client.Dataset(
                             **{
@@ -254,6 +318,16 @@ class NDPCatalog:
                     rows = run_in_new_loop(
                         client.search_datasets_simple(terms=[query], server=endpoint.server)
                     )
+                if not endpoint.catalog_url and resource_format:
+                    wanted = resource_format.casefold()
+                    rows = [
+                        row
+                        for row in rows
+                        if any(
+                            str((item or {}).get("format") or "").casefold() == wanted
+                            for item in row.resources
+                        )
+                    ]
                 if not endpoint.catalog_url:
                     count = min(len(rows), 500)
                     if len(rows) > 500:
@@ -276,7 +350,13 @@ class NDPCatalog:
             has_more = has_more or offset + limit < count
             for item in rows:
                 resources = []
-                for index, resource in enumerate(item.resources[:1000]):
+                if len(item.resources) > MAX_DATASET_RESOURCES:
+                    # No silent truncation: say how many tiles/files cannot be selected.
+                    warnings.append(
+                        f"{item.title}: CLIO keeps the first {MAX_DATASET_RESOURCES} of "
+                        f"{len(item.resources)} resources; the rest cannot be selected here."
+                    )
+                for index, resource in enumerate(item.resources[:MAX_DATASET_RESOURCES]):
                     url = str(resource.get("url", ""))
                     identifier = str(resource.get("id") or hashlib.sha256(url.encode()).hexdigest())
                     name = str(
@@ -300,6 +380,9 @@ class NDPCatalog:
                             url=url,
                             size=int(size) if str(size).isdigit() else 0,
                             format=str(resource.get("format") or ""),
+                            description=" ".join(str(resource.get("description") or "").split())[
+                                :RESOURCE_TEXT
+                            ],
                             revision=hashlib.sha256(
                                 json.dumps(resource, sort_keys=True).encode()
                             ).hexdigest(),
@@ -314,6 +397,7 @@ class NDPCatalog:
                     endpoint=endpoint,
                     resources=resources,
                     access=access,
+                    coverage=coverage.get(str(item.id), {}),
                 )
                 datasets.append(dataset)
         with self._lock:
@@ -357,14 +441,69 @@ class NDPCatalog:
         return {"organizations": organizations}
 
     @staticmethod
-    def visible(dataset: NDPDataset) -> dict[str, Any]:
-        """Expose catalog labels and stable IDs without leaking signed download URLs."""
-        return {
+    def visible(
+        dataset: NDPDataset, resource_offset: int = 0, resource_limit: int = SEARCH_RESOURCES
+    ) -> dict[str, Any]:
+        """Expose catalog labels and stable IDs without leaking signed download URLs.
+
+        Lists ``resource_limit`` resources from ``resource_offset``. When that is not
+        all of them, says which range is listed, tallies the formats of all of them,
+        and gives ``next_resource_offset`` for ``resource_page``.
+        """
+        resources = dataset.resources
+        shown = resources[resource_offset : resource_offset + resource_limit]
+        end = resource_offset + len(shown)
+        out: dict[str, Any] = {
             **dataset.model_dump(exclude={"endpoint", "resources"}),
             "endpoint_id": dataset.endpoint.id,
             "endpoint_name": dataset.endpoint.name,
-            "resources": [item.model_dump(exclude={"url"}) for item in dataset.resources],
+            "resources": [_visible_resource(item) for item in shown],
+            "resource_count": len(resources),
         }
+        if resource_offset or end < len(resources):
+            formats = Counter(_format_label(item) for item in resources)
+            out["resources_listed"] = f"{resource_offset + 1}-{end} of {len(resources)}"
+            out["resource_formats"] = dict(formats.most_common(10))
+            if end < len(resources):
+                out["next_resource_offset"] = end
+        return out
+
+    def resource_page(
+        self, dataset_id: str, endpoint_id: str = "", resource_offset: int = 0
+    ) -> dict[str, Any]:
+        """One page of a searched dataset's resources, as its search kept them."""
+        dataset = self.observed(dataset_id, endpoint_id)
+        if resource_offset >= max(1, len(dataset.resources)):
+            raise ValueError(
+                f"{dataset.title} has {len(dataset.resources)} resources; "
+                "use a resource_offset below that"
+            )
+        return {
+            "datasets": [self.visible(dataset, resource_offset, RESOURCE_PAGE)],
+            "warnings": [],
+            "total": 1,
+        }
+
+    def observed(self, dataset_id: str, endpoint_id: str = "") -> NDPDataset:
+        """Return a dataset exactly as a search showed it, without contacting NDP."""
+        with self._lock:
+            found = {
+                endpoint: item
+                for (endpoint, identifier), item in self._results.items()
+                if identifier == dataset_id and (not endpoint_id or endpoint == endpoint_id)
+            }
+        matches = list(found.values())
+        if not matches:
+            raise ValueError(
+                "Search for this NDP dataset with connected_data_search_ndp first; "
+                "CLIO only works on datasets a search returned"
+            )
+        if len(matches) > 1:
+            catalogs = ", ".join(sorted(found))
+            raise ValueError(
+                f"This dataset appears in several catalogs ({catalogs}); pass one as endpoint_id"
+            )
+        return matches[0]
 
     def selected(self, endpoint_id: str, dataset_id: str, resources: list[str]) -> NDPDataset:
         """Resolve selected IDs only from server-observed catalog data."""

@@ -49,6 +49,7 @@ from clio_agent.gact.tool_result_reconcile import reconcile_tool_result_text
 from clio_agent.gact.transcript_projection import final_message_embed
 from clio_agent.gact.turn_settle_status import publish_turn_settled_status
 from clio_agent.gact.turn_stream import assemble_stream_metadata, settle_turn_transcript
+from clio_agent.gact.turn_unfinished import unfinished_turn_error
 from clio_agent.gact.turn_usage import context_usage_metadata_patch, model_usage_after_turn
 from clio_agent.gact.types import (
     ErrorInfo,
@@ -132,25 +133,8 @@ def finalize_turn(
     has_operation_output = any(
         part.type in {"tool_call", "tool_result", "expert_handoff"} for part in live_assistant_parts
     )
-    if (
-        state.error_info is None
-        and not state.answer_text
-        and not state.thinking_text
-        and not state.nanoagents
-        and not has_operation_output
-        and getattr(pred, "assignment_disposition", None) != "yield"
-    ):
-        state.error_info = ErrorInfo(
-            error="empty_response",
-            message="Agent completed without user-visible output.",
-            details={
-                "session_id": state.sid,
-                "routing_mode": getattr(state.sess, "routing_mode", "auto"),
-                "selected_agent": state.selected_agent,
-                "termination_reason": str(getattr(pred, "termination_reason", "") or ""),
-            },
-            recoverable=True,
-        )
+    if state.error_info is None:
+        state.error_info = unfinished_turn_error(state, pred, has_operation_output)
     reconcile_tool_result_text(live_assistant_parts, state.tools_called)
 
     # Take the canonical-answer channel FIRST: its exactly-once identity seeds

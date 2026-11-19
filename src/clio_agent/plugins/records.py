@@ -16,6 +16,8 @@ Severity = Literal["error", "warning"]
 FRAGMENT_SECTIONS = ("guidelines", "rendering", "capabilities", "domain")
 #: A fragment's ``when.session``: empty (every session), ``root`` or ``delegated``.
 FRAGMENT_SESSIONS = frozenset({"", "root", "delegated"})
+#: The conditions a prompt fragment's ``when`` may hold.
+FRAGMENT_WHEN_KEYS = frozenset({"tools", "plugins", "session", "providers", "models"})
 
 
 @dataclass(frozen=True)
@@ -120,6 +122,8 @@ class FragmentRecord:
     when_session: str = ""
     #: Provider ids (``claude_code``, ``anthropic``) whose turns it reaches; empty means all.
     when_providers: tuple[str, ...] = ()
+    #: Model id patterns (``claude-opus-*``) whose turns it reaches; empty means all.
+    when_models: tuple[str, ...] = ()
 
     @property
     def tokens(self) -> int:
@@ -261,6 +265,7 @@ class PluginRecord:
                     "when_tools",
                     "when_plugins",
                     "when_providers",
+                    "when_models",
                     "requires",
                     "aliases",
                     "inputs",

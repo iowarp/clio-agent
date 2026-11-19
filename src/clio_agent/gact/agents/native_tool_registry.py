@@ -70,7 +70,11 @@ _RESOURCE_TOOLS = (
     "workspace_resource_search",
     "workspace_resource_structure",
 )
-_NDP_DISCOVERY = ("connected_data_search_ndp", "connected_data_ndp_organizations")
+_NDP_DISCOVERY = (
+    "connected_data_search_ndp",
+    "connected_data_ndp_organizations",
+    "connected_data_ndp_tiles_covering",
+)
 _NDP_ENDPOINT = (
     "connected_data_ndp_endpoint_connect",
     "connected_data_ndp_endpoint_operations",
@@ -160,6 +164,9 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
     from clio_agent.gact.storage.download_tool import (  # noqa: PLC0415
         build_connected_data_download_tool,
     )
+    from clio_agent.gact.storage.release_tool import (  # noqa: PLC0415
+        build_connected_data_release_tool,
+    )
     from clio_agent.gact.storage.setup_tool import (  # noqa: PLC0415
         build_connected_data_open_tool,
         build_connected_data_status_tool,
@@ -227,6 +234,7 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         "connected_data_index": build_connected_data_index_tool,
         "connected_data_open": build_connected_data_open_tool,
         "connected_data_write": build_connected_data_write_tool,
+        "connected_data_release": build_connected_data_release_tool,
         "run_flow": build_run_flow_tool,
         "run_workflow": build_run_workflow_tool,
         "make_plugin": build_make_plugin_tool,
@@ -285,6 +293,7 @@ _SINGLE_NAMES = frozenset(
         "connected_data_index",
         "connected_data_open",
         "connected_data_write",
+        "connected_data_release",
         "run_flow",
         "run_workflow",
         "make_plugin",

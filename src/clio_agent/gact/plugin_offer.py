@@ -18,8 +18,10 @@ whether a request needs one; CLIO never adds a plugin by itself.
   Add puts it in this conversation's delta (the plugin-change ``note`` mode, as the
   plugin picker does); its MCP servers join the running turn's fleet with the spec the
   conversation's server set declares, and its skills load with ``load_skill`` from the
-  agent's next step (:mod:`clio_agent.gact.agents.skill_join`). Its Python tools arrive
-  with the next message (typed ``plugin_tools_next_message``). Not now is the typed
+  agent's next step (:mod:`clio_agent.gact.agents.skill_join`). Its own tools join the
+  running turn as the card's ``apply`` choice says (now, compact or note;
+  :mod:`clio_agent.gact.agents.turn_rebuild`); only when that join cannot run do they
+  arrive with the next message (typed ``plugin_tools_next_message``). Not now is the typed
   refusal ``plugin_offer_declined``; a conversation that cannot take the plugin answers
   the card with its typed resolution reason.
 """
@@ -400,8 +402,14 @@ async def answer(app: Any, row: dict[str, Any], action: str) -> None:
     )
 
 
-def _joined(app: Any, session_id: str, record: Any, *, already: bool) -> dict[str, Any]:
-    """What the plugin brings to the running turn, and the message that says so."""
+def _joined(
+    app: Any, session_id: str, record: Any, *, already: bool, turn: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """What the plugin brings to the running turn, and the message that says so.
+
+    ``turn`` is the running turn's join (:func:`.agents.turn_rebuild.join_running_turn`):
+    when it ran, the plugin's own tools are in this turn, not the next message.
+    """
 
     from clio_agent.gact.agents.resolution import session_resolution  # noqa: PLC0415
     from clio_agent.gact.connector_offer import join_running_turn  # noqa: PLC0415
@@ -431,11 +439,12 @@ def _joined(app: Any, session_id: str, record: Any, *, already: bool) -> dict[st
             f"its skills load with load_skill from your next step: "
             f"{', '.join(skill['id'] for skill in skills)}"
         )
-    if tools:
+    joined_turn = bool(turn and (turn.get("joined") or turn.get("pending")))
+    if tools and not joined_turn:  # else the join's own sentence says where they are
         parts.append(f"its {len(tools)} tools are in your tool list from your next step")
     if reasons:
         parts.append(f"its servers could not join this turn ({', '.join(reasons)})")
-    if later:
+    if later and not joined_turn:
         parts.append(f"its tools {', '.join(later)} arrive with the next message")
     result: dict[str, Any] = {
         "plugin": record.id,
@@ -449,9 +458,16 @@ def _joined(app: Any, session_id: str, record: Any, *, already: bool) -> dict[st
     }
     if reasons:
         result["join_reason"] = reasons[0]
-    if later:
+    if later and not joined_turn:
         result["tools_next_message"] = later
         result.setdefault("join_reason", TOOLS_NEXT_MESSAGE)
+    if turn:
+        from clio_agent.gact.agents.turn_rebuild import joined_message  # noqa: PLC0415
+
+        result["apply"] = turn.get("apply")
+        result["tools"] = sorted({*result["tools"], *(turn.get("joined") or ())})
+        if said := joined_message(turn):
+            result["message"] += " " + said
     return result
 
 
@@ -490,7 +506,15 @@ async def _offer_plugin(
             **named,
             "message": f"The person chose not to add the plugin {record.id} now. Nothing changed.",
         }
-    result = await asyncio.to_thread(_joined, app, session_id, record, already=False)
+    from clio_agent.gact.agents.turn_rebuild import (  # noqa: PLC0415
+        DEFAULT_APPLY,
+        join_running_turn,
+    )
+
+    turn = await asyncio.to_thread(
+        join_running_turn, app, session_id, str(row.get("apply") or DEFAULT_APPLY)
+    )
+    result = await asyncio.to_thread(_joined, app, session_id, record, already=False, turn=turn)
     return {**result, "reason": reason}
 
 

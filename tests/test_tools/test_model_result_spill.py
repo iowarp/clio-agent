@@ -104,8 +104,10 @@ def test_a_json_result_is_saved_indented_for_reading_on(tmp_path: Path) -> None:
     value = {"rows": ["x" * 50] * 100}
     with tool_workspace_context(str(tmp_path)), injections.collect():
         result = bounded_model_tool_result(json.dumps(value))
-    assert "one indented JSON document; search it with fs_search_text" in result
-    assert "where you can run scripts, load it in one" in result
+    assert "saved as one indented JSON document" in result
+    path = _spilled_path(result)
+    assert f'in run_code: `import json; data = json.load(open("{path}"))`' in result
+    assert "fs_search_text" in result
     saved = _spilled_path(result).read_text(encoding="utf-8")
     assert json.loads(saved) == value and len(saved.splitlines()) == 104
 
@@ -137,3 +139,53 @@ def test_a_spill_that_cannot_be_written_is_traced(
         result = bounded_model_tool_result("y" * 10_000)
     assert "could not be saved (disk full)" in result
     assert any(e.startswith("model_tool_result_spill_failed") for e in events)
+
+
+def test_a_large_result_gets_a_small_sample_its_size_and_how_to_explore_it(
+    tmp_path: Path,
+) -> None:
+    """A spilled result is a pointer, not a context-filling head: the room may be large,
+    but the agent gets its size, the file, how to explore it and a short sample."""
+    set_config("tools.unknown_window_result_tokens", 25_000)
+    set_config("tools.spilled_sample_chars", 800)
+    rows = "\n".join(f"row-{i:06d},{'x' * 60}" for i in range(20_000))
+    with tool_workspace_context(str(tmp_path)), injections.collect():
+        result = bounded_model_tool_result(rows)
+    note, sample = result.split("\n\n", 1)
+    assert len(sample) <= 800 and rows.startswith(sample)
+    assert f"about {len(rows) // 4:,} tokens ({len(rows):,} characters)" in note
+    assert "Explore it rather than reading it whole" in note
+    assert "not the whole result" in note
+    assert len(result) < 2_000
+
+
+def test_a_json_result_comes_with_its_structure(tmp_path: Path) -> None:
+    set_config("tools.unknown_window_result_tokens", 2_000)
+    value = {
+        "datasets": [
+            {
+                "id": f"d{n}",
+                "coverage": {"location": None if n % 2 else {"bbox": [0, 0, 1, 1]}},
+                "resources": [{"id": f"r{k}", "format": "TIFF"} for k in range(n)],
+            }
+            for n in range(40)
+        ],
+        "total": 40,
+    }
+    with tool_workspace_context(str(tmp_path)), injections.collect():
+        result = bounded_model_tool_result(json.dumps(value))
+    note = result.split("\n\n", 1)[0]
+    assert "Its structure, to write that query:" in note
+    assert (
+        "datasets: list of 40 x object {id, coverage: object {location: object {bbox: "
+        "list of 4 x int} | null}, resources: list of 0-39 x object {id, format}}"
+    ) in note
+    assert "  total: int" in note
+
+
+def test_a_text_result_has_no_structure_section(tmp_path: Path) -> None:
+    set_config("tools.unknown_window_result_tokens", 500)
+    rows = "\n".join(f"row-{i:05d}" for i in range(2_000))
+    with tool_workspace_context(str(tmp_path)), injections.collect():
+        result = bounded_model_tool_result(rows)
+    assert "Its structure" not in result

@@ -101,7 +101,9 @@ def test_connected_data_plugin_ships_the_setup_skill_with_its_status_tool() -> N
     assert skill.skill is not None and skill.skill.scope == "plugin"
     assert "connected_data_status" in read_skill_body(skill.skill)
     claims = (plugin / "ai.iowarp.clio" / "tools" / "builtin.py").read_text(encoding="utf-8")
-    assert 'native_tool("connected_data_status")' in claims
+    assert (
+        'native_tool("connected_data_status", defer=False)' in claims
+    )  # listed: deferred, no agent saw it
 
 
 def test_linked_listing_is_session_scoped_and_omits_private_locators(

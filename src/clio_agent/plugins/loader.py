@@ -42,6 +42,7 @@ from clio_agent.plugins.package_files import package_files
 from clio_agent.plugins.records import (
     FRAGMENT_SECTIONS,
     FRAGMENT_SESSIONS,
+    FRAGMENT_WHEN_KEYS,
     CatalogRecord,
     Diagnostic,
     FlowRecord,
@@ -368,8 +369,8 @@ def _fragments_and_texts(
             problem = f"section {section!r} must be one of {', '.join(FRAGMENT_SECTIONS)}"
         elif section in ("guidelines", "rendering") and plugin != "core":
             problem = f"only the core plugin contributes the {section} section"
-        elif not isinstance(when, dict) or set(when) - {"tools", "plugins", "session", "providers"}:
-            problem = "when may only hold tools, plugins and providers lists and a session scope"
+        elif not isinstance(when, dict) or set(when) - FRAGMENT_WHEN_KEYS:
+            problem = f"when may hold only {', '.join(sorted(FRAGMENT_WHEN_KEYS))}"
         elif str(when.get("session") or "") not in FRAGMENT_SESSIONS:
             problem = f"when.session must be one of {', '.join(sorted(FRAGMENT_SESSIONS - {''}))}"
         if problem:
@@ -388,6 +389,7 @@ def _fragments_and_texts(
                 generate=str(meta.get("generate") or ""),
                 when_session=str(when.get("session") or ""),
                 when_providers=tuple(str(p) for p in when.get("providers") or ()),
+                when_models=tuple(str(m) for m in when.get("models") or ()),
             )
         )
     return fragments, texts, diagnostics

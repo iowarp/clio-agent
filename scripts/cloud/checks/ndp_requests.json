@@ -1,0 +1,47 @@
+{
+  "_comment": "Plain requests for the NDP qualification (docs/design/ndp-ledger.md). No tool, skill, dataset id, URL or step is named. October requests are copied verbatim from docs/verification/ndp-scientific-outcomes-2026-10-18.md. case01 drops the README example's procedural wording ('resolve the geography, query bounded live features'), which would make it a tool-directed prompt. discovery.task1 and task5 are verbatim from docs/verification/ndp-agent-discovery-benchmark-2026-10-18.md; tasks 2-4 need private Endpoints (Ares SSH, an on-demand stream) this container cannot reach.",
+  "october": {
+    "alta": "Has the snow-to-liquid ratio at Alta-Collins changed in the 2023–24 winter compared with its historical record? I think NDP has the observations. Please investigate and show the evidence, with a chart and the limitations of the comparison.",
+    "konza": "Can the NDP observations from the 2022 Konza Prairie burn tell us whether the smoke or CO2 signal changed with the wind? Investigate what the measurements actually support and show me an evidence-based result.",
+    "tahoe": "What can NDP tell us about how much of the Lake Tahoe basin is wetland or riparian habitat, and how that relates spatially to the lake? Use the available scientific data to make a small map and quantify what you can, with clear caveats."
+  },
+  "organizations": {
+    "usgs-3dep": "Get me the USGS 3DEP lidar ground points for about a square kilometre around Tahoe City, California, from NDP, and tell me the ground elevation range and how dense the points are.",
+    "opentopography": "Using NDP, get a bare-earth elevation model of the area around Wolverton in Sequoia National Park and tell me how steep it is.",
+    "wildfire-task-force": "According to the California wildfire and forest resilience data on NDP, how much surface fuel is there around South Lake Tahoe, and where is it heaviest?",
+    "cal-oes": "What hazard or emergency layers does NDP have from California's Office of Emergency Services that cover Sonoma County? Get the actual features for the county from one of them.",
+    "nifc": "How many wildfires have burned within 20 km of Lake Tahoe according to NDP's national fire perimeter data, and in which years?",
+    "trpa": "How much of the Lake Tahoe basin is mapped as deer fawning habitat, according to NDP?",
+    "wfsi": "Find a fire science dataset on NDP from the Wildland Fire Science Initiative about fuel moisture and show me some of its actual measurements.",
+    "earthscope": "Show me the GNSS position time series for an EarthScope station near Lake Tahoe from NDP, and say how long a record it is.",
+    "bco_weather": "Find ocean cruise data on NDP about the California Current from BCO-DMO and get me the actual measurements."
+  },
+  "correlation": {
+    "tahoe": "For the Lake Tahoe basin, how do wildlife habitat areas relate to recent wildfire, vegetation and fuels, and to the terrain? Bring together whatever NDP has from the different organizations, tell me what overlaps and what doesn't, and show it on a map."
+  },
+  "snow_depth": "How deep was the snow in the Southern Sierra Critical Zone Observatory in March 2010? Use NDP data and show me a snow-depth map.",
+  "benchmark": {
+    "case01": "Build me a current environmental hazard brief for the San Diego area from what NDP has, as something I can inspect.",
+    "case03": "What does the current wildfire picture look like around Los Angeles together with the weather? Bring together NDP's fire and weather data for the region and give me a brief with the caveats.",
+    "case04": "Using the CIMIS weather data on NDP, how favourable have conditions been for fire spread or field operations in the Fresno area? Pick the right station and show me the profile."
+  },
+  "discovery": {
+    "task1": "Find EarthScope GNSS observations for station WWMT in NDP. Tell me which measurement datasets are available and show me the columns and a few actual observations from one of them.",
+    "task5": "Find Japanese satellite wildfire observations in NDP. Which available resources contain the measurements, and which are service or download links?"
+  },
+  "followups": {
+    "correlation.tahoe": [
+      "Zoom in on the area that burned inside the basin. Which habitat burned there, and how did its fuels and terrain compare with the nearby habitat that did not burn?",
+      "Use the basin's own lidar for that burned area and its surroundings, and show me the terrain in detail next to the habitat and the burn.",
+      "Which owl and goshawk areas look most exposed now: unburned, high fuels, steep ground? Rank them and put them on the map with what you found."
+    ],
+    "snow_depth": [
+      "How did that compare with other years you can find in the data? Show me the change on the map.",
+      "Where in the observatory was snow deepest, and how does that relate to elevation and slope? Bring in the terrain."
+    ],
+    "benchmark.case01": [
+      "The air quality part is useful, but I need the other hazards too: fire, heat, flooding or the coast. Bring in whatever NDP has for those and put everything on one map I can explore.",
+      "Which parts of the area come out worst when you put the hazards together? Rank them, show me on the map, and tell me how far I can trust it given how old and how complete each dataset is."
+    ]
+  }
+}

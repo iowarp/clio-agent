@@ -1814,6 +1814,12 @@ tools.shell.windows_backend: "powershell"
 # not add writes.
 tools.shell_poll_interval_ms: 200
 
+# CLIO_TOOLS_SPILLED_SAMPLE_CHARS  (int)  <- src/clio_agent/tools/mcp_result_projection.py
+# Characters of a tool result shown as a sample when the result is saved to
+# a file instead of shown; the note says how large it is, where it is, and
+# (for JSON) its structure, so the agent explores the file for the rest.
+tools.spilled_sample_chars: 2000
+
 # CLIO_UNKNOWN_WINDOW_RESULT_TOKENS  (int)  <- src/clio_agent/tools/result_room.py
 # Tokens of one tool result the model is shown when its context window is
 # unknown (no handshake or catalog entry); a longer result is saved to a

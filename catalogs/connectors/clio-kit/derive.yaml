@@ -29,6 +29,14 @@ names:
   slurm: Slurm
   spack: Spack
   web: Web fetch
+# clio-kit servers CLIO does not offer as connectors, each with the reason. CLIO reaches
+# these services another way; a connector would put a second, weaker route in front of
+# the agent.
+withheld:
+  ndp: >-
+    CLIO's own NDP source (the ndp and connected-data plugins) searches, filters and
+    attaches NDP data as workspace sources with the person's sign-in; the MCP server read
+    the catalog anonymously into the agent's context and attached nothing.
 # In this order: a server in two workflows takes the first group listed.
 groups:
   clio-scientific-io: Data formats
