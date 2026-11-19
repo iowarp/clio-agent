@@ -18,12 +18,16 @@ adds always decides. Nothing here is saved: a server restart forgets every held 
 
 from __future__ import annotations
 
+import logging
 import threading
 from typing import TYPE_CHECKING
+
+from clio_agent.errors import ClioError
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+logger = logging.getLogger(__name__)
 _LOCK = threading.Lock()
 #: ``(workspace_id, host, write)`` → the ``(session_id, turn_id)`` the "Deny" belongs to.
 _DENIED: dict[tuple[str, str, bool], tuple[str, str]] = {}
@@ -39,10 +43,7 @@ def running_turn_id(app: "FastAPI", session_id: str) -> str:
     runner = getattr(app.state, "turn_runner", None)
     if runner is None or not session_id:
         return ""
-    try:
-        handle = runner.handle(session_id)
-    except Exception:  # noqa: BLE001 - an unreadable runner counts as idle
-        return ""
+    handle = runner.handle(session_id)
     return str(getattr(handle, "turn_id", "") or "") if handle is not None else ""
 
 
@@ -99,7 +100,9 @@ def _descends_from(app: "FastAPI", session_id: str, ancestor: str) -> bool:
             return False
         try:
             record = sessions.get(current)
-        except Exception:  # noqa: BLE001 - an unreadable record ends the chain
+        except (ClioError, OSError, RuntimeError, TimeoutError, ValueError) as exc:
+            # The session store could not be read: the answer does not reach this session.
+            logger.warning("egress hold lineage unreadable session=%s error=%r", current, exc)
             return False
         current = str(getattr(record, "parent_session_id", "") or "") if record else ""
         if current and current == ancestor:

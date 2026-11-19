@@ -624,36 +624,9 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
             final_command, final_args = diet_command, diet_args
         else:
             final_command, final_args = resolved, resolved_args
-        # A fenced server's ssh, scp, sftp and Git over SSH take the same route out as a
-        # fenced shell's: through the CONNECT helper and the chokepoint's network policy.
-        from clio_agent.runtime.fence_ssh import fence_ssh_environment  # noqa: PLC0415
-        from clio_agent.runtime.session_scratch import socket_safe_temp  # noqa: PLC0415
+        from clio_agent.tools.mcp_confine import confine_stdio_server  # noqa: PLC0415
 
-        env = {**env, **fence_ssh_environment(env), **socket_safe_temp(env)}
-        # Route post-spawn-diet argv through the shared confinement owner (#975),
-        # preserving cwd independently of grants and the existing pdeathsig=False lifetime.
-        from clio_agent.runtime import sandbox  # noqa: PLC0415 - avoid import cycle
-
-        confined = sandbox.wrap_confined(
-            final_command,
-            final_args,
-            write_roots=sandbox.effective_write_roots(sandbox.PROFILE_FLEET, workspace_root=cwd),
-            net_policy=sandbox.NET_ALLOW_RECORD,
-            profile=sandbox.PROFILE_FLEET,
-            pdeathsig=False,
-            cwd=cwd if cwd is not None else os.getcwd(),
-            egress_root=cwd,
-        )
-        # B5 #979.7 (the deferred B4 WRITER): this fleet proxy is ONE persistent confined child
-        # per (workspace, namespace). Register its ``net_child_id`` (empty on the floor → no-op)
-        # keyed by ``spec.name`` (the namespace) + ``cwd`` (the workspace root) so the gact
-        # tool-observer can join ``call_id -> serving child`` for the egress ingest mint (#978
-        # pt 5). Runtime-layer registry (sandbox_net) so this seam never imports gact.
-        sandbox_net_child = str(confined.result.details.get("net_child_id") or "")
-        if sandbox_net_child:
-            from clio_agent.runtime.sandbox_net import register_namespace_child  # noqa: PLC0415
-
-            register_namespace_child(cwd, spec.name, sandbox_net_child)
+        confined, env = confine_stdio_server(spec.name, final_command, final_args, env, cwd)
         # A dieted launch re-declares itself once its plan is dropped (VF-D9).
         transport = spawn_diet_transport.stdio_transport(spec, cwd, diet is not None)(
             command=confined.command,

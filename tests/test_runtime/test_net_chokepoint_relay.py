@@ -9,7 +9,7 @@ from collections.abc import Iterator
 import pytest
 
 from clio_agent.runtime import net_chokepoint as nc
-from clio_agent.runtime import net_connect
+from clio_agent.runtime import net_connect, net_targets
 
 
 def _echo_server() -> int:
@@ -59,7 +59,7 @@ def _relay(proxy: nc.Chokepoint, host: str, port: int) -> tuple[socket.socket, b
     ],
 )
 def test_addresses_are_classified(ip: str, network: str) -> None:
-    assert nc._address_network(ip) == network
+    assert net_targets._address_network(ip) == network
 
 
 def test_a_host_takes_its_strictest_address_kind(monkeypatch: pytest.MonkeyPatch) -> None:
