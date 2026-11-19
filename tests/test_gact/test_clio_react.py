@@ -772,3 +772,65 @@ def test_the_model_call_sees_every_tool_the_agent_may_call(
     _run([Reply(text="Ready.")], [search])
     assert seen and "search" in seen[0]
     assert CALLABLE_TOOLS.get() == frozenset()  # reset after the step
+
+
+# --------------------------------------------------------------------------- #
+# a tool search_tools loads is in the very next request (every backend)       #
+# --------------------------------------------------------------------------- #
+def plot_render(title: str) -> str:
+    """Render a plot."""
+    return f"rendered {title}"
+
+
+def _deferred_plot_agent() -> ClioReAct:
+    from clio_agent.gact.search_tools import build_search_tools_tool
+    from clio_agent.gact.tool_catalog import CatalogEntry, ToolCatalog
+
+    agent = ClioReAct("question -> answer", tools=[build_search_tools_tool(), plot_render])
+    agent._clio_unlisted = frozenset({"plot_render"})  # type: ignore[attr-defined]
+    catalog = ToolCatalog([CatalogEntry("plot_render", "plot", "Render a plot.", {})])
+    agent._clio_deferred_catalog = catalog  # type: ignore[attr-defined]
+    return agent
+
+
+_LOAD_THEN_CALL = [
+    calls(("search_tools", {"query": "select:plot_render"})),
+    calls(("plot_render", {"title": "t"})),
+    Reply(text="done"),
+]
+
+
+def test_a_loaded_tool_is_in_the_next_request_for_a_native_function_calling_engine() -> None:
+    """A native function-calling engine (codex, LiteLLM) calls only the tools it is
+    sent: the tool search_tools loaded must be in the very next request.
+    SABOTAGE: drop the ``list_loaded`` call in ``search_tools`` and request 2 lacks it."""
+    lm, engine = scripted_lm(_LOAD_THEN_CALL)
+    with dspy.context(lm=lm):
+        pred = _deferred_plot_agent()(question="plot it")
+    listed = [sorted(t.name for t in r.tools) for r in engine.requests]
+    assert "plot_render" not in listed[0]
+    assert "plot_render" in listed[1] and "plot_render" in listed[2]
+    assert ("result", ("rendered t", False)) in _tool_steps(engine.requests[2])
+    assert pred.answer == "done"
+
+
+def test_a_text_block_engine_calls_a_loaded_tool_unlisted_and_keeps_its_tool_list() -> None:
+    """A text call-block engine reads a call to a tool it was not sent, so its tool
+    list (and its cached prompt) stays as it was."""
+    lm, engine = scripted_lm(_LOAD_THEN_CALL)
+    lm.tool_protocol = "text_block"  # type: ignore[attr-defined]
+    with dspy.context(lm=lm):
+        _deferred_plot_agent()(question="plot it")
+    listed = {tuple(sorted(t.name for t in r.tools)) for r in engine.requests}
+    assert len(listed) == 1 and "plot_render" not in next(iter(listed))
+    assert ("result", ("rendered t", False)) in _tool_steps(engine.requests[2])
+
+
+def test_a_later_turn_lists_the_tools_this_session_loaded() -> None:
+    """The next turn's loop starts with the session's loaded tools listed, pending ones
+    included, so the model need not search again."""
+    lm, engine = scripted_lm([*_LOAD_THEN_CALL, Reply(text="again")])
+    with dspy.context(lm=lm):
+        _deferred_plot_agent()(question="plot it")
+        _deferred_plot_agent()(question="and again")
+    assert "plot_render" in [t.name for t in engine.requests[3].tools]

@@ -290,6 +290,8 @@ class _Loop:
         self.bare = bool(getattr(agent, "_clio_bare", False))
         self.system = "" if self.bare else _system(agent.signature, self.inputs, agent.tools)
         self.head = _head(agent.signature, self.inputs)
+        # The loaded tools this loop lists (a backend that calls only the tools it is sent).
+        self._loaded: frozenset[str] = self._session_loaded()
         self.tools = self._listed_tools()
         self.config = _with_cache_key(config_from_lm_kwargs(sendable_lm_kwargs(self.lm)), self.lm)
         self.tool_media = str(getattr(self.lm, "_clio_tool_result_media", "native"))
@@ -385,8 +387,43 @@ class _Loop:
     def _listed_tools(self) -> tuple[FunctionTool, ...]:
         from clio_agent.gact.agents.tool_settings import unlisted_tools  # noqa: PLC0415
 
-        unlisted = unlisted_tools(self.agent)
+        unlisted = unlisted_tools(self.agent) - getattr(self, "_loaded", frozenset())
         return tuple(_function_tool(t) for t in self.agent.tools.values() if t.name not in unlisted)
+
+    def _reads_unlisted_calls(self) -> bool:
+        """Whether the engine reads a call to a tool it was not sent (a text call block).
+
+        A native function-calling engine (codex, LiteLLM) calls only the tools in its
+        request, so a tool ``search_tools`` loaded must be listed there to be called.
+        """
+        return getattr(self.lm, "tool_protocol", "") == "text_block"
+
+    def _session_loaded(self) -> frozenset[str]:
+        """The session's loaded tools this loop lists from its first step."""
+        if self._reads_unlisted_calls():
+            return frozenset()
+        from clio_agent.gact import context as _ctx  # noqa: PLC0415
+        from clio_agent.gact.search_tools import loaded_tools  # noqa: PLC0415
+
+        app, session_id = _ctx.active_app(), _ctx.active_session_id() or ""
+        if app is None or not session_id:
+            return frozenset()
+        return loaded_tools(app, session_id) & frozenset(self.agent.tools)
+
+    def list_loaded(self, names: Iterable[str]) -> None:
+        """``search_tools`` loaded ``names``: list them from the next step, for an engine
+        that calls only the tools it is sent (a text call-block engine calls them unlisted
+        and keeps its cached tool list)."""
+        if self._reads_unlisted_calls():
+            return
+        new = (frozenset(names) & frozenset(self.agent.tools)) - self._loaded
+        if not new:
+            return
+        self._loaded |= new
+        self.tools = self._listed_tools()
+        from clio_agent.runtime import trace  # noqa: PLC0415
+
+        trace.event("TOOLS", "tools_loaded_listed names=%s", ",".join(sorted(new)))
 
     def _refresh_tools(self) -> None:
         """Offer the tools a connected MCP server added or removed (``tools/list_changed``).

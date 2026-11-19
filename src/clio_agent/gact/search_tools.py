@@ -14,6 +14,11 @@ until the prompt is next rebuilt by an applied plugin change, then ``listed``, a
 listed tool is built into the tool list from then on rather than deferred. A
 compaction does not list them: it keeps the cached system prompt and tool list, and a
 change there would cost a whole-prompt cache write at the next turn.
+
+Only a text call-block engine (``tool_protocol = "text_block"``) reads a call to a tool
+it was not sent. Every other engine (native function calling: codex, LiteLLM) calls
+only the tools in its request, so for those the running loop lists every loaded tool,
+pending ones included, from the step after the search (``_Loop.list_loaded``).
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ __all__ = [
     "LOADED_TOOLS_KEY",
     "build_search_tools_tool",
     "listed_loaded_tools",
+    "loaded_tools",
     "promote_loaded_tools",
     "search_limit",
     "search_max",
@@ -78,6 +84,12 @@ def _loaded(app: Any, session_id: str) -> dict[str, list[str]]:
 def listed_loaded_tools(app: Any, session_id: str) -> frozenset[str]:
     """Tools this session loaded before its prompt was last rebuilt (listed, not deferred)."""
     return frozenset(_loaded(app, session_id)["listed"])
+
+
+def loaded_tools(app: Any, session_id: str) -> frozenset[str]:
+    """Every tool this session loaded with ``search_tools``, pending or listed."""
+    row = _loaded(app, session_id)
+    return frozenset([*row["pending"], *row["listed"]])
 
 
 def _record_loaded(app: Any, session_id: str, names: Iterable[str]) -> None:
@@ -312,6 +324,8 @@ def build_search_tools_tool() -> Any:
                 text, structured["offerable"] = f"{text}\n\n{search_note(rows)}", rows
         names = [row["name"] for row in structured["tools"]]
         _record_loaded(_ctx.active_app(), _ctx.active_session_id(), names)
+        if (list_loaded := getattr(loop, "list_loaded", None)) is not None:
+            list_loaded(names)
         trace.event(
             "TOOLS",
             "search_tools query=%r loaded=%s missing=%s",

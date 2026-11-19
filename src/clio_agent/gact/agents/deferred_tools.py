@@ -23,7 +23,9 @@ Nothing is deferred when the agent cannot call ``search_tools`` (an allowlist wi
 it): the tools are listed in full and the trace records ``tools_deferral_unavailable``.
 A tool loaded with ``search_tools`` joins the tool list when an applied plugin change
 rebuilds the prompt after it was loaded (``metadata["loaded_tools"]``); a compaction
-keeps the cached tool list, so it does not list them.
+keeps the cached tool list, so it does not list them. An engine that calls only the
+tools it is sent (native function calling: codex, LiteLLM) lists every loaded tool from
+the step after the search instead (:mod:`clio_agent.gact.search_tools`).
 """
 
 from __future__ import annotations
