@@ -188,3 +188,31 @@ def test_unknown_size_files_stay_readable_and_are_listed_without_a_size(tmp_path
     assert "size" not in unknown  # the Files UI schema allows a missing size, not null
     assert known["size"] == len(b"second file")
     assert linked_file(service, linked, "a.txt").read_bytes() == b"first file"
+
+
+def test_a_later_download_links_unchanged_files_instead_of_copying(tmp_path: Path) -> None:
+    """A dataset downloaded a file at a time keeps one copy of each unchanged file."""
+    service, record, upstream, workspace = local_source(tmp_path)
+    first = service.store.begin_operation(record.source.id, "materialize")
+    first = service.store.update_operation(first.id, selected_paths=["a.txt"])
+    asyncio.run(service.execute_transfer(record, workspace, first))
+    record = service.get("w", record.source.id)
+    before = service.store.root / record.source.id / record.manifest_id / "a.txt"
+    second = service.store.begin_operation(record.source.id, "materialize")
+    second = service.store.update_operation(second.id, selected_paths=["nested"])
+    asyncio.run(service.execute_transfer(record, workspace, second))
+    record = service.get("w", record.source.id)
+    after = service.store.root / record.source.id / record.manifest_id / "a.txt"
+    assert after != before and after.read_bytes() == b"first file"
+    assert after.stat().st_ino == before.stat().st_ino  # one copy on disk
+    manifest = service.store.get("manifest", record.manifest_id, Manifest)
+    assert set(manifest.hashes) == {"a.txt", "nested/b.txt"}
+    # A changed file is fetched again, not linked.
+    (upstream / "a.txt").write_bytes(b"first file, changed")
+    third = service.store.begin_operation(record.source.id, "materialize")
+    third = service.store.update_operation(third.id, selected_paths=["a.txt"])
+    asyncio.run(service.execute_transfer(record, workspace, third))
+    record = service.get("w", record.source.id)
+    latest = service.store.root / record.source.id / record.manifest_id / "a.txt"
+    assert latest.read_bytes() == b"first file, changed"
+    assert latest.stat().st_ino != before.stat().st_ino

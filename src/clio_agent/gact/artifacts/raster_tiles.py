@@ -24,6 +24,7 @@ from typing import Any
 
 import numpy as np
 
+from clio_agent.gact.artifacts import geotiff_tiles
 from clio_agent.gact.artifacts.raster_query import RasterQueryError, _plane_of
 
 TILE_SIZE = 256
@@ -71,7 +72,8 @@ def _open(path: Path, name: str | None = None) -> tuple[Any, threading.Lock]:
                 dataset = xr.open_dataset(path)
             else:
                 raise RasterQueryError(
-                    "grid_format_unsupported", "Map tiles need a NetCDF or zipped Zarr grid."
+                    "grid_format_unsupported",
+                    "Map tiles need a NetCDF or zipped Zarr grid, or a GeoTIFF/COG/VRT raster.",
                 )
         except RasterQueryError:
             raise
@@ -112,6 +114,12 @@ def grid_info(
     path: Path, *, variable: str | None, select: dict[str, Any] | None, name: str | None = None
 ) -> dict[str, Any]:
     """Variables, extent, leading-dimension values and a value range for a legend."""
+    if geotiff_tiles.is_geotiff(name or path.name, path):
+        try:
+            info = geotiff_tiles.grid_info(path, band=geotiff_tiles.band_index(path, variable))
+        except geotiff_tiles.GeoTiffTileError as exc:
+            raise RasterQueryError(exc.reason, str(exc)) from exc
+        return {**info, "colormaps": sorted(COLORMAPS)}
     dataset, lock = _open(path, name)
     with lock:
         data = _variable(dataset, variable)
@@ -242,12 +250,20 @@ def render_tile(
     name: str | None = None,
 ) -> bytes:
     """One 256 x 256 PNG tile of the selected plane, transparent outside the grid."""
-    from PIL import Image  # noqa: PLC0415
 
     if not 0 <= z <= _MAX_ZOOM or not (0 <= x < 2**z and 0 <= y < 2**z):
         raise RasterQueryError("tile_invalid", f"Tile {z}/{x}/{y} is outside the tile pyramid.")
     if colormap not in COLORMAPS:
         raise RasterQueryError("colormap_invalid", f"Colormap must be one of {sorted(COLORMAPS)}.")
+    if geotiff_tiles.is_geotiff(name or path.name, path):
+        # GeoTIFF/COG/VRT in any CRS: GDAL warps the tile's blocks to Web Mercator.
+        try:
+            band = geotiff_tiles.band_index(path, variable)
+            values = geotiff_tiles.tile_values(path, z=z, x=x, y=y, band=band)
+            low, high = value_range or geotiff_tiles.value_range(path, band)
+        except geotiff_tiles.GeoTiffTileError as exc:
+            raise RasterQueryError(exc.reason, str(exc)) from exc
+        return _png(_colour(values.astype(float), colormap, low, high, opacity))
     dataset, lock = _open(path, name)
     with lock:
         data = _variable(dataset, variable)
@@ -277,9 +293,14 @@ def render_tile(
             values = window[np.ix_(local_y, local_x)]
             values[~inside_y, :] = np.nan
             values[:, ~inside_x] = np.nan
-    image = Image.fromarray(_colour(values, colormap, low, high, opacity), mode="RGBA")
+    return _png(_colour(values, colormap, low, high, opacity))
+
+
+def _png(rgba: np.ndarray) -> bytes:
+    from PIL import Image  # noqa: PLC0415
+
     buffer = io.BytesIO()
-    image.save(buffer, format="PNG", optimize=False)
+    Image.fromarray(rgba, mode="RGBA").save(buffer, format="PNG", optimize=False)
     return buffer.getvalue()
 
 

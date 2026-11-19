@@ -72,6 +72,23 @@ def existing_selection(
     return None
 
 
+#: SourceRecord.label's limit; catalog titles (cruise and campaign records) run longer.
+MAX_LABEL = 120
+
+
+def source_label(title: str) -> str:
+    """A source label within the limit: the title, shortened at a word with an ellipsis.
+
+    Format only: the selection keeps the dataset's full title. Before this, any
+    dataset titled over 120 characters could not be attached at all.
+    """
+    text = " ".join(title.split()) or "NDP dataset"
+    if len(text) <= MAX_LABEL:
+        return text
+    cut = text[: MAX_LABEL - 1].rsplit(" ", 1)[0].rstrip(" ,;:-")
+    return (cut or text[: MAX_LABEL - 1]) + "\u2026"
+
+
 def select_source(
     service: StorageService, workspace_id: str, dataset: NDPDataset, workspace_root: Path
 ) -> SourceRecord:
@@ -87,7 +104,7 @@ def select_source(
             CreateSource(
                 provider="ndp",
                 root=dataset.id,
-                label=dataset.title,
+                label=source_label(dataset.title),
                 mode="read_only",
                 configuration=SourceConfiguration(ndp_selection_id=selection.id),
             ),

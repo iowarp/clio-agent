@@ -17,6 +17,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml README.md uv.lock ./
 COPY src ./src
+# pyproject force-includes the connector catalog into the wheel; the editable
+# install reads it from /app/catalogs/connectors (connectors.entries.shipped_dir).
+COPY catalogs/connectors ./catalogs/connectors
 RUN pip install --no-cache-dir uv \
     && uv sync --frozen --extra argonne --no-dev
 
@@ -38,6 +41,7 @@ RUN apt-get update \
 
 COPY --from=agent-builder /app/.venv /app/.venv
 COPY src ./src
+COPY catalogs/connectors ./catalogs/connectors
 ENV PATH="/app/.venv/bin:$PATH"
 
 COPY --from=web-builder /build/gact-tui/web/dist /usr/share/nginx/html

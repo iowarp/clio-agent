@@ -69,6 +69,17 @@ def test_a_range_is_served_exactly_and_counted() -> None:
     assert stats["bytes_served"] == 20 and stats["requests"] == 4
 
 
+def test_a_sidecar_probe_is_not_answered_with_the_files_bytes() -> None:
+    # GDAL looks for "<url>.aux.xml" and "<url>.msk"; those are other files, absent here.
+    app, _ = _app_with(bytes(range(256)))
+    client = TestClient(app, client=LOOPBACK)
+    url = "/v1/sessions/sess_a/source-ranges/rng_test/a.bin"
+    for probe in (".aux.xml", ".msk", ".msk.aux.xml"):
+        assert client.head(url + probe).status_code == 404
+        assert client.get(url + probe, headers={"Range": "bytes=0-1"}).status_code == 404
+    assert client.get(url, headers={"Range": "bytes=0-1"}).status_code == 206
+
+
 def test_refusals_are_typed_by_status() -> None:
     app, _ = _app_with(b"x" * 100)
     loop = TestClient(app, client=LOOPBACK)

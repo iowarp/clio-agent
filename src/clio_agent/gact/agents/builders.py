@@ -688,6 +688,7 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
                     resolution,
                     getattr(self, "tools", ()),
                     provider=str(getattr(self.config, "provider", "") or ""),
+                    model=str(getattr(self.config, "model", "") or ""),
                 )
             # The same text for every session of this agent: the session's own facts
             # (workspace, roots, machine, scratch) ride the conversation as the

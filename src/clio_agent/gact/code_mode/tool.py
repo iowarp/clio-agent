@@ -32,6 +32,7 @@ from typing import Any
 
 from clio_agent import conf
 from clio_agent.runtime import trace
+from clio_agent.runtime.commitment_activity import note_progress
 from clio_agent.tools.tool_observation import RefusedCallError
 
 __all__ = [
@@ -198,6 +199,13 @@ class PreparedScript:
     code_only: frozenset[str]
 
 
+def _script_session(prepared: Any) -> str:
+    """The session whose turn runs ``prepared`` ("" off-turn)."""
+    from clio_agent.gact.context import active_session_id  # noqa: PLC0415
+
+    return str(prepared.context.run(active_session_id) or "")
+
+
 def _session_approval_mode() -> str:
     """The approval mode of the session approving the script now ("" without one)."""
     from clio_agent.gact import context as gact_context  # noqa: PLC0415
@@ -267,6 +275,7 @@ def execute_script(
     if live is not None:
         live["dispatcher"] = dispatcher  # a background task's status reads its call count
     outcome: dict[str, Any] = {"status": "failed", "output": "", "value": None, "error": ""}
+    session = _script_session(prepared)
     finished = False
     started = time.monotonic()
     poll = poll_s()
@@ -299,6 +308,7 @@ def execute_script(
                     outcome.update(error=f"The Python kernel exited: {kernel.diagnostics()}")
                     break
                 if message.get("type") == "call":
+                    note_progress(session)  # a working script is not a silent turn
                     dispatcher.submit(message, kernel.send)
                 elif message.get("type") == "done":
                     finished = True

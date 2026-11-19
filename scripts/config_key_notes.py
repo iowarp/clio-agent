@@ -1477,6 +1477,11 @@ KEY_NOTES: dict[str, str] = {
         "Tokens of one tool result the model is shown when its context window is unknown (no "
         "handshake or catalog entry); a longer result is saved to a file with its head."
     ),
+    "tools.spilled_sample_chars": (
+        "Characters of a tool result shown as a sample when the result is saved to a file "
+        "instead of shown; the note says how large it is, where it is, and (for JSON) its "
+        "structure, so the agent explores the file for the rest."
+    ),
     "tools.script_media_max": (
         "Images or PDFs one run_code script may attach to its result by viewing them "
         "(view_image, view_pdf); they reach the model's next step. Views past this count are "

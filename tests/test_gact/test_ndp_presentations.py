@@ -141,6 +141,62 @@ def test_catalog_page_shows_datasets_resources_filters_and_next_page() -> None:
         assert expected in text
 
 
+def test_a_large_dataset_says_which_resources_are_listed_and_how_to_page() -> None:
+    resources = [
+        {"id": f"t{n}", "name": f"USGS_1M_{n}.tif", "format": "GeoTIFF", "size": 0}
+        for n in range(200, 400)
+    ]
+    row = {
+        "datasets": [
+            {
+                "id": "dem",
+                "title": "3DEP 1-m DEM",
+                "endpoint_name": "NDP catalog",
+                "resources": resources,
+                "resource_count": 1000,
+                "resources_listed": "201-400 of 1000",
+                "resource_formats": {"GeoTIFF": 998, "XML": 2},
+                "next_resource_offset": 400,
+            }
+        ],
+        "total": 1,
+    }
+    args = {"dataset_id": "dem", "resource_offset": 200}
+    text = body(ndp_presentation(args, row, None))
+    for expected in [
+        "Dataset: dem",
+        "Resources from: 200",
+        "Resources listed: 201-400 of 1000 (formats: GeoTIFF 998, XML 2)",
+        "Next resource offset: 400",
+        "Resource ID: t200",
+        "Resource ID: t399",
+    ]:
+        assert expected in text
+
+
+def test_a_resource_without_a_stated_format_shows_its_file_suffix() -> None:
+    row = {
+        "datasets": [
+            {
+                "id": "lidar",
+                "title": "Basin Lidar",
+                "resources": [
+                    {
+                        "id": "t1",
+                        "name": "DTM_1.img",
+                        "format": "",
+                        "name_suffix": ".img",
+                        "size": 0,
+                    }
+                ],
+            }
+        ],
+        "total": 1,
+    }
+    text = body(ndp_presentation({"query": "lidar"}, row, None))
+    assert "DTM_1.img (format not stated; .img from the file name, 0 bytes)" in text
+
+
 def test_organizations_are_real_names_and_their_catalog_identities() -> None:
     view = ndp_presentation(
         {},

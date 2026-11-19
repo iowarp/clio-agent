@@ -4,7 +4,10 @@ Loopback only: the handle is the capability, minted for one session by
 ``connected_data_open`` with ``range``. ``HEAD`` gives the size; ``GET`` with one
 ``bytes=`` range answers 206 with exactly those bytes, read through the source's adapter;
 ``/v1/sessions/{sid}/source-range-stats/{handle}`` reports the bytes and requests
-served so far. A trailing file name after the handle is accepted and ignored.
+served so far. A trailing file name after the handle must be the handle's own file:
+readers such as GDAL probe sidecars by appending to the URL (``….tif.aux.xml``,
+``….msk``), and answering those with the file's own bytes made GDAL parse a raster as
+XML, hundreds of reads per open. Any other name is 404, as a missing sidecar is.
 """
 
 from __future__ import annotations
@@ -22,15 +25,18 @@ _RANGE = re.compile(r"^bytes=(\d*)-(\d*)$")
 WHOLE_READ_LIMIT = 8 * 2**20
 
 
-def _handle(app: FastAPI, request: Request, sid: str, handle: str) -> RangeHandle:
+def _handle(app: FastAPI, request: Request, sid: str, handle: str, name: str = "") -> RangeHandle:
     if not is_loopback_address(request.client.host if request.client else None):
         raise HTTPException(status_code=403, detail="Byte ranges are served on loopback only")
     try:
-        return registry(app).get(sid, handle)
+        found = registry(app).get(sid, handle)
     except KeyError:
         raise HTTPException(status_code=404, detail="Unknown range handle") from None
     except TimeoutError as exc:
         raise HTTPException(status_code=410, detail=str(exc)) from None
+    if name and name != found.path.rsplit("/", 1)[-1]:
+        raise HTTPException(status_code=404, detail="Not this handle's file")
+    return found
 
 
 def _span(header: str | None, size: int) -> tuple[int, int] | None:
@@ -61,7 +67,7 @@ def register_source_range_routes(app: FastAPI) -> None:
     @app.head("/v1/sessions/{sid}/source-ranges/{handle}")
     @app.head("/v1/sessions/{sid}/source-ranges/{handle}/{name}")
     async def range_head(sid: str, handle: str, request: Request, name: str = "") -> Response:
-        found = _handle(app, request, sid, handle)
+        found = _handle(app, request, sid, handle, name)
         return Response(
             headers={
                 "Content-Length": str(found.size),
@@ -74,7 +80,7 @@ def register_source_range_routes(app: FastAPI) -> None:
     @app.get("/v1/sessions/{sid}/source-ranges/{handle}")
     @app.get("/v1/sessions/{sid}/source-ranges/{handle}/{name}")
     async def range_get(sid: str, handle: str, request: Request, name: str = "") -> Response:
-        found = _handle(app, request, sid, handle)
+        found = _handle(app, request, sid, handle, name)
         span = _span(request.headers.get("range"), found.size)
         if span is None:
             if found.size > WHOLE_READ_LIMIT:

@@ -39,7 +39,8 @@ def ckan(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[tuple[str, dict[str, 
                 {
                     "id": f"resource-{i}",
                     "name": f"stations-{i}.csv",
-                    "format": "CSV",
+                    "format": "CSV" if i < 2 else "",
+                    "description": f"Hourly station readings, part {i}.",
                     "url": f"https://data.test/{i}.csv",
                 }
             ],
@@ -74,9 +75,18 @@ def ckan(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[tuple[str, dict[str, 
                     matching = [
                         r for r in matching if all(t in json.dumps(r).lower() for t in terms)
                     ]
-                if "fq" in params:
-                    org = json.loads(params["fq"][0].removeprefix("organization:"))
-                    matching = [r for r in matching if r["organization"]["name"] == org]
+                for clause in params["fq"][0].split(" AND ") if "fq" in params else ():
+                    key, _, value = clause.partition(":")
+                    wanted = json.loads(value)
+                    if key == "organization":
+                        matching = [r for r in matching if r["organization"]["name"] == wanted]
+                    else:
+                        assert key == "res_format", clause
+                        matching = [
+                            r
+                            for r in matching
+                            if any(item["format"] == wanted for item in r["resources"])
+                        ]
                 result = {"count": len(matching), "results": matching[start : start + size]}
             body = json.dumps({"success": True, "result": result}).encode()
             self.send_response(200)
@@ -208,3 +218,16 @@ def test_catalog_descriptions_show_text_instead_of_raw_html() -> None:
         catalog_description("Measurements: 0 < x < 10; units m².")
         == "Measurements: 0 < x < 10; units m²."
     )
+
+
+def test_resource_format_filter_and_resource_descriptions(ckan: list[Any]) -> None:
+    """Field filters and each resource's own words, which only the MCP server gave."""
+    catalog = NDPCatalog()
+    result = catalog.search("", organization="earthscope", resource_format="CSV")
+    assert ckan[0][1]["fq"] == ['organization:"earthscope" AND res_format:"CSV"']
+    assert [row["id"] for row in result["datasets"]] == ["dataset-0", "dataset-1"]
+    resource = result["datasets"][0]["resources"][0]
+    assert resource["description"] == "Hourly station readings, part 0." and "url" not in resource
+    only_format = catalog.search("", resource_format='CSV" OR *:*')
+    assert ckan[-1][1]["fq"] == ['res_format:"CSV\\" OR *:*"']  # a value, never syntax
+    assert only_format["datasets"] == []

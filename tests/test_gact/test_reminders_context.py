@@ -174,7 +174,7 @@ def test_a_call_whose_outcome_was_lost_keeps_its_required_result(
 # --------------------------------------------------------------------------- #
 # result_spilled                                                              #
 # --------------------------------------------------------------------------- #
-_TEXT = "line\n" * 200  # 1,000 characters; the room is 400
+_TEXT = "line\n" * 200  # 1,000 characters; the room is 900
 
 
 def _bounded(monkeypatch: pytest.MonkeyPatch, spilled: Path | Exception) -> tuple[str, list]:
@@ -187,7 +187,7 @@ def _bounded(monkeypatch: pytest.MonkeyPatch, spilled: Path | Exception) -> tupl
         return spilled
 
     told: list[Any] = []
-    pin_result_room(monkeypatch, 400)
+    pin_result_room(monkeypatch, 900)
     monkeypatch.setattr(projection, "_spill", spill)
     monkeypatch.setattr(injections, "note", lambda source, text: told.append((source, text)))
     return projection.bounded_model_tool_result(_TEXT), told
@@ -198,14 +198,17 @@ def _bounded(monkeypatch: pytest.MonkeyPatch, spilled: Path | Exception) -> tupl
     [
         (
             Path("/w/out.txt"),
-            "the full result is in `/w/out.txt`; read on with "
-            'fs_read_file(path="/w/out.txt", offset={offset}), or search it with fs_search_text',
+            "the full result is in `/w/out.txt`. Explore it rather than reading it whole, for "
+            'example in shell_bash: `grep -n "PATTERN" "/w/out.txt" | head`; or search it with '
+            'fs_search_text, or read on with fs_read_file(path="/w/out.txt", offset={offset})',
         ),
         (
             Path("/w/out.json"),
-            "the full result is in `/w/out.json`, saved as one indented JSON document; search "
-            "it with fs_search_text, read it with fs_read_file, or, where you can run scripts, "
-            "load it in one",
+            "the full result is in `/w/out.json`, saved as one indented JSON document. Explore "
+            "it with code rather than reading it whole, for example in run_code: `import json; "
+            'data = json.load(open("/w/out.json"))`, then select, count or filter what you need '
+            "and print only that. Without a code tool, search it with fs_search_text and read a "
+            "part with fs_read_file",
         ),
         (
             OSError("disk full"),
@@ -219,11 +222,12 @@ def test_a_cut_result_keeps_todays_note_and_it_cannot_be_switched_off(
     """SABOTAGE: change a word in any ``result_spilled*.md`` and its case fails."""
     result, told = _bounded(monkeypatch, spilled)
     head = result.split("\n\n", 1)[1]
-    assert head and len(result) <= 400
+    assert head and len(result) <= 900
     where = where.replace("{offset}", str(head.count("\n") + 2))
     note = (
-        f"[clio: result_spilled] This result is 1,000 characters, more than the {len(head):,} "
-        f"shown to you. The first characters follow; {where}."
+        "[clio: result_spilled] This result is about 250 tokens (1,000 characters), too "
+        f"large to put in your context: {where}.\nBelow is a sample (its first "
+        f"{len(head):,} characters), not the whole result."
     )
     assert result.startswith(note + "\n\n") and told == [("result_spilled", result)]
     for source in ("result_spilled", "result_spilled_read_on", "result_spilled_json"):

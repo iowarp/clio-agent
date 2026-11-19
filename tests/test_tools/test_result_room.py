@@ -61,7 +61,8 @@ def test_a_result_past_the_share_is_spilled_with_the_note(window: Any, tmp_path:
         shown = bounded_model_tool_result(text)
     assert shown.startswith("[clio: result_spilled] This result is ")
     assert f"{len(text):,} characters" in shown
-    assert 90_000 < len(shown) <= 100_000  # the head fills the room
+    # A pointer, not a head that fills the room: size, file, how to explore, a sample.
+    assert len(shown) < 3_500 and "Explore it rather than reading it whole" in shown
     assert told == [("result_spilled", shown)]
 
 
@@ -86,7 +87,7 @@ def test_the_room_never_falls_below_its_floor(window: Any, tmp_path: Path) -> No
     with tool_workspace_context(str(tmp_path)), injections.collect():
         shown = bounded_model_tool_result(text)
     head = shown.split("\n\n", 1)[1]
-    assert head.startswith("row-000000") and len(head) > 1_000
+    assert head.startswith("row-000000") and len(head) > 500
     window(2_000, prompt=1_900)  # a share below the floor stays the limit
     assert result_room.result_room().tokens == 250
 

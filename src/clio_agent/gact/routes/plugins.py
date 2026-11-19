@@ -32,6 +32,7 @@ from clio_agent.gact.agents.resolution import (
     plugin_service,
     session_delta,
     session_is_delegated,
+    session_model_id,
     session_provider_id,
     session_resolution,
     session_withheld_tools,
@@ -430,6 +431,7 @@ def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
             view["tool_names"],
             delegated=delegated,
             provider=session_provider_id(app, sid),
+            model=session_model_id(app, sid),
         )
         view["prompt"] = {**view["prompt"], "text": text}
         view["session_scope"] = "delegated" if delegated else "root"
