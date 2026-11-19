@@ -174,22 +174,49 @@ def test_every_shell_names_clios_own_python_and_uv(
     environment = execution.shell_environment(tmp_path / "workspace")
     assert environment["CLIO_PYTHON"] == sys.executable  # nothing prepared: CLIO's own
     assert environment["CLIO_UV"] == str(bundled_uv)
-    # Shared by the workspace's sessions in the fence-granted cache, not per session folder.
+    # One cache per machine, shared by every workspace's sessions, never per session folder.
     from clio_agent import paths
 
-    shared = str(paths.workspace_cache_dir(tmp_path / "workspace") / "uv-cache")
-    assert environment["UV_CACHE_DIR"] == shared
+    shared = paths.shared_uv_cache_dir()
+    assert environment["UV_CACHE_DIR"] == str(shared)
+    assert shared.is_dir()  # created before the fence, which rules only on existing paths
+    assert execution.shell_environment(tmp_path / "other")["UV_CACHE_DIR"] == str(shared)
     from clio_agent.tools import write_scope
 
     monkeypatch.setattr(write_scope, "active_tool_read_only", lambda: True)
     environment = execution.shell_environment(tmp_path / "workspace")
     assert environment["UV_CACHE_DIR"] == str(tmp_path / "s" / "uv-cache")  # read-only: scratch
     monkeypatch.setattr(write_scope, "active_tool_read_only", lambda: False)
+    # A plan-mode kernel says so itself: its fence grants only scratch and temp.
+    environment = execution.shell_environment(tmp_path / "workspace", read_only=True)
+    assert environment["UV_CACHE_DIR"] == str(tmp_path / "s" / "uv-cache")
     prepared = {"CLIO_EXECUTION_PYTHON": "/clio/python/bin/python", "UV_CACHE_DIR": "/ws/.tmp/uv"}
     monkeypatch.setitem(execution._ENVIRONMENTS, (tmp_path / "w2").resolve(), prepared)
     environment = execution.shell_environment(tmp_path / "w2")
     assert environment["CLIO_PYTHON"] == "/clio/python/bin/python"  # the run_code interpreter
     assert environment["UV_CACHE_DIR"] == "/ws/.tmp/uv"  # the prepared cache is kept
+
+
+def test_shared_uv_cache_unavailable_falls_back_to_the_workspace_cache_with_a_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No silent fallback: a shared folder that cannot be created is traced with a typed
+    reason, and the shell keeps the workspace's own (fence-granted) cache."""
+    from clio_agent import paths
+    from clio_agent.runtime import trace
+
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(paths, "shared_uv_cache_dir", lambda: blocker / "uv-shared")
+    events: list[str] = []
+    monkeypatch.setattr(trace, "event", lambda tag, msg, *args: events.append(msg % args))
+
+    cache = execution.shared_uv_cache(tmp_path / "workspace")
+
+    assert cache == paths.workspace_cache_dir(tmp_path / "workspace") / "uv-cache"
+    assert len(events) == 1
+    assert "reason=shared_uv_cache_create_failed" in events[0]
+    assert str(blocker / "uv-shared") in events[0]
 
 
 def test_bundled_runtime_children_never_write_bytecode(

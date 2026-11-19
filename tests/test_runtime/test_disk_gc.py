@@ -176,3 +176,18 @@ def test_gc_report_serializes() -> None:
     d = report.to_dict()
     assert d["refused"] is True
     assert d["peers"] == [str(peer)]
+
+
+def test_gc_prunes_the_uv_cache_every_workspace_shares(monkeypatch) -> None:
+    from clio_agent import paths
+
+    monkeypatch.setattr(disk_gc, "_ambient_uv_cache_dir", lambda: None)
+    shared = paths.shared_uv_cache_dir()
+    shared.mkdir(parents=True, exist_ok=True)
+
+    report = disk_gc.run_gc(dry_run=True, peer_prober=lambda: [])
+
+    rows = [row for row in report.locations if row.location == "uv cache prune (shared-uv-cache)"]
+    assert len(rows) == 1
+    assert rows[0].path == str(shared)
+    assert rows[0].reason in {"dry_run_planned", "uv_not_on_path"}

@@ -14,8 +14,9 @@ When it may run (no live peers) it reclaims, each with a typed row in the report
    :func:`clio_agent.tools.mcp_cache.prune_uv_cache`);
 2. clio-kit's ``mcp-environments`` keeping the NEWEST environment per server (parsed
    defensively — an unrecognized layout is SKIPPED with a typed reason, never wrong-deleted);
-3. ``uv cache prune`` on the ambient uv cache, clio-kit's private cache, and the MCP uv
-   cache (subprocess; tolerates uv absent / a missing dir);
+3. ``uv cache prune`` on the ambient uv cache, clio-kit's private cache, the MCP uv
+   cache and the uv cache every workspace's shells share (subprocess; tolerates uv
+   absent / a missing dir);
 4. stale pytest basetemp trees under the configured temp roots older than N days;
 5. marketplace snapshots nothing refers to any more (:mod:`clio_agent.plugins.snapshot_gc`).
 
@@ -654,12 +655,17 @@ def run_gc(
     kit_cache = _clio_kit_cache_dir(env)
     report.locations.append(_prune_clio_kit_environments(kit_cache, dry_run=dry_run))
 
-    # 3. uv cache prune (ambient + clio-kit private + mcp-uv-cache).
+    # 3. uv cache prune (ambient + clio-kit private + mcp-uv-cache + shells' shared cache).
     ambient = _ambient_uv_cache_dir()
     if ambient is not None:
         report.locations.append(_uv_cache_prune("ambient", ambient, env=env, dry_run=dry_run))
     report.locations.append(
         _uv_cache_prune("mcp-uv-cache", Path(prune.cache_dir), env=env, dry_run=dry_run)
+    )
+    report.locations.append(
+        _uv_cache_prune(
+            "shared-uv-cache", agent_paths.shared_uv_cache_dir(), env=env, dry_run=dry_run
+        )
     )
     if kit_cache is not None:
         for sub in ("uv-cache", "cache", "uv"):

@@ -109,12 +109,15 @@ def max_output_bytes() -> int:
     return value
 
 
-def _environment(workspace: Path, session_id: str) -> tuple[str, dict[str, str]]:
+def _environment(
+    workspace: Path, session_id: str, *, read_only: bool = False
+) -> tuple[str, dict[str, str]]:
     from clio_agent.paths import workspace_state_dir  # noqa: PLC0415
     from clio_agent.runtime.execution_environment import shell_environment  # noqa: PLC0415
 
     # The kernel belongs to one session: its TMPDIR is that session's scratch (TD56).
-    prepared = shell_environment(workspace, session_id=session_id)
+    # A plan-mode kernel's fence grants only scratch and temp: its uv cache stays there.
+    prepared = shell_environment(workspace, session_id=session_id, read_only=read_only)
     python = prepared.get("CLIO_EXECUTION_PYTHON") or ""
     if not python:
         python = sys.executable
@@ -165,7 +168,7 @@ class Kernel:
             task_spawn_options,
         )
 
-        python, env = _environment(self.workspace, self.key[0])
+        python, env = _environment(self.workspace, self.key[0], read_only=self.read_only)
         self.python = python
         self.write_roots = (
             read_only_write_roots()

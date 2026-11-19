@@ -542,6 +542,32 @@ def test_the_shell_cannot_write_clio_runtime(
     assert any(_covers(root, _mcp_uv_cache_dir()) for root in fleet)
 
 
+@pytest.mark.parametrize("narrowed", [False, True])
+def test_a_writable_shell_may_write_the_shared_uv_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, narrowed: bool
+) -> None:
+    """Every workspace's shells share one uv cache: the fence grants that folder exactly
+    (uv stages and renames inside one grant, Landlock ABI 1), never CLIO's cache root."""
+    from clio_agent import paths
+    from clio_agent.tools import write_scope
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    policy = SimpleNamespace(
+        allowed_roots=[workspace], write_roots=[workspace / "node"] if narrowed else []
+    )
+    shell = sandbox.effective_write_roots(
+        sandbox.PROFILE_SHELL, policy=policy, workspace_root=str(workspace)
+    )
+    assert paths.shared_uv_cache_dir() in shell
+    assert paths.user_cache_dir() not in shell
+    monkeypatch.setattr(write_scope, "active_tool_read_only", lambda: True)
+    read_only = sandbox.effective_write_roots(
+        sandbox.PROFILE_SHELL, policy=policy, workspace_root=str(workspace)
+    )
+    assert not any(_covers(root, paths.shared_uv_cache_dir()) for root in read_only)
+
+
 # --------------------------------------------------------------------------- #
 # Doctor row — DEGRADED never ERROR (the floor is legal)                        #
 # --------------------------------------------------------------------------- #
