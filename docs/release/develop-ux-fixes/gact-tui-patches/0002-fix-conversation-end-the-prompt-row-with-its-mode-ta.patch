@@ -1,7 +1,7 @@
 From 859fe58ddd68e041f307ec67a836c7617475bbef Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 19 Nov 2026 15:31:42 +0000
-Subject: [PATCH 2/5] fix(conversation): end the prompt row with its mode tag,
+Subject: [PATCH 2/6] fix(conversation): end the prompt row with its mode tag,
  at the bubble's edge
 
 The hover-only time and actions came after the Plan/Deep research tag in the

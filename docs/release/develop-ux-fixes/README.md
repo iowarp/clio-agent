@@ -5,7 +5,7 @@ was checked against develop: clio-agent `8247abe`, gact-tui `22fc042` and the
 marketplace commit develop pins, `7d1933c`. Each was reproduced on a live,
 isolated develop stack where that was possible. The fixes are on
 `claude/develop-ux-fixes` in clio-agent (4 commits) and, because this session cannot
-push gact-tui, as patches in [`gact-tui-patches/`](gact-tui-patches/) (5 commits).
+push gact-tui, as patches in [`gact-tui-patches/`](gact-tui-patches/) (6 commits).
 
 Apply the gact-tui patches on a branch from gact-tui `develop`:
 
@@ -15,7 +15,7 @@ git am /path/to/clio-agent/docs/release/develop-ux-fixes/gact-tui-patches/*.patc
 ```
 
 They were checked with `git am` onto `22fc042`; the resulting tree equals the tested
-branch (`407c5a9`).
+branch (`8b7fe01`).
 
 ## Status of each item
 
@@ -32,6 +32,7 @@ branch (`407c5a9`).
 | 9 | `limit="15"` refused | Present in code; this run's model sent integers, so it did not occur live. | clio-agent: integer, number and boolean arguments sent as JSON text are decoded; other text is still refused. |
 | 10 | `run_code` refused in Deep research | **Present.** All five researchers' scripts were refused in one run. | clio-agent: allowed behind an enforced fence, read-only as in Plan mode. Live: 28 of 31 scripts ran, and the run completed with its report saved. |
 | 12 | Consent cards: a tiny radio, then Send response | **Present.** A one-choice MCP form ("Allow searches through the literature sources?") rendered a radio list and a separate button. | gact-tui: a form that is one choice of two or three options shows one numbered button per option; pressing it answers. |
+| 13 | Composer mode as a word on the right | The mode ("Execute", "Deep research") was a word beside the model; the spec of Nov 9 put it there. | gact-tui: the mode is an icon with the other behavior controls on the left, named in its tooltip and accented when not Execute; the spec is updated. Checked at 1280 px and 390 px. |
 | 11 | Stop did not stop the flow | Fixed on develop (#2354). Live: Stop with `children: stop` cancelled the flow and every researcher. | None. |
 
 ## Evidence

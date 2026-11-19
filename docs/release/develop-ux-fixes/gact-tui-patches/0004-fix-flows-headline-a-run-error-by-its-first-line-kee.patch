@@ -1,7 +1,7 @@
 From fa93d8a1ceadaa7fea60bd6e1e89f2240feaa930 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 19 Nov 2026 15:32:20 +0000
-Subject: [PATCH 4/5] fix(flows): headline a run error by its first line; keep
+Subject: [PATCH 4/6] fix(flows): headline a run error by its first line; keep
  the rest in Details
 
 A deep research run whose planner reply could not be parsed showed the whole

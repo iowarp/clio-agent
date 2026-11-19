@@ -1,0 +1,115 @@
+From ca2ba15aa2188a857c11b588f4ccb180308e2dad Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 19 Nov 2026 19:20:02 +0000
+Subject: [PATCH 6/6] feat(composer): put the mode with the other behavior
+ icons, without its word
+
+The composer's mode was a word ("Execute", "Deep research") beside the model at
+the right of the toolbar. It is now an icon with attach, reference, confirmation
+policy and reasoning on the left; its name is the tooltip and the accessible
+label, and a mode other than Execute keeps the accent colour. The right side is
+the model and Send. Its menu opens from the left. The composer spec says the
+same.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BHQAws7LSR8fWEJvjbJM4q
+---
+ .../composer-pipeline-interaction-spec.md     |  5 ++-
+ .../clio/composer-behavior-controls.tsx       | 41 +++++++------------
+ 2 files changed, 18 insertions(+), 28 deletions(-)
+
+diff --git a/docs/design/composer-pipeline-interaction-spec.md b/docs/design/composer-pipeline-interaction-spec.md
+index fd875023d..9347ccab2 100644
+--- a/docs/design/composer-pipeline-interaction-spec.md
++++ b/docs/design/composer-pipeline-interaction-spec.md
+@@ -29,8 +29,9 @@ adapters translate GACT state into their public props and events.
+ | Uploading | Composer remains stable and reports byte progress                | Files can be removed before acceptance                     | No indefinite spatial animation; progress is determinate when total bytes are known        |
+ 
+ The docked composer targets 720–896 px: the editor on top, then one toolbar row that never wraps
+-(attach, reference, confirmation policy and reasoning icons on the left; model text, mode word and a
+-28 px Send/Queue/Stop on the right; container queries shrink the model and mode first). Queued rows
++(attach, reference, confirmation policy, reasoning and mode icons on the left, the mode named in its
++tooltip and accented when it is not Execute; model text and a 28 px Send/Queue/Stop on the right;
++container queries shrink the model first). Queued rows
+ are one line above it, with the drag handle on the left and send-now/edit/delete actions on the
+ right. Attachment tiles use a compact preview with name, media type, size,
+ progress, and removal.
+diff --git a/web/src/components/clio/composer-behavior-controls.tsx b/web/src/components/clio/composer-behavior-controls.tsx
+index ee45e95fc..617a32c3f 100644
+--- a/web/src/components/clio/composer-behavior-controls.tsx
++++ b/web/src/components/clio/composer-behavior-controls.tsx
+@@ -319,41 +319,20 @@ export function ClioComposerBehaviorControls({
+           type="button"
+         />
+       ) : null}
+-      {spotterModelControl &&
+-      behavior.confirmation_policy === 'spotter-ai' &&
+-      spotterAvailability?.available
+-        ? spotterModelControl
+-        : null}
+-      {/* A narrow row has no slack to right-align into: the model stays put after
+-          the reasoning control while a wait status appears or the route name loads. */}
+-      <span aria-hidden="true" className="min-w-0 flex-1 @max-[440px]/composer:hidden" />
+-      {beforeModel}
+-      {modelControl}
+-      {/* The mode is a word beside the model (spec v10); a fifth-width row keeps its icon.
+-          After the route, the word is the next to give way, whole, so the model keeps its name. */}
++      {/* The mode is an icon with the other behavior controls; its name is the tooltip and
++          accessible label, and a mode other than Execute takes the accent colour. */}
+       <DropdownMenu onOpenChange={(open) => setMenuOpen('mode', open)} open={openMenu === 'mode'}>
+         <DropdownMenuTrigger asChild>
+           <IconButton
+             className={cn(
+-              'h-[26px] w-auto min-w-[26px] shrink gap-1.5 px-1.5 text-meta font-normal aria-expanded:bg-hover @max-[300px]/composer:w-[26px] @max-[300px]/composer:min-w-0 @max-[300px]/composer:shrink-0 @max-[300px]/composer:px-0 [&_svg:not([class*=size-])]:size-3.5',
++              'aria-expanded:bg-hover',
+               selectedMode &&
+                 selectedMode.value !== 'edit' &&
+                 'text-accent-foreground hover:text-accent-foreground',
+             )}
+             data-slot="composer-mode"
+             disabled={disabled}
+-            icon={
+-              <>
+-                <ModeIcon />
+-                <span
+-                  className="flex h-[1lh] min-w-0 flex-wrap overflow-hidden @max-[300px]/composer:hidden"
+-                  data-slot="composer-mode-label"
+-                >
+-                  <span aria-hidden="true" className="h-full w-0" />
+-                  <span className="shrink-0 whitespace-nowrap">{modeLabel}</span>
+-                </span>
+-              </>
+-            }
++            icon={<ModeIcon />}
+             label={t`Mode: ${modeLabel}`}
+             shortcut="mode"
+             shortcutSide="above-icon"
+@@ -363,7 +342,7 @@ export function ClioComposerBehaviorControls({
+           />
+         </DropdownMenuTrigger>
+         <DropdownMenuContent
+-          align="end"
++          align="start"
+           className="w-[21rem]"
+           collisionPadding={8}
+           onCloseAutoFocus={closeFocus}
+@@ -394,6 +373,16 @@ export function ClioComposerBehaviorControls({
+           </DropdownMenuRadioGroup>
+         </DropdownMenuContent>
+       </DropdownMenu>
++      {spotterModelControl &&
++      behavior.confirmation_policy === 'spotter-ai' &&
++      spotterAvailability?.available
++        ? spotterModelControl
++        : null}
++      {/* A narrow row has no slack to right-align into: the model stays put after
++          the reasoning control while a wait status appears or the route name loads. */}
++      <span aria-hidden="true" className="min-w-0 flex-1 @max-[440px]/composer:hidden" />
++      {beforeModel}
++      {modelControl}
+       <AlertDialog onOpenChange={setConfirmBypass} open={confirmBypass}>
+         <AlertDialogContent
+           onCloseAutoFocus={(event) => {
+-- 
+2.43.0
+

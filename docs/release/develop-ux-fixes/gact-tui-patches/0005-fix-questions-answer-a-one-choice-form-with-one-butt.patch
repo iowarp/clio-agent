@@ -1,7 +1,7 @@
 From b6403098f6a6a46c356236ca9c083a8d56f78987 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 19 Nov 2026 17:53:12 +0000
-Subject: [PATCH 5/5] fix(questions): answer a one-choice form with one button
+Subject: [PATCH 5/6] fix(questions): answer a one-choice form with one button
  per option
 
 A consent such as "Allow searches through the literature sources?" is an MCP
