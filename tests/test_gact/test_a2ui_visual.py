@@ -40,6 +40,15 @@ from tests.test_gact.test_a2ui_producer import _advertise_workspace_catalog, _se
 CAPTURE_TIMEOUT: float = inspect.signature(A2UIVisualFeedback.capture).parameters["timeout"].default
 
 
+@pytest.fixture(autouse=True)
+def _lease_outlasts_a_stalled_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A viewer's lease is wall-clock: a loaded runner that stalls past it between a test's
+    report and its capture drops the viewer, so the capture says nothing is mounted. Only
+    the tests about a lapsing lease need the real one; they set their own short TTL.
+    """
+    monkeypatch.setattr("clio_agent.gact.a2ui_visual.VIEWER_TTL", 60.0)
+
+
 def png() -> str:
     """A real, bounded PNG with recognizable pixels for native hydration checks."""
     out = io.BytesIO()
