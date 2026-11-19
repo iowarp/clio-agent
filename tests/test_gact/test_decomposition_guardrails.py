@@ -283,7 +283,10 @@ from clio_agent.gact.app import build_app
 # (routes/session_usage.py, from routes/session_creation.py) and the attached-client
 # count, POST/GET /v1/server/clients and DELETE .../{client_id} (gact/attached_clients.py,
 # from routes/lifecycle.py).
-EXPECTED_ROUTE_METHOD_PAIRS = 490
+# 490 -> 493: grids as maps and sections (routes/artifact_grid_views.py, 57760bcda):
+# GET /v1/artifacts/{artifact_id}/tiles/{z}/{x}/{y}.png, GET .../grid-info and
+# POST .../section-query.
+EXPECTED_ROUTE_METHOD_PAIRS = 493
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
