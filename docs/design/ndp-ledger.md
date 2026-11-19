@@ -1036,3 +1036,24 @@ Seen in this wave, and what became of it:
 - **My own parallel test run filled the disk** (four xdist workers each preallocating
   a clio-core store) while two live runs were going; clio-core refused writes and both
   turns ended in error. Reruns above. Tests are no longer run beside live runs.
+
+### Demo recordings (2026-11-19)
+
+Two fresh workspaces on Opus in `ai-review` approval mode, plain requests, recorded on the
+production web build with `.cloud-run/demo/rec.mjs` (one recorded browser driven step by step)
+and cut with `.cloud-run/demo/edit.py` (actions at 1x, agent working time sped up):
+
+- Tahoe cross-organization, `sess_85bfe6901b9a`, two turns (51 min + 12 min): 165 NDP
+  organizations listed, 1,083 datasets found, TRPA PACs with CAL FIRE FRAP and NIFC fires,
+  CFO canopy and fuels, OpenTopography lidar slope; follow-up added California Landscape
+  Metrics burn severity. The 0.5 m DTM's VRT could not resolve its tiles through a range
+  URL (relative paths answer 404 since range URLs serve only their own file); the agent
+  opened each tile's own handle instead. Open: let a VRT's relative tile paths resolve
+  within the same source without reopening GDAL's sidecar probing.
+- Snow depth, `sess_33692d7b38fd`, three turns (11, 7 and 2 min): snow-on minus snow-off
+  lidar; no second snow-on year in NDP after about 26 searches; NEON tiles streamed by byte
+  range on seeing 2.9 GB free; interactive layered map with depth, elevation, slope and
+  hillshade GeoTIFF layers.
+- In headless capture a grey band sometimes crosses a WebGL map until it redraws; it is
+  inside the canvas (no DOM element), so likely the software renderer. To be checked on a
+  real GPU.
