@@ -18,6 +18,8 @@ diagnosis:
    stay. A denied path inside the territory (a read-only file in the workspace), or one
    the person's own account could not write either (an ordinary file permission, so a
    folder grant would not help), is an ordinary permission error and gets no diagnosis.
+   Neither does one in CLIO's private folders (storage sign-in credentials), which no
+   grant opens.
 
 A denial with no path at all gives a hedged ``possible`` diagnosis. An exit code of 740
 or "requires elevation" gives ``elevation_required``, which no folder grant can fix. On
@@ -241,7 +243,7 @@ def diagnose_boundary(
         )
     resolved = _dedupe(_resolve(c, cwd, flavor) for c in candidates)
     outside = [p for p in resolved if not within_roots(p, write_roots, platform=platform)]
-    blocked = [p for p in outside if _person_could_write(p, flavor)]
+    blocked = [p for p in outside if _person_could_write(p, flavor) and _grantable(p, flavor)]
     if not blocked:
         inside = [p for p in resolved if p not in outside]
         privileged = [p for p in inside if _account_may_write(p, flavor)]
@@ -335,7 +337,7 @@ def diagnose_write_targets(
     absolute = [str(t) for t in targets if str(t) and flavor.absolute(str(t))]
     resolved = _dedupe(_resolve(t, None, flavor) for t in absolute)
     outside = [p for p in resolved if not within_roots(p, write_roots, platform=platform)]
-    blocked = [p for p in outside if _person_could_write(p, flavor)]
+    blocked = [p for p in outside if _person_could_write(p, flavor) and _grantable(p, flavor)]
     if not blocked:
         return None
     roots = _dedupe(nearest_existing_parent(p, platform=platform) for p in blocked)
@@ -397,15 +399,33 @@ def within_roots(
 
 def nearest_existing_parent(path: str, *, platform: str = sys.platform) -> str:
     """The folder to ask for: ``path`` itself when it is a directory, else its nearest
-    existing parent (a grant on a path that does not exist widens nothing). Off this
-    host's flavor, or when nothing exists, the immediate parent."""
+    existing parent (a grant on a path that does not exist widens nothing). On this host
+    it is the canonical folder (symlinks resolved), the form a grant is applied to, so two
+    spellings of one folder ask once. Off this host's flavor, or when nothing exists, the
+    immediate parent."""
     flavor = _flavor(platform)
     pure = flavor.pure(path)
     if flavor.native:
         for candidate in (Path(path), *Path(path).parents):
             if _is_dir(candidate):
-                return str(candidate)
+                return str(_resolved(candidate))
     return str(pure.parent)
+
+
+def _grantable(path: str, flavor: _Flavor) -> bool:
+    """Whether a folder grant could open ``path``: CLIO's private folders (storage sign-in
+    credentials) stay closed to every child whatever the person allows, so a denial there
+    is not a folder to ask for."""
+    if not flavor.native:
+        return True
+    from clio_agent.runtime.storage_access import storage_access_roots  # noqa: PLC0415
+
+    try:
+        _read_only, private = storage_access_roots()
+    except PermissionError:
+        return True  # an unreadable source ledger: the grant path refuses it on its own
+    target = _resolved(Path(path))
+    return not any(target.is_relative_to(root) for root in private)
 
 
 def _resolved(path: Path) -> Path:

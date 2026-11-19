@@ -153,7 +153,7 @@ def test_posix_denials_outside_the_territory_are_confirmed(
     assert (diagnosis.confidence, diagnosis.signature) == (sd.CONFIRMED, signature)
     assert diagnosis.paths == (str(denied),)
     # The nearest EXISTING parent: ``deep`` does not exist, so the grant names ``outside``.
-    assert diagnosis.request_roots == (str(outside),)
+    assert diagnosis.request_roots == (str(outside.resolve()),)
 
 
 def test_a_denial_inside_the_territory_is_an_ordinary_permission_error(
@@ -268,13 +268,54 @@ def test_a_folder_the_person_cannot_write_either_is_not_the_fence(
 def test_nearest_existing_parent(tmp_path: Path) -> None:
     (tmp_path / "a").mkdir()
     (tmp_path / "a" / "f.txt").write_text("x")
-    assert sd.nearest_existing_parent(str(tmp_path / "a" / "f.txt")) == str(tmp_path / "a")
-    assert sd.nearest_existing_parent(str(tmp_path / "a")) == str(tmp_path / "a")
-    assert sd.nearest_existing_parent(str(tmp_path / "a" / "x" / "y" / "z.txt")) == str(
-        tmp_path / "a"
-    )
+    folder = str((tmp_path / "a").resolve())
+    assert sd.nearest_existing_parent(str(tmp_path / "a" / "f.txt")) == folder
+    assert sd.nearest_existing_parent(str(tmp_path / "a")) == folder
+    assert sd.nearest_existing_parent(str(tmp_path / "a" / "x" / "y" / "z.txt")) == folder
     # Another platform's path: the immediate parent, lexically.
     assert sd.nearest_existing_parent(_DESKTOP_FILE, platform="win32") == _DESKTOP
+
+
+def test_two_spellings_of_one_folder_ask_once_for_the_real_folder(
+    territory: tuple[Path, Path],
+) -> None:
+    """A home reached through a symlink (``/home/u`` -> ``/mnt/common/u``) asked twice for
+    one folder, both in its unresolved form, so the grant could never apply (dry 20b).
+    SABOTAGE: return ``candidate`` unresolved from ``nearest_existing_parent`` -> red."""
+    if os.name == "nt":
+        pytest.skip("symlinks need privileges on Windows")
+    workspace, outside = territory
+    (outside / "data").mkdir()
+    link = outside.parent / "home-link"
+    link.symlink_to(outside)
+    denial = f"find: '{link}/data': Permission denied\nfind: '{outside}/data': Permission denied"
+    diagnosis = _posix(denial, workspace)
+    assert diagnosis is not None
+    assert diagnosis.request_roots == (str((outside / "data").resolve()),)
+
+
+def test_a_private_folder_is_never_offered(
+    territory: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CLIO's sign-in credentials stay closed whatever the person allows, so a denial there
+    asks for nothing; another blocked folder in the same output still does.
+    SABOTAGE: return True from ``_grantable`` -> red."""
+    from clio_agent.runtime import storage_access
+
+    workspace, outside = territory
+    private = outside / "storage-auth"
+    private.mkdir()
+    monkeypatch.setattr(storage_access, "storage_access_roots", lambda: ((), (private.resolve(),)))
+    if os.name == "nt":
+        assert sd._grantable(str(private), sd._flavor("win32")) is False
+        return
+    assert _posix(f"find: '{private}': Permission denied", workspace) is None
+    other = outside / "results"
+    other.mkdir()
+    both = _posix(
+        f"find: '{private}': Permission denied\ntouch: '{other}/x': Permission denied", workspace
+    )
+    assert both is not None and both.request_roots == (str(other.resolve()),)
 
 
 def test_windows_territory_is_case_insensitive() -> None:
