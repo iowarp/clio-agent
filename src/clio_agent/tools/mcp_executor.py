@@ -519,6 +519,7 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
     async def _connect_namespace(self, namespace: str, proxy: Any) -> Any:
         """Connect a declared namespace, retaining era, route and cache-lock evidence."""
         from clio_agent.tools import spawn_diet
+        from clio_agent.tools.mcp_server_instructions import record_connection_instructions
 
         specs: Mapping[str, Any] = getattr(self, "_clio_namespace_specs", None) or {}
         spec = specs.get(namespace)
@@ -560,6 +561,8 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                 connect_mode=resolved_connect_mode(),
             )
         if direct_client is not None:
+            # The server's own connection: what it says about itself now.
+            record_connection_instructions(namespace, client)
             self._namespace_succeeded(namespace)
         self._ensure_tools_watch(namespace)
         self._ensure_resource_watches(namespace)

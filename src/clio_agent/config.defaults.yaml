@@ -1596,11 +1596,18 @@ tools.file_policy.max_file_size_bytes: "1073741824"
 tools.full_result: ["load_skill"]
 
 # CLIO_TOOLS_INSTRUCTIONS_CHARS  (int)  <- src/clio_agent/tools/mcp_server_instructions.py
-# Characters of an MCP server's own instructions used to describe a deferred
-# server in the prompt's listing, when its plugin gives no description; a
-# shortened entry says so, and search_tools returns the whole instructions
-# with the server's tools.
-tools.instructions_chars: 300
+# Characters of each MCP server's own instructions that the prompt carries,
+# for a listed or a deferred server; a shortened excerpt says so, and
+# search_tools returns the whole instructions with a deferred server's
+# tools.
+tools.instructions_chars: 1000
+
+# CLIO_TOOLS_INSTRUCTIONS_REFRESH_S  (float)  <- src/clio_agent/tools/mcp_server_instructions.py
+# Seconds a turn waits, before its prompt is built, for each kept-alive MCP
+# server to say again what it says about itself (server/discover on its open
+# connection), so a server whose instructions change while it runs is
+# described as it is now; 0 turns the refresh off.
+tools.instructions_refresh_s: 2.0
 
 # CLIO_MCP_CALL_TIMEOUT_S  (float)  <- src/clio_agent/tools/execution.py
 # Runaway backstop seconds for one synchronous MCP tool call before it's

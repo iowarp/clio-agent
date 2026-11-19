@@ -282,6 +282,32 @@ def note_failure(host: ExternalConnection, error: BaseException) -> None:
         host.broken = True
 
 
+async def refresh_instructions(self: ExternalTasks, *, timeout: float) -> int:
+    """Ask each kept-alive direct connection's server for its instructions now.
+
+    One ``server/discover`` per server, in parallel, each bounded by ``timeout``
+    (:func:`~clio_agent.tools.mcp_server_instructions.rediscover_instructions`); a
+    turn reads the result in its prompt and ``search_tools``. Returns how many answered.
+    """
+    from clio_agent.tools.mcp_server_instructions import (  # noqa: PLC0415
+        rediscover_instructions,
+    )
+
+    clients: dict[str, Any] = {}
+    for host in tuple(self.connections.values()):
+        if host.pool is not None and _usable(host):
+            clients.setdefault(host.cache_key[0], host.client)
+    if not clients:
+        return 0
+    answered = await asyncio.gather(
+        *(
+            rediscover_instructions(server, client, timeout=timeout)
+            for server, client in clients.items()
+        )
+    )
+    return sum(answered)
+
+
 async def hold(
     self: ExternalTasks, server: str, auth_scope: str, owner: Any, configured: Client
 ) -> tuple[Any, Callable[[], Awaitable[None]]]:

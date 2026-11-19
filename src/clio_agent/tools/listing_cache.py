@@ -347,7 +347,7 @@ def load_listing(
             record_instructions,
         )
 
-        record_instructions(namespace, entry["instructions"])
+        record_instructions(namespace, entry["instructions"], cached=True)
     task_capable = entry.get("task_capable")
     source = entry.get("task_capability_source")
     era = entry.get("task_capability_era")

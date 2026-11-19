@@ -2,9 +2,14 @@
 
 A deferred tool stays callable (it is in the agent's tools, under ``_clio_unlisted``)
 but its schema is left out of the tool list sent each step. The composed prompt
-carries one entry per deferred owner (MCP server or plugin): its description and the
-names of its deferred tools, so the agent always knows the tool exists, and
-``search_tools`` returns the schemas (:mod:`clio_agent.gact.search_tools`).
+carries one entry per deferred owner (MCP server or plugin): its description, what an
+MCP server says about itself (its ``instructions``, bounded), and the names of its
+deferred tools, so the agent always knows the tool exists and what it reaches, and
+``search_tools`` returns the schemas (:mod:`clio_agent.gact.search_tools`). Listed MCP
+servers that send instructions get a short section of their own, and ``search_tools``
+matches a server's tools by the words of its instructions as well as their own
+(:mod:`clio_agent.gact.tool_catalog`). The module is built each turn, so the prompt
+carries the instructions of the server's latest connection.
 
 What is deferred:
 
@@ -37,7 +42,7 @@ from typing import Any
 
 from clio_agent import conf
 from clio_agent.gact.tool_catalog import CatalogEntry, ToolCatalog
-from clio_agent.tools.mcp_server_instructions import instructions_for
+from clio_agent.tools.mcp_server_instructions import instructions_excerpt, instructions_for
 
 __all__ = [
     "SEARCH_TOOLS",
@@ -197,8 +202,11 @@ def plan_disclosure(
         trace.event("TOOLS", "%s deferred=%d", TOOLS_DEFERRAL_UNAVAILABLE, len(deferred))
         return Disclosure()
     catalog = ToolCatalog(
-        CatalogEntry(name, _owner(name, servers, plugin_of), *_schema(tools[name]))
-        for name in deferred
+        (
+            CatalogEntry(name, _owner(name, servers, plugin_of), *_schema(tools[name]))
+            for name in deferred
+        ),
+        owner_text=instructions_for,
     )
     plugin_text = {
         str(row.get("id") or ""): str(row.get("description") or "")
@@ -212,16 +220,23 @@ def plan_disclosure(
     )
 
 
-def _instructions_summary(owner: str) -> str:
-    """The listing's short form of a server's instructions, saying where the rest is.
+def _instructions_lines(owner: str, *, deferred: bool) -> list[str]:
+    """The server's own instructions as indented prompt lines, saying when shortened.
 
-    ``search_tools`` returns a server's full instructions with its tools
+    ``search_tools`` returns a deferred server's full instructions with its tools
     (:func:`clio_agent.gact.search_tools.search_result`).
     """
-    summary = instructions_for(owner, summary=True)
-    if summary and summary != instructions_for(owner):
-        summary += " (Its full instructions come with its tools from search_tools.)"
-    return summary
+    text, shortened = instructions_excerpt(owner)
+    if not text:
+        return []
+    lines = ["  It says about itself:", *("    " + line for line in text.splitlines())]
+    if shortened:
+        lines.append(
+            "    (Shortened: its full instructions come with its tools from search_tools.)"
+            if deferred
+            else "    (Shortened.)"
+        )
+    return lines
 
 
 def _entry(
@@ -231,22 +246,46 @@ def _entry(
         "## Tools you load when needed",
         "",
         "These tools are available but not in your tool list. Load the ones you need with "
-        "search_tools, by exact names (`select:name_a,name_b`) or by keywords; a loaded tool "
-        "can be called from your next step.",
+        "search_tools, by exact names (`select:name_a,name_b`) or by keywords (a server's "
+        "own instructions are searched too); a loaded tool can be called from your next step.",
         "",
     ]
     for owner, entries in catalog.by_owner().items():
         server = servers.get(owner) or {}
-        # The plugin's description of the server, else what the server says about itself
-        # when it connects (MCP instructions), else its plugin's description.
-        about = (
-            str(server.get("description") or "")
-            or _instructions_summary(owner)
-            or plugin_text.get(str(server.get("plugin") or owner), "")
+        # The plugin's description of the server, else its plugin's description; what
+        # the server says about itself when it connects (MCP instructions) follows.
+        about = str(server.get("description") or "") or plugin_text.get(
+            str(server.get("plugin") or owner), ""
         )
         lines.append(f"- {owner}: {about}".rstrip(": ") if about else f"- {owner}")
         lines.append("  " + ", ".join(entry.name for entry in entries))
+        lines += _instructions_lines(owner, deferred=True)
     return "\n".join(lines)
+
+
+def _listed_entry(
+    tools: Mapping[str, Any], servers: Mapping[str, Any], deferred_servers: frozenset[str]
+) -> str:
+    """What each MCP server whose tools are listed says about itself (its instructions)."""
+    from clio_agent.gact.code_mode.stubs import owning_server  # noqa: PLC0415
+
+    owners = {owning_server(name, servers) for name in tools} - deferred_servers - {""}
+    blocks = []
+    for owner in sorted(owners):
+        if lines := _instructions_lines(owner, deferred=False):
+            blocks += [f"- {owner}", *lines]
+    if not blocks:
+        return ""
+    return "\n".join(
+        [
+            "## What your MCP servers say about themselves",
+            "",
+            "Each of these servers sent these instructions when it connected; its tools are "
+            "in your tool list.",
+            "",
+            *blocks,
+        ]
+    )
 
 
 def apply_disclosure(
@@ -274,6 +313,11 @@ def apply_disclosure(
     # Code-only tools are kernel stubs: never listed, never in the deferred catalog.
     offered = {name: tool for name, tool in tools.items() if name not in code_only}
     disclosure = plan_disclosure(resolution, offered, context_tokens=context_tokens, loaded=loaded)
+    listed_entry = _listed_entry(
+        {name: tool for name, tool in offered.items() if name not in disclosure.deferred},
+        frozenset(getattr(resolution, "mcp_servers", {}) or {}),
+        disclosure.deferred_servers,
+    )
     unlisted = frozenset(getattr(program, "_clio_unlisted", frozenset())) | code_only
     if not disclosure.deferred and SEARCH_TOOLS in tools:
         unlisted |= {SEARCH_TOOLS}
@@ -288,7 +332,7 @@ def apply_disclosure(
     from clio_agent.gact.mcp_app_tools import attach_app_tools  # noqa: PLC0415
 
     attach_app_tools(program)  # the session's view tools: deferred, owned by their server
-    return disclosure.entry
+    return "\n\n".join(part for part in (disclosure.entry, listed_entry) if part)
 
 
 def sync_deferred_catalog(program: Any) -> list[str]:

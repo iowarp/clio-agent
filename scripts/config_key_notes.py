@@ -1503,9 +1503,15 @@ KEY_NOTES: dict[str, str] = {
         "the prompt entry names them all."
     ),
     "tools.instructions_chars": (
-        "Characters of an MCP server's own instructions used to describe a deferred server in "
-        "the prompt's listing, when its plugin gives no description; a shortened entry says "
-        "so, and search_tools returns the whole instructions with the server's tools."
+        "Characters of each MCP server's own instructions that the prompt carries, for a "
+        "listed or a deferred server; a shortened excerpt says so, and search_tools returns "
+        "the whole instructions with a deferred server's tools."
+    ),
+    "tools.instructions_refresh_s": (
+        "Seconds a turn waits, before its prompt is built, for each kept-alive MCP server to "
+        "say again what it says about itself (server/discover on its open connection), so a "
+        "server whose instructions change while it runs is described as it is now; 0 turns "
+        "the refresh off."
     ),
     "code.max_script_chars": (
         "Characters of a run_code script that a permission question shows the person."

@@ -377,7 +377,8 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_TOOLS_DEFER_SHARE` | `tools.defer_share` | str | `0.05` | `src/clio_agent/gact/agents/deferred_tools.py` |
 | `CLIO_TOOLS_DEFER_TOKENS` | `tools.defer_tokens` | int | `4000` | `src/clio_agent/gact/agents/deferred_tools.py` |
 | `CLIO_TOOLS_FULL_RESULT` | `tools.full_result` | list | `load_skill` | `src/clio_agent/gact/agents/native_result_bound.py` |
-| `CLIO_TOOLS_INSTRUCTIONS_CHARS` | `tools.instructions_chars` | int | `300` | `src/clio_agent/tools/mcp_server_instructions.py` |
+| `CLIO_TOOLS_INSTRUCTIONS_CHARS` | `tools.instructions_chars` | int | `1000` | `src/clio_agent/tools/mcp_server_instructions.py` |
+| `CLIO_TOOLS_INSTRUCTIONS_REFRESH_S` | `tools.instructions_refresh_s` | float | `2.0` | `src/clio_agent/tools/mcp_server_instructions.py` |
 | `CLIO_TOOLS_NEVER_DEFER` | `tools.never_defer` | list | `search_tools,ask_user,load_skill,submit,run_code,wait_tasks,spawn_agent_task,spawn_agents_parallel,write_todos,plan_enter,plan_update,plan_exit,fs_*,shell_*,memory_search,memory_read` | `src/clio_agent/gact/agents/deferred_tools.py` |
 | `CLIO_TOOLS_PERMISSIONS` | `tools.permissions` | mapping | `{}` _(computed)_ | `src/clio_agent/tools/tool_settings.py` |
 | `CLIO_TOOLS_PER_SERVER_CONCURRENCY` | `tools.per_server_concurrency` | int | `8` | `src/clio_agent/gact/agents/tool_concurrency.py` |
@@ -434,6 +435,7 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_DOCUMENT_SHORT_TEMP` | unmigrated | `src/clio_agent/runtime/document_stack/process.py` |
 | `CLIO_DOCUMENT_TECTONIC` | unmigrated | `src/clio_agent/runtime/tectonic.py` |
 | `CLIO_DOCUMENT_TYPST_FONT` | unmigrated | `src/clio_agent/gact/documents/renditions.py` |
+| `CLIO_EGRESS_RELAY` | unmigrated | `src/clio_agent/runtime/net_connect.py` |
 | `CLIO_ENV_FILE` | bootstrap | `src/clio_agent/env_file.py` |
 | `CLIO_FROM_SCRATCH` | unmigrated | `src/clio_agent/gact/infrastructure/node_service.py`, `src/clio_agent/gact/infrastructure/reuse.py` |
 | `CLIO_GACT_CAPABILITIES_REFRESH_S` | unmigrated | `src/clio_agent/gact/capabilities_snapshot.py` |

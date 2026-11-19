@@ -6,7 +6,10 @@ argument names and JSON schema. :meth:`ToolCatalog.search` takes three query for
 
 - ``select:a,b`` returns exactly those tools;
 - ``+term rest`` keeps tools whose name contains ``term`` and ranks them by ``rest``;
-- plain keywords rank by BM25 over name, description, argument names and owner.
+- plain keywords rank by BM25 over name, description, argument names and owner, plus a
+  smaller score for the words of the owner's own text (an MCP server's instructions,
+  ``owner_text``), so a server that names a site, dataset or package in its
+  instructions is found by that word even when no tool's description says it.
 
 Names are tokenized whole and on ``_``/``__``/``-``, and any word of the query that is
 exactly a tool's name puts that tool first, ahead of the ranked results, so a search
@@ -18,7 +21,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -26,6 +29,9 @@ __all__ = ["CatalogEntry", "ToolCatalog"]
 
 _WORD = re.compile(r"[a-z0-9]+")
 _K1, _B = 1.2, 0.75
+#: An owner's text counts for less than a tool's own words: it ranks the owner's tools
+#: into a search's results, after the tools that match by their own words.
+_OWNER_WEIGHT = 0.5
 
 
 #: Words that say nothing about which tool is meant.
@@ -69,8 +75,15 @@ class CatalogEntry:
 class ToolCatalog:
     """The deferred tools of one agent, searchable by name or keywords."""
 
-    def __init__(self, entries: Iterable[CatalogEntry] = ()) -> None:
+    def __init__(
+        self,
+        entries: Iterable[CatalogEntry] = (),
+        *,
+        owner_text: Callable[[str], str] | None = None,
+    ) -> None:
         self._entries: dict[str, CatalogEntry] = {}
+        # Read at search time: an owner's text may change after the catalog is built.
+        self._owner_text = owner_text
         for entry in entries:
             self._entries[entry.name] = entry
 
@@ -146,5 +159,31 @@ class ToolCatalog:
                 score += idf * tf * (_K1 + 1) / (tf + _K1 * (1 - _B + _B * length / average))
             if score > 0:
                 scores[name] = score
+        owner_scores = self._owner_scores(pool, terms)
+        for entry in pool:
+            if bonus := owner_scores.get(entry.owner, 0.0):
+                scores[entry.name] = scores.get(entry.name, 0.0) + bonus
         by_name = {entry.name: entry for entry in pool}
         return [by_name[name] for name in sorted(scores, key=lambda n: (-scores[n], n))]
+
+    def _owner_scores(self, pool: list[CatalogEntry], terms: list[str]) -> dict[str, float]:
+        """Per owner: how well its own text matches, below a tool's own match.
+
+        Each distinct query word in the owner's text adds ``_OWNER_WEIGHT`` times its
+        rarity across the owners, so a word every owner says counts least.
+        """
+        if self._owner_text is None:
+            return {}
+        words = {
+            owner: set(_tokens(self._owner_text(owner) or ""))
+            for owner in {entry.owner for entry in pool}
+        }
+        scores: dict[str, float] = {}
+        for term in set(terms):
+            having = [owner for owner, said in words.items() if term in said]
+            if not having:
+                continue
+            idf = math.log(1 + (len(words) - len(having) + 0.5) / (len(having) + 0.5))
+            for owner in having:
+                scores[owner] = scores.get(owner, 0.0) + _OWNER_WEIGHT * idf
+        return scores
