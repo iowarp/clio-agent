@@ -86,6 +86,7 @@ today.
 | `accounts[].scopes` | List of scope strings, may be empty | Not a list of text |
 | `elicitation.loopback` | Boolean, default `false` | Not a boolean |
 | `elicitation.origins` | List of `https://host[:port]` origins, no path | Other scheme, a path, a wildcard |
+| `elicitation.audience` | Optional, only `"person"`: what this plugin's servers ask (an approval, a spend, a review) needs the person. Their questions go straight to the person, even when a server tags one for the agent (see "Questions that need the person"). Untagged questions already go to the person by default | Any other value |
 | `setup.files` | Optional list of paths relative to the plugin's `PLUGIN_DATA` folder: the plugin's own state files that say the person has set it up (see "Set-up plugins join new conversations") | Not a list, another field beside `files`, an absolute path, a backslash, a drive or `..` |
 
 `catalogs` is unchanged: a built-in catalog's name (`"basic"`), and any catalog the
@@ -529,6 +530,32 @@ question's `metadata.elicitation` fields are also spread flat into `payload`, as
 url-mode field already is: `payload.origin`, `payload.origin_trust`, `payload.plugin`,
 `payload.server` and, when present, `payload.plugin_title` sit beside `payload.url`.
 `payload.metadata` keeps the nested copy.
+
+## Questions that need the person
+
+Any server can ask through elicitation, from a plain tool call or from a task's
+`input_required`. How CLIO handles such a question:
+
+- **Who answers.** A form question goes to an agent helper only when the server tags it
+  `_meta["x-clio-agent/audience"] = "agent"`. Every other question, an untagged one
+  included, is the person's from the start: the agent never sees or answers it. A server
+  of a plugin that declares `elicitation.audience: "person"` is the person's even when
+  tagged. A deployment can opt in to sending untagged form questions to the helper first
+  (`tools.mcp.elicitation.agent_audience.default_unhinted`, off by default), because the
+  MCP SDK drops the `_meta` tag on a task's `input_required` round trip.
+- **The turn waits.** A plain tool call that asks already blocks until the answer comes,
+  like a permission ask. A task-augmented call now behaves the same while its task waits
+  for input. After the server accepts the task, the agent's call waits up to 2 s for the
+  server's first status report. If the task then waits for input, the call holds until
+  the task stops waiting (answered, declined, settled or cancelled) or the turn is
+  stopped, and only then returns its receipt. The agent continues with the answer in the
+  same turn instead of ending it with "please review the pending request". A task that
+  does not ask returns its receipt as before. Page actions (HS2) are not held.
+- **Title.** The pending interaction's `title` (`GET /v1/sessions/{sid}/interactions`)
+  names who asks and what: the plugin's `title`, or the server name when it has none,
+  then the first sentence of the question, bounded to one line of at most 90
+  characters for the ask, for example `Compute: Submit the job to cluster-a?`. A
+  question from no server keeps `Question`; a plan review keeps `Review the plan`.
 
 ## Set-up plugins join new conversations
 

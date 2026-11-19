@@ -108,6 +108,17 @@ def test_a_plugin_title_reaches_each_server_slice(tmp_path: Path) -> None:
     assert "title" not in load_plugin(_plain(tmp_path), trusted=True).host
 
 
+def test_an_elicitation_audience_reaches_each_server_slice(tmp_path: Path) -> None:
+    root = plugin(
+        tmp_path, "asks", ext={"elicitation": {"audience": "person"}}, servers={"s": _stdio()}
+    )
+    record = load_plugin(root, trusted=True)
+
+    assert record.host["elicitation"] == {"loopback": False, "origins": [], "audience": "person"}
+    assert host_semantics.server_host(record, "s")["elicitation"]["audience"] == "person"
+    assert "elicitation" not in load_plugin(_plain(tmp_path), trusted=True).host
+
+
 def test_a_navigation_page_is_normalized_like_a_tab(tmp_path: Path) -> None:
     root = plugin(
         tmp_path,
@@ -163,7 +174,8 @@ def test_a_navigation_page_is_normalized_like_a_tab(tmp_path: Path) -> None:
         ),
         ({"elicitation": {"origins": ["http://x.org"]}}, {"s": _stdio()}, "https://"),
         ({"elicitation": {"loopback": "yes"}}, {"s": _stdio()}, "true or false"),
-        ({"elicitation": {"other": True}}, {"s": _stdio()}, "only loopback and origins"),
+        ({"elicitation": {"other": True}}, {"s": _stdio()}, "only loopback, origins and audience"),
+        ({"elicitation": {"audience": "agent"}}, {"s": _stdio()}, r"audience must be 'person'"),
         ({"title": " "}, {"s": _stdio()}, ".title must be"),
         ({"title": 3}, {"s": _stdio()}, ".title must be"),
         ({"navigation": []}, {"s": _stdio()}, "navigation must be an object"),

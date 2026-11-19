@@ -53,6 +53,21 @@ def _denied_servers() -> frozenset[str]:
     return frozenset(configured) | PERSON_ONLY_SERVERS
 
 
+def plugin_asks_person(namespace: str) -> bool:
+    """Whether the plugin declaring server ``namespace`` says its questions are the person's.
+
+    A plugin sets ``elicitation.audience: "person"`` in its ``ai.iowarp.clio`` extension
+    when what its servers ask (an approval, a spend, a review) needs a person; those
+    questions then go straight to the person, never to an agent helper first.
+    """
+
+    from clio_agent.plugins.host_semantics import plugin_host, server_plugin  # noqa: PLC0415
+
+    plugin = server_plugin(namespace) if namespace else ""
+    declared = plugin_host(plugin, namespace).get("elicitation") if plugin else None
+    return isinstance(declared, dict) and declared.get("audience") == "person"
+
+
 def _max_depth() -> int:
     """The bounded agent-answer recursion depth (default 1)."""
 
@@ -65,17 +80,18 @@ def _max_depth() -> int:
 
 
 def _default_unhinted() -> bool:
-    """Whether an UNHINTED form elicitation defaults to the agent (default ON).
+    """Whether an UNHINTED form elicitation goes to the agent (default OFF).
 
-    fastmcp's ``InputRequiredResult`` round-trip drops the nested ``_meta``, so
-    an explicit ``x-clio-agent/audience`` tag never survives MRTR -- ``audience``
-    arrives empty. Default ON so agent-driven elicitation functions at all over
-    MRTR; set off to force strict explicit-tag routing.
+    Only an explicit ``x-clio-agent/audience: agent`` tag routes a question to the
+    agent: an untagged one is the server asking the person (a spend approval, a
+    review), so it reaches the person and the turn waits. fastmcp's
+    ``InputRequiredResult`` round-trip drops the nested ``_meta``, so a deployment
+    whose servers rely on agent answers over MRTR can opt in here.
     """
 
     return conf.resolve(
         "tools.mcp.elicitation.agent_audience.default_unhinted",
         env="CLIO_MCP_ELICITATION_AGENT_AUDIENCE_DEFAULT_UNHINTED",
-        default=True,
+        default=False,
         cast=conf.as_bool,
     )

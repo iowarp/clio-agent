@@ -248,7 +248,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_MCP_CONTENT_BLOCK_MAX_BYTES` | `limits.mcp_content_block_max_bytes` | int | `524288` | `src/clio_agent/tools/mcp_results.py` |
 | `CLIO_MCP_DISCOVERY_CONCURRENCY` | `tools.mcp.discovery_concurrency` | int | `8` | `src/clio_agent/tools/mcp_discovery.py` |
 | `CLIO_MCP_DISCOVERY_HEAL_INTERVAL_S` | `tools.mcp.discovery_heal_interval_s` | float | `20.0` | `src/clio_agent/tools/mcp_discovery.py` |
-| `CLIO_MCP_ELICITATION_AGENT_AUDIENCE_DEFAULT_UNHINTED` | `tools.mcp.elicitation.agent_audience.default_unhinted` | bool | `true` | `src/clio_agent/gact/agent_elicitation_policy.py` |
+| `CLIO_MCP_ELICITATION_AGENT_AUDIENCE_DEFAULT_UNHINTED` | `tools.mcp.elicitation.agent_audience.default_unhinted` | bool | `false` | `src/clio_agent/gact/agent_elicitation_policy.py` |
 | `CLIO_MCP_ELICITATION_AGENT_AUDIENCE_DENIED_SERVERS` | `tools.mcp.elicitation.agent_audience.denied_servers` | list | `default` _(computed)_ | `src/clio_agent/gact/agent_elicitation_policy.py` |
 | `CLIO_MCP_ELICITATION_AGENT_AUDIENCE_ENABLED` | `tools.mcp.elicitation.agent_audience.enabled` | bool | `true` | `src/clio_agent/gact/agent_elicitation_policy.py` |
 | `CLIO_MCP_ELICITATION_AGENT_AUDIENCE_MAX_DEPTH` | `tools.mcp.elicitation.agent_audience.max_depth` | int | `1` | `src/clio_agent/gact/agent_elicitation_policy.py` |

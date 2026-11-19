@@ -61,6 +61,8 @@ _TAB_FIELDS = {"id", "title", "icon", "server", "resource"}
 NAVIGATION_ID = "page"
 _TAB_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 _HTTPS_ORIGIN = re.compile(r"^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$")
+#: ``elicitation.audience``: the plugin's servers ask the person, never an agent helper.
+ELICITATION_AUDIENCE = "person"
 #: What one ``servers.<name>`` entry may set.
 _SERVER_FIELDS = ("defer", "description", "callers", "permission", "tools")
 _STDIO_FIELDS = {"type", "command", "args", "env", "cwd"}
@@ -260,10 +262,16 @@ def _check_host_semantics(ext: Mapping[str, Any], plugin: str) -> None:
         if not isinstance(scopes, list) or not all(isinstance(s, str) and s for s in scopes):
             raise ManifestError(f"{where}.scopes must be a list of scope strings")
     elicitation = ext.get("elicitation", {})
-    if not isinstance(elicitation, dict) or set(elicitation) - {"loopback", "origins"}:
-        raise ManifestError(f"{plugin}: {NAMESPACE}.elicitation may set only loopback and origins")
+    if not isinstance(elicitation, dict) or set(elicitation) - {"loopback", "origins", "audience"}:
+        raise ManifestError(
+            f"{plugin}: {NAMESPACE}.elicitation may set only loopback, origins and audience"
+        )
     if "loopback" in elicitation and not isinstance(elicitation["loopback"], bool):
         raise ManifestError(f"{plugin}: {NAMESPACE}.elicitation.loopback must be true or false")
+    if elicitation.get("audience", ELICITATION_AUDIENCE) != ELICITATION_AUDIENCE:
+        raise ManifestError(
+            f"{plugin}: {NAMESPACE}.elicitation.audience must be {ELICITATION_AUDIENCE!r}"
+        )
     origins = elicitation.get("origins", [])
     if not isinstance(origins, list) or not all(
         isinstance(o, str) and _HTTPS_ORIGIN.match(o) for o in origins
@@ -341,11 +349,13 @@ def host_semantics(
     if accounts:
         out["accounts"] = accounts
     elicitation = ext.get("elicitation") or {}
-    if elicitation.get("loopback") or elicitation.get("origins"):
+    if elicitation.get("loopback") or elicitation.get("origins") or elicitation.get("audience"):
         out["elicitation"] = {
             "loopback": bool(elicitation.get("loopback")),
             "origins": [origin.lower() for origin in elicitation.get("origins") or []],
         }
+        if elicitation.get("audience"):
+            out["elicitation"]["audience"] = str(elicitation["audience"])
     setup_files = [str(path) for path in (ext.get("setup") or {}).get("files") or []]
     if setup_files:
         out["setup"] = {"files": setup_files}

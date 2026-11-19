@@ -20,6 +20,7 @@ from clio_agent.gact.agent_elicitation_policy import (
     _denied_servers,
     _enabled,
     _max_depth,
+    plugin_asks_person,
 )
 from clio_agent.gact.agent_elicitation_reasons import (
     AGENT_AUDIENCE_META_KEY,
@@ -82,14 +83,16 @@ def decide_routing(
     policy, and recursion depth -- never on question/prompt CONTENT (superseding
     principle #1: clio never keyword-matches a model's or a server's prose).
 
-    An explicit ``audience == "agent"`` routes. An EMPTY audience also routes by
-    default (:func:`_default_unhinted`, typed :data:`ROUTED_UNHINTED_REASON`)
-    because fastmcp drops the ``_meta`` tag in transit. An unrecognized non-empty
-    audience, or ``url`` mode, never routes.
+    An explicit ``audience == "agent"`` routes. An EMPTY audience is the person's
+    by default (:func:`_default_unhinted` is off): an untagged ask such as a spend
+    approval must never be answered by the agent. A deployment can opt in to
+    routing unhinted asks (typed :data:`ROUTED_UNHINTED_REASON`), since fastmcp
+    drops the ``_meta`` tag in transit. An unrecognized non-empty audience, or
+    ``url`` mode, never routes.
     """
 
-    if namespace in PERSON_ONLY_SERVERS:  # always the person's: never offered to an agent
-        return AgentElicitationDecision(route=False)
+    if namespace in PERSON_ONLY_SERVERS or plugin_asks_person(namespace):
+        return AgentElicitationDecision(route=False)  # the person's: never offered to an agent
     explicit_agent = audience == AGENT_AUDIENCE_VALUE
     if not explicit_agent:
         # Unrecognized non-empty value, url mode, or strict routing -> no-op.

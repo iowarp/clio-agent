@@ -63,6 +63,7 @@ def _record_reply(
             or reply.task_id != accepted.task.task_id
         ):
             raise ValueError("External reply differs from its captured submission/backend identity")
+        self._unreported.discard(current.handle)  # the server has now reported on it
         if current.terminal_at is not None:
             finish_terminal(self, current.handle)
             return

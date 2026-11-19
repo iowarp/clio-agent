@@ -23,11 +23,16 @@ from clio_agent.arc.task_types import (
     BackendReference,
     SubmissionContext,
     TaskOwner,
-    TaskProgress,
     TaskSnapshot,
     argument_digest,
 )
-from clio_agent.gact import context, external_task_connections, external_task_inputs
+from clio_agent.gact import (
+    context,
+    external_task_connections,
+    external_task_inputs,
+    external_task_records,
+    task_input_hold,
+)
 from clio_agent.gact import view_call_ledger as view_calls
 from clio_agent.gact.assignment_anchor import owning_assignment
 from clio_agent.gact.external_read_only import LazyAdmission, skips_write_ahead
@@ -99,6 +104,7 @@ class ExternalTasks:
         # Read-only calls sent before their admission is written (external_read_only),
         # and their records, written behind their replies (read_only_outcomes).
         self._lazy: dict[str, LazyAdmission] = {}
+        self._unreported: set[str] = set()  # accepted calls the server has not reported on yet
         self.outcomes = ReadOnlyOutcomes(self.history, self.recovery)
         self._unwatch_fleets: Callable[[], None] | None = None
         self._unshare_direct: Callable[[], None] | None = None
@@ -518,7 +524,19 @@ class ExternalTasks:
                 retire=lambda: self._retire_connection(host),
             )
         if stopped:
+            self._unreported.discard(handle)
             raise asyncio.CancelledError
+        if accepted:  # an ask made at once keeps the call, and so the turn, waiting
+            try:
+                await task_input_hold.hold_while_input(
+                    self.app,
+                    handle,
+                    assignment=assignment.handle,
+                    session_id=sid,
+                    reported=lambda: handle not in self._unreported,
+                )
+            finally:
+                self._unreported.discard(handle)
         return reply
 
     def _adopt(self, host: ExternalConnection, accepted: AcceptedNativeCall) -> Any:
@@ -537,6 +555,7 @@ class ExternalTasks:
                     "connection_freshness": "fresh",
                 }
             )
+            self._unreported.add(current.handle)
             self.history.record_snapshot(observed, observation_id=uuid4().hex)
             return accepted_result(
                 {
@@ -696,46 +715,12 @@ class ExternalTasks:
     def _attention(
         self, handle: str, message: str, *, lost: bool = True, episode: str = ""
     ) -> None:
-        with self.history.serialized():
-            current = self.history.task_snapshot(handle)
-            if current.terminal_at is not None:
-                return
-            if (
-                current.status == "task_state_uncertain"
-                and current.progress.message == message
-                and (not lost or current.connection_freshness == "lost")
-                and current.attention_episode
-            ):
-                return
-            observed = current.model_copy(
-                update={
-                    "status": "task_state_uncertain",
-                    "settlement": "unknown",
-                    "connection_freshness": "lost" if lost else current.connection_freshness,
-                    "updated_at": now(),
-                    "progress": TaskProgress(message=message),
-                    "attention_episode": current.attention_episode or episode or uuid4().hex,
-                }
-            )
-            self.history.record_snapshot(observed, observation_id=uuid4().hex)
-            publish_task_notice(self.history, observed, episode=observed.attention_episode)
+        external_task_records.attention(self.history, handle, message, lost=lost, episode=episode)
 
     def _record_progress(
         self, handle: str, done: float, total: float | None, message: str | None
     ) -> None:
-        """Persist this invocation's progress; progress alone cannot wake a model."""
-        with self.history.serialized():
-            current = self.history.task_snapshot(handle)
-            if current is None or current.terminal_at is not None:
-                return
-            progress = current.progress.model_copy(
-                update={"completed": done, "total": total, "message": message or ""}
-            )
-            progress = TaskProgress.model_validate(progress.model_dump())
-            self.history.record_snapshot(
-                current.model_copy(update={"progress": progress, "updated_at": now()}),
-                observation_id=uuid4().hex,
-            )
+        external_task_records.record_progress(self.history, handle, done, total, message)
 
     @staticmethod
     def _inline_value(reply: Any) -> dict[str, Any]:
@@ -775,29 +760,7 @@ class ExternalTasks:
             # Inline output is already this invocation's observation; no task wake.
 
     def _rejected(self, handle: str, reason: str) -> None:
-        with self.history.serialized():
-            current = self.history.task_snapshot(handle)
-            if current.terminal_at is not None:
-                return
-            result = self.history.write_content(
-                current.owner.session_id, {"error": reason, "acceptance": "rejected"}
-            )
-            stamp = now()
-            self.history.record_snapshot(
-                current.model_copy(
-                    update={
-                        "status": "failed",
-                        "raw_status": "rejected",
-                        "activity": "",
-                        "settlement": "never_started",
-                        "terminal_at": stamp,
-                        "updated_at": stamp,
-                        "result": result,
-                        "supported_actions": ("get_result",),
-                    }
-                ),
-                observation_id=uuid4().hex,
-            )
+        external_task_records.rejected(self.history, handle, reason)
 
     async def _record_or_defer(self, identity: str, write: Any, *, retire: Any = None) -> None:
         async def record() -> None:

@@ -1604,11 +1604,11 @@ KEY_NOTES: dict[str, str] = {
         "recover faster, raise to cut retry noise."
     ),
     "tools.mcp.elicitation.agent_audience.default_unhinted": (
-        "Whether an UNHINTED form-mode elicitation defaults to the agent. fastmcp drops the "
-        "nested _meta on the InputRequiredResult round-trip, so an explicit "
-        "x-clio-agent/audience tag cannot survive MRTR; on = route by the negotiated "
-        "agent-driven-elicitation extension contract, off = strict explicit-tag routing "
-        "(unhinted questions go to the human)."
+        "Whether an UNHINTED form-mode elicitation goes to the agent. Off: only an explicit "
+        "x-clio-agent/audience=agent tag routes to the agent, and an untagged question (a "
+        "spend approval, a review) reaches the person while the turn waits. fastmcp drops the "
+        "nested _meta on the InputRequiredResult round-trip, so turn on only when your "
+        "servers need agent answers over MRTR."
     ),
     "tools.mcp.elicitation.agent_audience.denied_servers": (
         "CSV of declared MCP server names whose agent-audience elicitations always fall back to "

@@ -60,7 +60,11 @@ class UserQuestion(BaseModel):
     # from ``clio_agent.gact.agent_elicitation.AGENT_ELICITATION_FALLBACK_DETAILS``
     # naming WHY -- policy/url-mode/recursion/schema/timeout/etc; never silent).
     agent_elicitation_routing: Optional[
-        Literal["elicitation_routed_to_agent", "agent_elicitation_fallback_to_human"]
+        Literal[
+            "elicitation_routed_to_agent",
+            "elicitation_routed_to_agent_unhinted",
+            "agent_elicitation_fallback_to_human",
+        ]
     ] = None
     agent_elicitation_fallback_detail: Optional[str] = None
     # ``answered_by`` -- attribution stamped on the ONE atomic "answered"
@@ -136,7 +140,11 @@ class PendingInteraction(BaseModel):
     requires_human_response: bool = False
     audience: Optional[Literal["human", "agent"]] = None
     routing_state: Optional[
-        Literal["elicitation_routed_to_agent", "agent_elicitation_fallback_to_human"]
+        Literal[
+            "elicitation_routed_to_agent",
+            "elicitation_routed_to_agent_unhinted",
+            "agent_elicitation_fallback_to_human",
+        ]
     ] = None
     fallback_detail: str = ""
     answered_by: Optional[Literal["human", "agent", "unattended"]] = None

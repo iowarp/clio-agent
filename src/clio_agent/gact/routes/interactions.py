@@ -20,6 +20,7 @@ from clio_agent.gact.permission_delivery import attended_session_id
 from clio_agent.gact.permission_gate import GRANTOR_USER, resolve_permission
 from clio_agent.gact.permission_timeout import REASON_PERMISSION_CANCELLED
 from clio_agent.gact.question_surface import question_row
+from clio_agent.gact.question_titles import question_title
 from clio_agent.gact.routes.interaction_surface_projection import (
     _latest_action_record as _latest_action_record,
 )
@@ -368,7 +369,11 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
         attended_session_id=question.attended_session_id,
         task_id=question.task_handle or question.id,
         status=question.status,
-        title="Review the plan" if is_plan_exit_question(question) else "Question",
+        title=(
+            "Review the plan"
+            if is_plan_exit_question(question)
+            else question_title(question.prompt, question.metadata)
+        ),
         prompt=question.prompt,
         requires_human_response=question.status == "pending",
         audience=question.audience,

@@ -354,6 +354,10 @@ class TaskOperations:
         owner = getattr(getattr(self.app, "state", None), "conversations", None)
         return bool(owner is not None and owner.mail.interrupting_input(caller))
 
+    def assignment_stopped(self, handle: str) -> bool:
+        """Whether assignment ``handle`` was stopped or has ended (a held call returns)."""
+        return self._stopping(handle)
+
     def _stopping(self, handle: str) -> bool:
         """Whether the calling assignment was stopped (not cancelled) or has ended.
 
