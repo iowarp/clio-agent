@@ -4,7 +4,7 @@ The issues below were reported from a Desktop 0.7.1 demo (backend v0.9.7.1). Eac
 was checked against develop: clio-agent `8247abe`, gact-tui `22fc042` and the
 marketplace commit develop pins, `7d1933c`. Each was reproduced on a live,
 isolated develop stack where that was possible. The fixes are on
-`claude/develop-ux-fixes` in clio-agent (3 commits) and, because this session cannot
+`claude/develop-ux-fixes` in clio-agent (4 commits) and, because this session cannot
 push gact-tui, as patches in [`gact-tui-patches/`](gact-tui-patches/) (5 commits).
 
 Apply the gact-tui patches on a branch from gact-tui `develop`:
@@ -21,7 +21,7 @@ branch (`407c5a9`).
 
 | # | Issue | On develop | Change |
 |---|---|---|---|
-| 1 | Some tool groups did not fold | **Not reproduced.** Three Deep research runs (one stopped, one finished, one in edit mode) folded every group; no call was left without a result. The fold rule waits for every call in a group to settle, so a group stays open only when a call never reports an end. | None. One way it happens was seen (below): lost store writes left a task `active` after its session errored. If it recurs, send the session id and `GET /v1/sessions/<id>/agent-tasks`. |
+| 1 | Some tool groups did not fold | **Reproduced** with your EarthScope request through the UI. "Search web" spun for 24 minutes with only a spinner and the elapsed time. It was waiting on a source consent ("Allow searches through Keenable?") that sat behind another card in the question pager, and nothing tied the two together: the consent question carried its call id only in its elicitation block, not in `source.invocation_id`. | clio-agent: an elicitation question names the call waiting on it. Live: the row now reads "waiting for you" and links to the card, its group reads "Waiting for your answer", and settled groups fold. |
 | 2 | Tiny agent checkboxes | **Present.** `CheckBox` was the bare upstream control. | gact-tui `ClioCheckBox`: CLIO's checkbox; the whole row is the hit target, at least 36 px (44 px on touch). |
 | 3 | Chip shows `earthscope.stations.selected recorded` | **Present.** Unknown action names printed raw. | gact-tui: names the control pressed (`“Analyse selected station” recorded`), else "Your choice"; no extra divider. |
 | 4 | Deep research tag not at the right | **Present.** It sat about 125 px left of the bubble edge: hidden hover actions after it kept their width. | gact-tui: hover actions come first; the tag ends the row. |
@@ -53,8 +53,10 @@ branch (`407c5a9`).
   headline and the full message under Details.
 - A full Deep research run on the fixed stack (2 GB store) completed: plan, two
   rounds, report saved, every call settled and every group folded.
-- Item 3's chip was verified by component tests only. A live check needs an agent
-  surface with an action; none was staged.
+- Live EarthScope run driven through the UI: after a station was picked on the
+  agent's map, the chip read "“Analyse selected station” recorded" (item 3). The
+  Keenable consent showed two buttons, and pressing the first sent
+  `{"action": "answer", "metadata": {"choice": "approve"}}` (item 12).
 
 ## Found while validating (not changed here)
 
@@ -66,7 +68,7 @@ branch (`407c5a9`).
   stayed `active`, so the conversation stayed "running" and its waiting call never
   settled. A normal install's store starts at 2 GB or more and grows. A 2 GB rerun
   completed. Two follow-ups: the cloud cap, and a task whose
-  session errored should not stay `active`. That is one way item 1's open groups can happen.
+  session errored should not stay `active`. That is a second way a group can stay open.
 - **Two kernels start for one agent at once.** Parallel `run_code` calls from one
   researcher logged `kernel started` twice for the same key. One call then failed in
   6 ms ("the Python kernel did not start" / "did not take its tools" / "stopped"):
