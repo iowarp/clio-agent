@@ -303,6 +303,20 @@ def test_method_flows_into_net_egress_record_dict() -> None:
     )
     record_egress(app, connect_rec)
     assert net_egress_records(app)[1]["method"] == ""
+    assert net_egress_records(app)[1]["network"] == ""
+    local_rec = nc.EgressRecord(
+        child_id="c1",
+        host="ares.local",
+        port=22,
+        resolved_ip="127.0.1.1",
+        transport="connect",
+        mechanism="proxy-enforced",
+        workspace_root="/ws",
+        at="2026-07-23T00:00:02+00:00",
+        network=nc.NETWORK_LOOPBACK,
+    )
+    record_egress(app, local_rec)
+    assert net_egress_records(app)[2]["network"] == "loopback"
 
 
 # --------------------------------------------------------------------------- #

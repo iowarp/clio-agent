@@ -93,6 +93,9 @@ def _record_to_dict(rec: "EgressRecord") -> dict[str, Any]:
         # The plain-HTTP verb (N2) — the write-classification signal on the durable record
         # (``""`` for an opaque CONNECT tunnel). Additive: existing consumers ignore it.
         "method": rec.method,
+        # Loopback, link-local or private when the person consented to a non-public host
+        # (``""`` for a public one), so the trace shows which egress needed that consent.
+        "network": rec.network,
     }
 
 
