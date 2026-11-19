@@ -52,8 +52,10 @@ def main() -> None:
                 failures[key] = (name, count + 1)
             elif kind == "text" and message.get("role") == "assistant" and part.get("text"):
                 replies.append(part["text"])
-    print(f"Session `{args.session}`, status {session.get('status')}, "
-          f"{sum(calls.values())} calls, {sum(c for _, c in failures.values())} failed.\n")
+    print(
+        f"Session `{args.session}`, status {session.get('status')}, "
+        f"{sum(calls.values())} calls, {sum(c for _, c in failures.values())} failed.\n"
+    )
     print(f"Skills loaded, in order: {', '.join(f'`{s}`' for s in skills) or 'none'}.\n")
     print("Calls: " + ", ".join(f"`{name}` ×{count}" for name, count in calls.most_common()) + "\n")
     if failures:
