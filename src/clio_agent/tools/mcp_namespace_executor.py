@@ -81,6 +81,9 @@ class AsyncNamespacePreparationMixin:
         client = self._namespace_clients.get(namespace)
         if not isinstance(client, Client) or namespace not in self._connected_namespaces:
             return
+        push_only: dict[str, Any] = self.__dict__.setdefault("_clio_tools_push_only", {})
+        if push_only.get(namespace) is client:
+            return  # this connection already said it cannot listen; a new one is asked again
         direct = self._namespace_direct_routes.get(namespace, False)
         backend = getattr(self._namespace_servers.get(namespace), "client_factory", None)
         if not direct and not callable(backend):
@@ -108,20 +111,25 @@ class AsyncNamespacePreparationMixin:
                 yield backend_client
 
         watches[namespace] = asyncio.create_task(
-            self._run_tools_watch(namespace, session, catch_up),
+            self._run_tools_watch(namespace, session, catch_up, client),
             name=f"clio-mcp-tools-watch:{namespace}",
         )
 
-    async def _run_tools_watch(self, namespace: str, session: Any, catch_up: bool) -> None:
+    async def _run_tools_watch(
+        self, namespace: str, session: Any, catch_up: bool, client: Any = None
+    ) -> None:
         from mcp.shared.exceptions import MCPError  # noqa: PLC0415
 
-        from clio_agent.tools.mcp_listen import watch_tools  # noqa: PLC0415
+        from clio_agent.tools.mcp_listen import PUSH_ONLY, watch_tools  # noqa: PLC0415
 
         try:
-            await watch_tools(session, namespace, catch_up=catch_up)
+            ended = await watch_tools(session, namespace, catch_up=catch_up)
         except (MCPError, OSError, RuntimeError, AttributeError, TypeError) as exc:
             # The watch is an addition: calls and the unsolicited push path still work.
             trace.event("TOOLS", "mcp_listen_tools_failed namespace=%s error=%r", namespace, exc)
+            return
+        if ended == PUSH_ONLY and client is not None:
+            self.__dict__.setdefault("_clio_tools_push_only", {})[namespace] = client
 
     async def _stop_tools_watch(self, namespace: str | None = None) -> None:
         """Cancel ``namespace``'s tools watch, or every watch when ``namespace`` is None."""

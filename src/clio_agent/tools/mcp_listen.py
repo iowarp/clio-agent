@@ -43,6 +43,7 @@ from typing import Any, Protocol
 from clio_agent.runtime import trace
 
 __all__ = [
+    "PUSH_ONLY",
     "ListenUnsupported",
     "combined_message_handler",
     "list_changed_message_handler",
@@ -50,6 +51,10 @@ __all__ = [
     "watch_resource",
     "watch_tools",
 ]
+
+#: :func:`watch_tools` result for a connection whose server cannot listen. Asking that
+#: same connection again would only repeat the refusal.
+PUSH_ONLY = "push_only"
 
 
 class ListenUnsupported(RuntimeError):
@@ -277,7 +282,7 @@ async def watch_tools(
     catch_up: bool = False,
     retry_after: float = 1.0,
     max_retry_after: float = 30.0,
-) -> None:
+) -> str | None:
     """Watch ``namespace``'s server for tool-list changes until cancelled.
 
     At 2026-07-28 a ``notifications/tools/list_changed`` reaches a client only on a
@@ -311,7 +316,7 @@ async def watch_tools(
         try:
             async with open_session() as client:
                 if client is None:
-                    return
+                    return None
                 trace.event("TOOLS", "mcp_listen_tools_start namespace=%s", namespace)
                 async with listen(client.session, tools_list_changed=True) as subscription:
                     delay = retry_after
@@ -322,17 +327,17 @@ async def watch_tools(
                             _record_list_changed(namespace)
         except ListenNotSupportedError:
             trace.event("TOOLS", "mcp_listen_tools_push namespace=%s", namespace)
-            return
+            return PUSH_ONLY
         except (BrokenResourceError, ClosedResourceError) as exc:
             trace.event("TOOLS", "mcp_listen_tools_closed namespace=%s reason=%r", namespace, exc)
-            return
+            return None
         except MCPError as exc:
             if exc.code == METHOD_NOT_FOUND:
                 trace.event("TOOLS", "mcp_listen_tools_push namespace=%s", namespace)
-                return
+                return PUSH_ONLY
             if exc.code == CONNECTION_CLOSED:
                 trace.event("TOOLS", "mcp_listen_tools_closed namespace=%s", namespace)
-                return
+                return None
             raise
         except (SubscriptionLost, TimeoutError) as exc:
             trace.event("TOOLS", "mcp_listen_tools_lost namespace=%s reason=%s", namespace, exc)

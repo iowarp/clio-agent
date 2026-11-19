@@ -221,6 +221,7 @@ class NamespaceRouteDecision:
 #: never the unreachable intent (#1281 F4).
 _ROUTE_DECISIONS: "deque[tuple[str, NamespaceRouteDecision]]" = deque(maxlen=256)
 _ROUTE_DECISIONS_LOCK = Lock()
+_LAST_REPORTED_ROUTE: dict[str, NamespaceRouteDecision] = {}
 
 
 def resolve_namespace_route(namespace: str) -> NamespaceRouteDecision:
@@ -322,7 +323,10 @@ def record_namespace_route_decision(namespace: str, decision: NamespaceRouteDeci
 
     with _ROUTE_DECISIONS_LOCK:
         _ROUTE_DECISIONS.append((namespace, decision))
-    if decision.reason is None:
+        unchanged = _LAST_REPORTED_ROUTE.get(namespace) == decision
+        _LAST_REPORTED_ROUTE[namespace] = decision
+    if decision.reason is None or unchanged:
+        # Every routed call records its route; only a change is a new fact to report.
         return
     from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
 

@@ -80,6 +80,7 @@ from clio_agent.tools.mcp_extension_registry import (
 )
 from clio_agent.tools.mcp_runtime import MCPClientCapabilities, MCPClientHandlers, make_mcp_client
 from clio_agent.tools.mcp_task_routing import (
+    NamespaceRouteDecision,
     record_definitive_capability,
     record_namespace_route_decision,
     recorded_route_heals,
@@ -685,6 +686,23 @@ def test_capability_unknown_default_keeps_the_proxy_path() -> None:
     assert (namespace, decision) not in recorded_task_route_decisions()
     record_namespace_route_decision(namespace, decision)
     assert (namespace, decision) in recorded_task_route_decisions()
+
+
+def test_a_repeated_route_decision_is_reported_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every routed call records its route; only a change is logged and audited."""
+
+    from clio_agent.runtime import stream_audit as audit_module
+
+    audited: list[dict[str, Any]] = []
+    monkeypatch.setattr(audit_module, "stream_audit", lambda _e, **kw: audited.append(kw))
+    namespace = "unit-route-decision-dedupe"
+    direct = NamespaceRouteDecision(use_direct=True, reason=MCP_TASKS_DIRECT_ROUTE_SELECTED)
+    unknown = NamespaceRouteDecision(use_direct=False, reason=MCP_TASK_CAPABILITY_UNKNOWN)
+    for decision in (direct, direct, direct, unknown, unknown, direct):
+        record_namespace_route_decision(namespace, decision)
+
+    assert sum(1 for name, _ in recorded_task_route_decisions() if name == namespace) == 6
+    assert [entry["use_direct"] for entry in audited] == [True, False, True]
 
 
 def test_known_task_capable_namespace_with_factory_builds_direct_client() -> None:

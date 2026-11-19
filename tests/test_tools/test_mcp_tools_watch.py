@@ -278,3 +278,39 @@ async def test_a_reconnected_namespace_gets_a_new_watch_that_catches_up(
             await asyncio.sleep(0.02)
         # The new stream's first acknowledgement records one catch-up change.
         assert mcp_tools_changed.tools_changed_generation(namespace) == before + 1
+
+
+async def test_a_server_that_cannot_listen_is_asked_once_per_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    namespace = "listenfxq"
+    backend = FastMCP(namespace)
+
+    @backend.tool
+    def hello() -> str:
+        return "hi"
+
+    asked: list[str] = []
+    real_listen = subscriptions_module.listen
+
+    @asynccontextmanager
+    async def counting_listen(session: Any, **kwargs: Any) -> AsyncIterator[Any]:
+        asked.append(namespace)
+        async with real_listen(session, **kwargs) as subscription:
+            yield subscription
+
+    monkeypatch.setattr(subscriptions_module, "listen", counting_listen)
+    async with _executor(monkeypatch, namespace, backend) as executor:
+        for _ in range(8):
+            await executor.call_tool(f"{namespace}_hello", {})
+            await asyncio.sleep(0.02)
+        watch = executor.__dict__["_clio_tools_watches"][namespace]
+        for _ in range(200):
+            if watch.done():
+                break
+            await asyncio.sleep(0.02)
+        for _ in range(4):
+            await executor.call_tool(f"{namespace}_hello", {})
+
+        assert executor.__dict__["_clio_tools_watches"][namespace] is watch
+        assert asked == [namespace]

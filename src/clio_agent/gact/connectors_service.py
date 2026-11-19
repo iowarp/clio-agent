@@ -224,6 +224,8 @@ async def probe(app: Any, found: Entry, choice: state.Choice, *, force: bool = F
     slot or a scene would lose it). Only otherwise is a server started to check it.
     """
 
+    from mcp.shared.exceptions import MCPError  # noqa: PLC0415
+
     from clio_agent.gact.routes.mcp_configuration import (  # noqa: PLC0415
         _probe_user_mcp_server,
     )
@@ -237,7 +239,8 @@ async def probe(app: Any, found: Entry, choice: state.Choice, *, force: bool = F
         live = await _live_tools(app, found, declared)
     except TimeoutError:
         live, error = None, f"timed out after {int(PROBE_SECONDS)} s"
-    except Exception as exc:  # noqa: BLE001 - the running server's own failure is the outcome
+    except (MCPError, OSError, RuntimeError, ValueError, LookupError) as exc:
+        # The running server's own failure is the check's outcome.
         live, error = None, f"{type(exc).__name__}: {exc}"
     else:
         error = None
