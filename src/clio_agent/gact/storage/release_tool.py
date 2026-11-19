@@ -25,15 +25,19 @@ from clio_agent.gact.agents.tool_instrumentation import native_tool
 _ACTIVE = frozenset({"queued", "running"})
 
 
-def connected_data_release(source_id: str) -> dict[str, Any]:
-    """Free the disk a source's older downloaded copies hold.
+def connected_data_release(source_id: str, paths: list[str] | None = None) -> dict[str, Any]:
+    """Free the disk a source's downloads hold.
 
-    Removes that source's earlier download snapshots and staging left by failed or
-    interrupted transfers. Keeps the current downloaded copy, the linked folder's
-    metadata and any transfer still running, so files you opened or downloaded last
-    stay readable. An earlier revision cannot be opened afterwards. Returns what was
-    released, the bytes freed and the free bytes now. connected_data_status shows
-    each source's bytes on disk and the free space.
+    Always removes that source's earlier download snapshots and staging left by
+    failed or interrupted transfers, keeping the current copy, the linked folder's
+    metadata and any transfer still running. Unchanged files are shared between
+    snapshots, so that alone often frees little. paths also releases those files
+    from the current download (relative paths as connected_data_open lists them):
+    they are no longer readable from the download and can be downloaded again.
+    Keep the files your answer still reads. A source with an editable working copy
+    in the workspace refuses paths; its files are managed in the workspace. Returns
+    what was released, the bytes freed and the free bytes now; connected_data_status
+    shows each source's bytes on disk.
     """
     from clio_agent.gact.storage.storage_usage import bytes_on_disk, storage_usage
     from clio_agent.gact.storage.transfers import make_read_only, remove_owned_tree
@@ -72,6 +76,8 @@ def connected_data_release(source_id: str) -> dict[str, Any]:
     for row in kept:  # cleanup made shared (hard-linked) files writable
         if row["kind"] == "current download":
             make_read_only(owner / row["copy"])
+    if paths:
+        released += _release_files(service, record, owner, paths)
     after = bytes_on_disk(owner) if owner.is_dir() else 0
     usage = storage_usage(service.store.root, [record.source.id])
     return {
@@ -83,6 +89,47 @@ def connected_data_release(source_id: str) -> dict[str, Any]:
         "source_bytes": after,
         "free_bytes": usage["free_bytes"],
     }
+
+
+def _release_files(service: Any, record: Any, owner: Any, paths: list[str]) -> list[dict[str, str]]:
+    """Remove ``paths`` from the current download and its manifest (all or none)."""
+    import os  # noqa: PLC0415
+
+    from clio_agent.gact.storage.adapters import safe_child  # noqa: PLC0415
+    from clio_agent.gact.storage.models import Manifest  # noqa: PLC0415
+
+    if not record.download_read_only:
+        raise ValueError(
+            "This source has an editable working copy in the workspace; delete its files "
+            "there. paths releases files only from read-only downloads"
+        )
+    if not record.manifest_id:
+        raise ValueError("This source has no downloaded copy to release files from")
+    manifest = service.store.get("manifest", record.manifest_id, Manifest)
+    files = {row.path for row in manifest.entries if row.kind == "file"}
+    wanted = list(dict.fromkeys(paths))
+    unknown = [path for path in wanted if path not in files]
+    if unknown:
+        raise ValueError(
+            f"Not in the current download: {', '.join(unknown)}. "
+            "Use the relative paths connected_data_open lists"
+        )
+    folder = owner / manifest.id
+    os.chmod(folder, 0o755)
+    try:
+        for path in wanted:
+            target = safe_child(folder, path)
+            os.chmod(target.parent, 0o755)
+            target.unlink(missing_ok=True)
+    finally:
+        from clio_agent.gact.storage.transfers import make_read_only  # noqa: PLC0415
+
+        make_read_only(folder)
+    gone = set(wanted)
+    manifest.entries = [row for row in manifest.entries if row.path not in gone]
+    manifest.hashes = {key: value for key, value in manifest.hashes.items() if key not in gone}
+    service.store.put("manifest", manifest.id, manifest)
+    return [{"copy": path, "kind": "file of the current download"} for path in wanted]
 
 
 def _size(value: Any) -> str:
@@ -144,7 +191,10 @@ def build_connected_data_release_tool() -> Any:
         connected_data_release,
         name="connected_data_release",
         desc=connected_data_release.__doc__,
-        args={"source_id": {"type": "string"}},
+        args={
+            "source_id": {"type": "string"},
+            "paths": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        },
         presentation=release_presentation,
         domain="resources",
         title="Release older downloads",

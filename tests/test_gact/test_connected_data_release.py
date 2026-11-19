@@ -88,3 +88,31 @@ def test_presentation_says_what_was_freed_and_kept() -> None:
     assert "snapshot_1" in text and "released" in text and "kept" in text
     missing = release_presentation({"source_id": "source_x"}, {"message": "boom"}, None)
     assert missing["blocks"][0]["severity"] == "warning"
+
+
+def test_files_released_from_the_current_copy_free_their_bytes(downloaded) -> None:  # type: ignore[no-untyped-def]
+    from clio_agent.gact.storage.models import Manifest
+
+    service, record, _ = downloaded
+    record.download_access = "read_only"  # a read-only download, as NDP sources are
+    service.store.put("source", record.source.id, record)
+    result = connected_data_release(record.source.id, paths=["big.bin"])
+    assert {"copy": "big.bin", "kind": "file of the current download"} in result["released"]
+    assert result["freed_bytes"] == 110_000  # the older and the current big.bin
+    current = service.store.root / record.source.id / record.manifest_id
+    assert not (current / "big.bin").exists() and (current / "small.bin").exists()
+    manifest = service.store.get("manifest", record.manifest_id, Manifest)
+    assert set(manifest.hashes) == {"small.bin"}
+    assert "big.bin" not in {row.path for row in manifest.entries}
+
+
+def test_unknown_paths_and_working_copies_are_refused(downloaded) -> None:  # type: ignore[no-untyped-def]
+    service, record, _ = downloaded
+    record.download_access = "editable"
+    service.store.put("source", record.source.id, record)
+    with pytest.raises(ValueError, match="editable working copy"):
+        connected_data_release(record.source.id, paths=["big.bin"])
+    record.download_access = "read_only"
+    service.store.put("source", record.source.id, record)
+    with pytest.raises(ValueError, match="Not in the current download: nope.bin"):
+        connected_data_release(record.source.id, paths=["nope.bin"])
