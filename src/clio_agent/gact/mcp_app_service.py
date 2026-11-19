@@ -16,6 +16,10 @@ CLIO carries a service only when:
 
 The service URL is on the sandbox origin, so it lives wherever the sandbox
 does and is allowed by the sandbox CSP's explicit service sources.
+
+A server running inside the Linux fence has its own network namespace, so its
+declared loopback port is dialed inside that namespace, never opened on the
+host's (:mod:`clio_agent.gact.mcp_app_service_dial`).
 """
 
 from __future__ import annotations
@@ -99,11 +103,25 @@ def service_error_page(message: str, reason: str) -> str:
     )
 
 
-async def service_answers(record: Any) -> bool:
-    """Whether something accepts a connection on the service's loopback port now."""
+async def service_answers(app: FastAPI, record: Any) -> bool:
+    """Whether something accepts a connection on the service's loopback port now.
+
+    A server inside the Linux fence declares its own namespace's loopback, so the port is
+    dialed there (:mod:`clio_agent.gact.mcp_app_service_dial`); otherwise on the host's.
+    """
+    from clio_agent.gact.mcp_app_service_dial import dial_fenced, fenced_target  # noqa: PLC0415
+
     service = getattr(record, "service", None)
     if service is None:
         return False
+    target = await fenced_target(app, record)
+    if target is not None:
+        try:
+            sock = await dial_fenced(target, service.port)
+        except (OSError, TimeoutError):
+            return False
+        sock.close()
+        return True
     try:
         # The proxy's own connect bound (mcp_app_service_proxy); loopback answers at once.
         _reader, writer = await asyncio.wait_for(
@@ -224,7 +242,7 @@ async def service_descriptor_fields(
     if getattr(record, "service", None) is None:
         return fields
     denied = await service_refusal(app, record, _listener_port(request))
-    if denied is None and not await service_answers(record):
+    if denied is None and not await service_answers(app, record):
         record_service_reason("service_unreachable", app_instance_id=record.app_instance_id)
         denied = refusal("service_unreachable")  # the tab says so instead of "Ready"
     if denied is not None:

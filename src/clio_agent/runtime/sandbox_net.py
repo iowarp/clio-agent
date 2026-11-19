@@ -193,9 +193,12 @@ def open_child_egress(
     if _linux_proxy_fence(state):
         # Codex's proxy passes only public hosts on; the SSH helper reaches the rest through
         # the relay tunnel CLIO's chokepoint answers itself (see net_connect).
+        from clio_agent.runtime.fence_service import FENCE_CHILD_VARIABLE  # noqa: PLC0415
         from clio_agent.runtime.net_connect import RELAY_AUTHORITY, RELAY_VARIABLE  # noqa: PLC0415
 
         overlay[RELAY_VARIABLE] = RELAY_AUTHORITY
+        # The child's own network namespace is found by this mark, to reach a port it declares.
+        overlay[FENCE_CHILD_VARIABLE] = child_id
     return child_id, port, overlay
 
 

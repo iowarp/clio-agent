@@ -464,6 +464,18 @@ to the same folder. Files and sockets still land in that folder, and deleting or
 sweeping a session removes its scratch alias. A name already there that is not the
 user's own link is never used.
 
+A fenced MCP server's loopback is its own network namespace's, so a port an MCP App
+declares for its live service (MA23) is not on the host's `127.0.0.1`. CLIO reaches it
+from inside instead: each Linux-fenced child carries `CLIO_FENCE_CHILD` (its egress
+channel), and the probe and both service proxies find the one namespace among CLIO's
+own descendants that carries the serving child's mark and listens on the declared port.
+A short helper joins that namespace (through the user namespace that owns it, which
+this user created, so no privilege is added), connects to `127.0.0.1:<port>` and hands
+the connected socket back (`runtime/fence_service.py`,
+`gact/mcp_app_service_dial.py`). Nothing listens for it on the host, and no other port
+in the namespace is dialed, so the fence gains no inbound path. When two namespaces
+could be the server's, CLIO refuses to guess and the view reports `service_unreachable`.
+
 On macOS the Codex write fence does not restrict network routes. Tools that honor
 `HTTP(S)_PROXY`/`ALL_PROXY` (curl, Python, pip/uv, git over HTTPS) and the shell's
 `ssh`/`scp`/`sftp` shims go through CLIO's proxy and are recorded. A client that
