@@ -52,6 +52,7 @@ _EXTENSION_FIELDS = (
     "elicitation",
     "title",
     "navigation",
+    "setup",
 )
 #: Providers a plugin may ask account grants from (HS4); CLIO's own sign-in covers each.
 ACCOUNT_PROVIDERS = ("github", "google_drive", "globus", "ndp")
@@ -270,17 +271,39 @@ def _check_host_semantics(ext: Mapping[str, Any], plugin: str) -> None:
         raise ManifestError(
             f"{plugin}: {NAMESPACE}.elicitation.origins must list https://host[:port] origins"
         )
+    setup = ext.get("setup", {})
+    files = setup.get("files", []) if isinstance(setup, dict) else None
+    if (
+        not isinstance(setup, dict)
+        or set(setup) - {"files"}
+        or not isinstance(files, list)
+        or not all(_data_relative(path) for path in files)
+    ):
+        raise ManifestError(
+            f"{plugin}: {NAMESPACE}.setup may set only files, a list of paths relative to "
+            "the plugin's data folder"
+        )
+
+
+def _data_relative(path: Any) -> bool:
+    """A relative path that stays inside ``PLUGIN_DATA`` (no root, drive or ``..``)."""
+
+    if not isinstance(path, str) or not path.strip() or "\\" in path:
+        return False
+    parts = path.split("/")
+    return not path.startswith("/") and ":" not in parts[0] and ".." not in parts
 
 
 def host_semantics(
     ext: Mapping[str, Any], plugin: str, servers: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """The plugin's normalized ``title``, ``tabs``, ``navigation``, ``accounts`` and
-    ``elicitation``.
+    """The plugin's normalized ``title``, ``tabs``, ``navigation``, ``accounts``,
+    ``elicitation`` and ``setup``.
 
     ({} for none.) Each tab, and the navigation page, names its server: the declared
     one, or the plugin's only server. ``title`` is the plugin's readable name, for the
-    host's UI.
+    host's UI. ``setup.files`` are the plugin's own state files under ``PLUGIN_DATA``
+    that say the person has set it up (:mod:`clio_agent.plugins.setup_state`).
     """
 
     out: dict[str, Any] = {}
@@ -323,6 +346,9 @@ def host_semantics(
             "loopback": bool(elicitation.get("loopback")),
             "origins": [origin.lower() for origin in elicitation.get("origins") or []],
         }
+    setup_files = [str(path) for path in (ext.get("setup") or {}).get("files") or []]
+    if setup_files:
+        out["setup"] = {"files": setup_files}
     return out
 
 

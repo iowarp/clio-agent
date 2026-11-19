@@ -273,6 +273,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_NATIVE_ARTIFACT_STORE` | `provenance.artifacts.native.storage` | str | `file` | `src/clio_agent/gact/artifacts/provenance/factory.py` |
 | `CLIO_OBLIGATION_CONCURRENCY` | `agent_tasks.obligation_concurrency` | int | `4` | `src/clio_agent/gact/obligations.py` |
 | `CLIO_PLAN_REVIEW_CHARS` | `limits.plan_review_chars` | int | `256000` | `src/clio_agent/gact/plan_review.py` |
+| `CLIO_PLUGINS_JOIN_SET_UP` | `plugins.join_set_up` | bool | `true` | `src/clio_agent/gact/plugin_join.py` |
 | `CLIO_PLUGINS_OFFER_LISTED` | `plugins.offer_listed` | int | `20` | `src/clio_agent/gact/plugin_offer.py` |
 | `CLIO_PLUGIN_STORE` | `plugins.store_root` | str | _(unset)_ | `src/clio_agent/plugins/service.py` |
 | `CLIO_PORT` | `gact.port` | int | `17800` | `src/clio_agent/server_port.py` |

@@ -86,6 +86,7 @@ today.
 | `accounts[].scopes` | List of scope strings, may be empty | Not a list of text |
 | `elicitation.loopback` | Boolean, default `false` | Not a boolean |
 | `elicitation.origins` | List of `https://host[:port]` origins, no path | Other scheme, a path, a wildcard |
+| `setup.files` | Optional list of paths relative to the plugin's `PLUGIN_DATA` folder: the plugin's own state files that say the person has set it up (see "Set-up plugins join new conversations") | Not a list, another field beside `files`, an absolute path, a backslash, a drive or `..` |
 
 `catalogs` is unchanged: a built-in catalog's name (`"basic"`), and any catalog the
 plugin ships under `ai.iowarp.clio/a2ui/<name>/`. HS1 uses the `catalogId`s these
@@ -529,6 +530,36 @@ url-mode field already is: `payload.origin`, `payload.origin_trust`, `payload.pl
 `payload.server` and, when present, `payload.plugin_title` sit beside `payload.url`.
 `payload.metadata` keeps the nested copy.
 
+## Set-up plugins join new conversations
+
+A plugin the person has set up is part of their work, so a new conversation has it from
+the first message, without the agent having to find and offer it.
+
+- **Set up.** The plugin declares `setup.files`. It counts as set up when any of those
+  files, under its `PLUGIN_DATA` folder, holds a value: JSON or YAML that parses to a
+  non-empty list, mapping or scalar, or any other file with text in it. A missing or
+  empty file, `[]`, `{}`, `null`, or a path that leaves the folder through a link does
+  not count. A plugin keeps the file empty (`[]`), or removes it, when nothing is set up.
+  Owner: `plugins/setup_state.py`.
+- **Joining.** `POST /v1/sessions` adds each set-up plugin of the person's library to the
+  new conversation's delta (`add`, as if the person had added it), so its servers, their
+  instructions and its skills are there. It does not when the request already removes or
+  adds it, when the agent already has it, when the person left it out of the plugin list
+  in Settings, or when `plugins.join_set_up` (`CLIO_PLUGINS_JOIN_SET_UP`, default `true`)
+  is off. Subagents and plugin pages are not new conversations and are unaffected. The
+  person removes it from a conversation like any added plugin. A join the agent cannot
+  resolve is left out (trace `plugin_join_set_up_unresolved`), never a failed
+  conversation; a join traces `plugin_joined_set_up`. Owner: `gact/plugin_join.py`.
+- **Finding a plugin that is not in the conversation.** Every live `instructions` text a
+  plugin's server sends at `initialize` is kept by plugin id in
+  `<plugin store>/server_instructions.json` (rewritten only when it changes; a server that
+  now sends none forgets it). `offer_plugin` search and the tool-search note match a
+  plugin on those words too, so a request naming a site, dataset or package a plugin's
+  server reaches finds the plugin while none of its servers runs. A search result row
+  matched that way carries `mentions`, the line of the instructions that holds the word
+  (at most 240 characters), shown as "Its server says: ...". Owners:
+  `plugins/recorded_instructions.py`, `gact/offer_search.py`, `gact/plugin_offer.py`.
+
 ## Events for the UI
 
 On `GET /v1/sessions/{sid}/events` (SSE):
@@ -572,4 +603,5 @@ Tab revisions, per open tab (a page's are the same, on its `plugin_page.*` event
    identifier, CLIO advertises both.
 2. Tabs are per session: a tab shows when the session's agent mounts the plugin, because
    servers run in a session's server set. A plugin whose tab should show by default goes
-   in CLIO's default agent. There is no host-wide server set.
+   in CLIO's default agent, or declares `setup.files` so that it joins new conversations
+   once the person has set it up. There is no host-wide server set.

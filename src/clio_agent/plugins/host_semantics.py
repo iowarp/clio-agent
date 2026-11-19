@@ -99,6 +99,14 @@ def plugin_host(plugin: str, server: str) -> dict[str, Any]:
         return dict((_BY_PLUGIN.get(plugin) or {}).get(server) or {})
 
 
+def server_plugin(server: str) -> str:
+    """The plugin whose registered server set names ``server`` ("" when none or several)."""
+
+    with _LOCK:
+        owners = [plugin for plugin, servers in _BY_PLUGIN.items() if server in servers]
+    return owners[0] if len(owners) == 1 else ""
+
+
 def spec_plugin(source: str) -> str:
     """The plugin id of a spec ``source`` (``plugin:<id>``), else ""."""
 
@@ -157,6 +165,7 @@ __all__ = [
     "plugin_host",
     "remember",
     "server_host",
+    "server_plugin",
     "spec_a2ui_catalogs",
     "spec_plugin",
 ]

@@ -264,6 +264,11 @@ KEY_NOTES: dict[str, str] = {
         "Worker slots for background run_code scripts; each running script holds one for its "
         "life. Default 10000: nothing bounds how many scripts run, the person stops them."
     ),
+    "plugins.join_set_up": (
+        "Whether a plugin the person has set up (its manifest setup.files hold a value) joins "
+        "new conversations by default, unless the person left it out of the plugin list in "
+        "Settings or the request removes it."
+    ),
     "plugins.offer_listed": (
         "How many plugins and connectors not in a conversation the session facts name, so the "
         "agent can offer one; the total is always given and offer_plugin with no plugin lists "

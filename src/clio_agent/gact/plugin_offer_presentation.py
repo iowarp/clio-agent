@@ -34,6 +34,8 @@ def _found(row: Mapping[str, Any]) -> str:
         mark = ", left out in Settings" if item.get("left_out_by_person") else ""
         summary = f": {item['summary']}" if item.get("summary") else ""
         lines.append(f"{item.get('name')} ({kind}{mark}){summary}")
+        if item.get("mentions"):
+            lines.append(f"  Its server says: {item['mentions']}")
     return "\n".join(lines) or "Nothing matches"
 
 

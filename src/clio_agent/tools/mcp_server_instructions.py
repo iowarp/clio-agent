@@ -10,7 +10,9 @@ cache hit until a live connection describes the server, so every MCP server the 
 is described in its prompt by its own words, including a server deferred behind
 ``search_tools`` (:mod:`clio_agent.gact.agents.deferred_tools`), and ``search_tools``
 finds a deferred server's tools by the words of its instructions
-(:mod:`clio_agent.gact.tool_catalog`).
+(:mod:`clio_agent.gact.tool_catalog`). A plugin server's live text is also kept by
+plugin (:mod:`clio_agent.plugins.recorded_instructions`), so ``offer_plugin`` finds a
+plugin the conversation does not have by those words.
 
 The prompt carries a bounded excerpt (:func:`instructions_excerpt`, up to
 ``tools.instructions_chars``) and says when it is shortened; the whole instructions
@@ -83,6 +85,20 @@ def record_instructions(namespace: str, instructions: str | None, *, cached: boo
             _BY_NAMESPACE[namespace] = text
         else:
             _BY_NAMESPACE.pop(namespace, None)
+    if not cached:
+        _keep_for_plugin(namespace, text)
+
+
+def _keep_for_plugin(namespace: str, text: str) -> None:
+    """Keep a plugin server's live text by plugin, for finding the plugin while no
+    server of it runs (:mod:`clio_agent.plugins.recorded_instructions`)."""
+    from clio_agent.plugins.host_semantics import server_plugin  # noqa: PLC0415
+
+    plugin = server_plugin(namespace)
+    if plugin:
+        from clio_agent.plugins import recorded_instructions  # noqa: PLC0415
+
+        recorded_instructions.remember(plugin, namespace, text)
 
 
 def forget_instructions(namespace: str) -> None:

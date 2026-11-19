@@ -151,6 +151,10 @@ def prepare_run(app: Any, req: Any, metadata: dict[str, Any], requested: str) ->
         _trust(app, market)
         trusted.append(market)
     resolution = prepare_session_agent(app, metadata, requested)
+    from clio_agent.gact.plugin_join import join_set_up_plugins  # noqa: PLC0415
+
+    # The plugins the person has set up join the new conversation (by its delta).
+    resolution = join_set_up_plugins(app, metadata, requested, resolution)
     if req.flow is not None:
         refs, market = _flow_plugin_refs(app, resolution, req.flow.id, unattended=req.unattended)
         if market:

@@ -190,6 +190,12 @@ def test_a_navigation_page_is_normalized_like_a_tab(tmp_path: Path) -> None:
             {"a": _stdio(), "b": _stdio()},
             "must name its server",
         ),
+        ({"setup": []}, {"s": _stdio()}, r"setup may set only files"),
+        ({"setup": {"files": "a.yaml"}}, {"s": _stdio()}, r"setup may set only files"),
+        ({"setup": {"files": ["a.yaml"], "when": 1}}, {"s": _stdio()}, r"setup may set only"),
+        ({"setup": {"files": ["/etc/passwd"]}}, {"s": _stdio()}, r"relative to"),
+        ({"setup": {"files": ["../other/a.yaml"]}}, {"s": _stdio()}, r"relative to"),
+        ({"setup": {"files": ["c:\\a.yaml"]}}, {"s": _stdio()}, r"relative to"),
     ],
 )
 def test_bad_host_declarations_fail_to_load(

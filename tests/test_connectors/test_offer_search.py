@@ -69,6 +69,40 @@ def test_results_are_capped_with_more_and_marked() -> None:
     )
 
 
+def test_a_plugins_server_instructions_are_searched_and_quoted() -> None:
+    rows = [
+        _row(
+            "Remote",
+            summary="Run work on remote machines",
+            instructions="Use describe first.\nCompute sites configured: lab (ssh, slurm).\n"
+            "Packages staged: fluids 0.2.1 (solver).",
+        ),
+        _row("Fluids", summary="Fluid dynamics notes"),
+    ]
+    assert [r["name"] for r in offer_search.matching(rows, ["lab"])] == ["Remote"]
+    # A name hit still ranks first; the instructions widen what is found, not the order.
+    assert [r["name"] for r in offer_search.matching(rows, ["fluids"])] == ["Fluids", "Remote"]
+    found = offer_search.search_result(rows, [], set(), 20, search="fluids lab")
+    assert [m["name"] for m in found["matches"]] == ["Remote"]
+    assert found["matches"][0]["mentions"] == "Compute sites configured: lab (ssh, slurm)."
+    assert "instructions" not in found["matches"][0]
+    # A match on the row's own words quotes nothing.
+    own = offer_search.search_result(rows, [], set(), 20, search="remote")
+    assert "mentions" not in own["matches"][0]
+    long_line = _row("Wide", instructions="x " * 300 + "needle")
+    said = offer_search.mention(long_line, ["x"])
+    assert len(said) <= offer_search.MENTION_CHARS and said.endswith("…")
+    far = offer_search.mention(long_line, ["needle"])
+    assert len(far) <= offer_search.MENTION_CHARS and far.startswith("…")
+    assert far.endswith("needle")
+    one_line = _row("Flat", instructions="Call describe first. Sites: lab (ssh). Then run.")
+    assert offer_search.mention(one_line, ["lab"]) == "Sites: lab (ssh)."
+    shown = present({"search": "lab"}, None, {"search": "lab", "count": 1, "matches": [
+        {"kind": "plugin", "name": "Remote", "mentions": "Sites: lab (ssh)."}]})  # fmt: skip
+    blocks = {block["id"]: block for block in shown["blocks"]}
+    assert blocks["matches"]["text"] == "Remote (Plugin)\n  Its server says: Sites: lab (ssh)."
+
+
 @pytest.fixture
 def grouped(app: Any, monkeypatch: pytest.MonkeyPatch) -> Any:  # noqa: F811
     """The fixture connectors in Discover groups; a plugin with keywords and a category."""

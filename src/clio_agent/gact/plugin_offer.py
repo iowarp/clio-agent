@@ -8,7 +8,8 @@ not have, and every connector whose plugin it does not have, on or off, each as
 ``name (id): one-line summary``, capped (``plugins.offer_listed``) with the total, and
 with the person's choice over that list (:mod:`clio_agent.gact.offer_list`). It
 offers one with the native tool ``offer_plugin(plugin, reason)``. The model decides
-whether a request needs one; CLIO never adds a plugin by itself.
+whether a request needs one; CLIO adds a plugin by itself only to a new conversation,
+when the person has set it up (:mod:`clio_agent.gact.plugin_join`).
 
 * A **connector** (or a plugin that follows one) is the connector offer of
   :mod:`clio_agent.gact.connector_offer`: its card also turns the connector on and asks
@@ -190,6 +191,8 @@ def _ordered(app: Any, found_connectors: list[Any], here: set[str]) -> list[dict
             )
         )
     }
+    from clio_agent.plugins.recorded_instructions import plugin_instructions  # noqa: PLC0415
+
     plugins = [
         {
             "kind": "plugin",
@@ -200,6 +203,8 @@ def _ordered(app: Any, found_connectors: list[Any], here: set[str]) -> list[dict
             "summary": summary(record.description),
             "category": record.category,
             "keywords": list(record.keywords),
+            # What its servers last said they reach: a search finds the plugin by it.
+            "instructions": plugin_instructions(record.id),
         }
         for record in library(app)
         if record.id not in here
@@ -276,13 +281,15 @@ def offerable_facts(
 
 
 def offerable_matching(app: Any, session_id: str, query: str) -> list[dict[str, Any]]:
-    """The plugins and connectors this conversation could add whose id or name a tool
-    search names: a search only reaches this conversation's own tools, so a miss on
-    "paraview" would otherwise read as "there is no ParaView"."""
+    """The plugins and connectors this conversation could add that a tool search names:
+    by id or name, or by its servers' instructions holding every word of the search. A
+    search only reaches this conversation's own tools, so a miss on "paraview" (or on a
+    site a plugin's server says it reaches) would otherwise read as "there is none"."""
 
     if not session_id or getattr(getattr(app, "state", None), "sessions", None) is None:
         return []
     from clio_agent.connectors.state import ConnectorStateError  # noqa: PLC0415
+    from clio_agent.gact.offer_search import words_of  # noqa: PLC0415
     from clio_agent.plugins.store import StoreError  # noqa: PLC0415
 
     try:
@@ -291,7 +298,17 @@ def offerable_matching(app: Any, session_id: str, query: str) -> list[dict[str, 
         trace.event("TOOLS", "plugin_offer_search_unavailable (%s)", type(exc).__name__)
         return []
     asked = query.casefold()
-    return [row for row in rows if row["id"].casefold() in asked or row["name"].casefold() in asked]
+    words = words_of(query)
+
+    def said(row: dict[str, Any]) -> bool:
+        text = str(row.get("instructions") or "").casefold()
+        return bool(text and words) and all(word in text for word in words)
+
+    return [
+        row
+        for row in rows
+        if row["id"].casefold() in asked or row["name"].casefold() in asked or said(row)
+    ]
 
 
 def search_note(rows: list[dict[str, Any]]) -> str:

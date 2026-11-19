@@ -523,6 +523,12 @@ fleet.usage_poll_seconds: 300
 # mirror or an offline copy.
 # plugins.default_marketplace:  # default unset; resolved in code
 
+# CLIO_PLUGINS_JOIN_SET_UP  (bool)  <- src/clio_agent/gact/plugin_join.py
+# Whether a plugin the person has set up (its manifest setup.files hold a
+# value) joins new conversations by default, unless the person left it out
+# of the plugin list in Settings or the request removes it.
+plugins.join_set_up: true
+
 # CLIO_PLUGINS_OFFER_LISTED  (int)  <- src/clio_agent/gact/plugin_offer.py
 # How many plugins and connectors not in a conversation the session facts
 # name, so the agent can offer one; the total is always given and

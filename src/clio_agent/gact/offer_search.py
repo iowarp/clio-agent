@@ -5,7 +5,9 @@ The session facts name only some of the plugins and connectors a conversation co
 ``offer_plugin`` reaches the rest:
 
 * ``search`` (words, any case): a row matches when every word is in its id, name,
-  summary, category or keywords; rows whose name or id holds a word come first.
+  summary, category, keywords or, for a plugin, the instructions its MCP servers last
+  sent (what they reach: sites, datasets, packages); rows whose name or id holds a word
+  come first, and a row matched by its instructions quotes the sentence (``mentions``).
 * ``category`` (any case, exact): a connector's category is its Discover group, a
   plugin's the category its marketplace entry declares (else none).
 * Neither (and no plugin): the categories with their counts and the total, and a line
@@ -21,6 +23,7 @@ says so as a fact, with where the person made that choice (OL-F5). Results are c
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -50,7 +53,52 @@ def left_out_fact(count: int) -> str:
 def _haystack(row: Mapping[str, Any]) -> str:
     parts = [row.get("id"), row.get("name"), row.get("summary"), row.get("category")]
     parts += list(row.get("keywords") or ())
+    parts.append(row.get("instructions"))
     return " ".join(str(part or "") for part in parts).casefold()
+
+
+#: How much of the instructions sentence that holds a search word a result quotes.
+MENTION_CHARS = 240
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def _quoted(sentence: str, at: int) -> str:
+    """At most :data:`MENTION_CHARS` of ``sentence``, keeping the word at ``at`` in view."""
+
+    if len(sentence) <= MENTION_CHARS:
+        return sentence
+    start = max(0, min(at - MENTION_CHARS // 3, len(sentence) - MENTION_CHARS + 2))
+    if start:
+        start = sentence.rfind(" ", 0, start + 1) + 1
+    end = start + MENTION_CHARS - (2 if start else 1)
+    piece = sentence[start:end]
+    if end < len(sentence):
+        piece = piece.rsplit(" ", 1)[0] + "…"
+    return ("…" + piece) if start else piece
+
+
+def mention(row: Mapping[str, Any], words: Sequence[str]) -> str:
+    """The first sentence of ``row``'s server instructions holding a search word that its
+    id, name, summary, category and keywords do not ("" when none): why it matched."""
+
+    own = " ".join(
+        str(part or "")
+        for part in (
+            row.get("id"),
+            row.get("name"),
+            row.get("summary"),
+            row.get("category"),
+            *(row.get("keywords") or ()),
+        )
+    ).casefold()
+    missing = [word for word in words if word not in own]
+    for sentence in _SENTENCE_END.split(str(row.get("instructions") or "")):
+        sentence = " ".join(sentence.split())
+        folded = sentence.casefold()
+        hits = [folded.find(word) for word in missing if word in folded]
+        if hits:
+            return _quoted(sentence, min(hits))
+    return ""
 
 
 def words_of(text: str) -> list[str]:
@@ -156,6 +204,9 @@ def search_result(
         found = matching(found, words)
     listed = {entry_key(row) for row in listed_rows}
     shown = [returned(row, listed, left_out) for row in found[:cap]]
+    for row, out_row in zip(found[:cap], shown, strict=True):
+        if words and (said := mention(row, words)):
+            out_row["mentions"] = said
     asked = " and ".join(
         part for part in (f'"{search.strip()}"' if words else "", category.strip()) if part
     )
