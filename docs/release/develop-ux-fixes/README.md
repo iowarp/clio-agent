@@ -21,7 +21,7 @@ branch (`407c5a9`).
 
 | # | Issue | On develop | Change |
 |---|---|---|---|
-| 1 | Some tool groups did not fold | **Not reproduced.** Three Deep research runs (one stopped, one finished, one in edit mode) folded every group; no call was left without a result. The fold rule waits for every call in a group to settle, so a group stays open only when a call never reports an end. | None. If it recurs, send the session id and `GET /v1/sessions/<id>/agent-tasks`. |
+| 1 | Some tool groups did not fold | **Not reproduced.** Three Deep research runs (one stopped, one finished, one in edit mode) folded every group; no call was left without a result. The fold rule waits for every call in a group to settle, so a group stays open only when a call never reports an end. | None. One way it happens was seen (below): lost store writes left a task `active` after its session errored. If it recurs, send the session id and `GET /v1/sessions/<id>/agent-tasks`. |
 | 2 | Tiny agent checkboxes | **Present.** `CheckBox` was the bare upstream control. | gact-tui `ClioCheckBox`: CLIO's checkbox; the whole row is the hit target, at least 36 px (44 px on touch). |
 | 3 | Chip shows `earthscope.stations.selected recorded` | **Present.** Unknown action names printed raw. | gact-tui: names the control pressed (`“Analyse selected station” recorded`), else "Your choice"; no extra divider. |
 | 4 | Deep research tag not at the right | **Present.** It sat about 125 px left of the bubble edge: hidden hover actions after it kept their width. | gact-tui: hover actions come first; the tag ends the row. |
@@ -30,7 +30,7 @@ branch (`407c5a9`).
 | 7 | "Task history incomplete" chip unreadable | **Not reproduced.** Readable in both themes (dark: text 236,230,218 on 38,35,31). | None. |
 | 8 | Step panel shows the whole run's request | Fixed on develop (gact-tui `f2ef5a7`). | None. |
 | 9 | `limit="15"` refused | Present in code; this run's model sent integers, so it did not occur live. | clio-agent: integer, number and boolean arguments sent as JSON text are decoded; other text is still refused. |
-| 10 | `run_code` refused in Deep research | **Present.** All five researchers' scripts were refused in one run. | clio-agent: allowed behind an enforced fence, read-only as in Plan mode. Live: 14 scripts ran. |
+| 10 | `run_code` refused in Deep research | **Present.** All five researchers' scripts were refused in one run. | clio-agent: allowed behind an enforced fence, read-only as in Plan mode. Live: 28 of 31 scripts ran, and the run completed with its report saved. |
 | 11 | Stop did not stop the flow | Fixed on develop (#2354). Live: Stop with `children: stop` cancelled the flow and every researcher. | None. |
 
 ## Evidence
@@ -50,5 +50,27 @@ branch (`407c5a9`).
   bubble; the gallery checkbox row is 36 px and toggles from its label; a
   flow error, with nodes from the server's own execution view, shows a one-line
   headline and the full message under Details.
+- A full Deep research run on the fixed stack (2 GB store) completed: plan, two
+  rounds, report saved, every call settled and every group folded.
 - Item 3's chip was verified by component tests only. A live check needs an agent
   surface with an action; none was staged.
+
+## Found while validating (not changed here)
+
+- **The cloud stack's 128 MB store fills during a Deep research run once scripts
+  run.** `scripts/cloud/stack.sh` sets `CLIO_ARC_CTE_FILE_CAPACITY=128MB`; an explicit
+  capacity turns off managed growth. With `run_code` allowed, one run filled
+  `storage.bin_node0` (exactly 134,217,728 bytes). Clio-core then refused writes with
+  code 12: 53 lost, logged as `clio_core_put_write_lost`. The flow's session went to `error` while its task
+  stayed `active`, so the conversation stayed "running" and its waiting call never
+  settled. A normal install's store starts at 2 GB or more and grows. A 2 GB rerun
+  completed. Two follow-ups: the cloud cap, and a task whose
+  session errored should not stay `active`. That is one way item 1's open groups can happen.
+- **Two kernels start for one agent at once.** Parallel `run_code` calls from one
+  researcher logged `kernel started` twice for the same key. One call then failed in
+  6 ms ("the Python kernel did not start" / "did not take its tools" / "stopped"):
+  3 of 31 in the fixed run. The develop stack logged the same double start in edit
+  mode, so it predates this change; Deep research now runs scripts, so it shows
+  up more.
+- `stack.sh stop` left the stopped stack's clio-core runtime (`clio_run`) and its
+  log pump running once; both exited on SIGTERM.
