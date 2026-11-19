@@ -265,6 +265,7 @@ def session_agent_def(app: Any, session_id: str) -> AgentDef:
         [name for name in resolution.tool_names if name not in withheld],
         delegated=session_is_delegated(app, session_id),
         provider=session_provider_id(app, session_id),
+        model=session_model_id(app, session_id),
     )
     agent_def = agent_def.model_copy(update={"system_prompt": prompt})
     return apply_session_tool_allowlist(app, agent_def, session_id=session_id)
@@ -279,6 +280,17 @@ def session_provider_id(app: Any, session_id: str) -> str:
         return chosen
     config = getattr(getattr(app.state, "agent", None), "_provider_config", None)
     return str(getattr(config, "provider", "") or "")
+
+
+def session_model_id(app: Any, session_id: str) -> str:
+    """The model id the session runs: the session's own choice, else the service's
+    default model (what an unset choice runs)."""
+    session = app.state.sessions.get(session_id)
+    chosen = str(getattr(getattr(session, "model", None), "model_id", "") or "")
+    if chosen:
+        return chosen
+    config = getattr(getattr(app.state, "agent", None), "_provider_config", None)
+    return str(getattr(config, "model", "") or "")
 
 
 def session_withheld_tools(app: Any, session_id: str, names: Iterable[str]) -> dict[str, str]:
