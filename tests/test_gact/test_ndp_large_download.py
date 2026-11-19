@@ -1,4 +1,4 @@
-"""Scientific-object streams and bounded linked-file reads have separate limits."""
+"""Scientific objects stream without a fixed size limit; the disk decides, not a cap."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-from clio_agent.gact.storage import ndp_source
 from clio_agent.gact.storage.ndp_source import NDPSource
 from tests.test_gact.test_ndp_source import dataset
 
@@ -25,8 +24,8 @@ def streaming_peer() -> Iterator[tuple[str, list[str]]]:
             self.send_response(200)
             if self.path == "/large":
                 self.send_header("Content-Length", str(513 * 1024 * 1024))
-            elif self.path == "/too-large":
-                self.send_header("Content-Length", str(ndp_source.MAX_RESOURCE_BYTES + 1))
+            elif self.path == "/huge":
+                self.send_header("Content-Length", str(9 * 1024**3))
             self.end_headers()
             try:
                 # A prefix-only reader closes the actual socket. This test
@@ -66,24 +65,14 @@ def test_large_scientific_object_opens_without_eager_download(
         source.apply("data.csv", Path("unused"), None)
 
 
-def test_oversized_transfer_header_is_rejected(
+def test_a_resource_over_8_gib_still_streams_and_reads_by_range(
     streaming_peer: tuple[str, list[str]],
 ) -> None:
+    # An 8 GiB cap refused even byte-range reads, which touch no disk.
     base, _ = streaming_peer
-    source = NDPSource(dataset(base + "/too-large"))
-    with pytest.raises(ValueError, match="CLIO's 8 GiB transfer limit"):
-        source.open_read(source.entries()[0])
-
-
-def test_unannounced_transfer_remains_bounded(
-    streaming_peer: tuple[str, list[str]], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    base, _ = streaming_peer
-    # Exercise the streaming ceiling with small actual bytes instead of
-    # allocating or downloading GiB of fixtures.
-    monkeypatch.setattr(ndp_source, "MAX_RESOURCE_BYTES", 2 * 65536)
-    source = NDPSource(dataset(base + "/unannounced"))
+    selected = dataset(base + "/huge")
+    selected.resources[0].size = 9 * 1024**3
+    source = NDPSource(selected)
     with source.open_read(source.entries()[0]) as reader:
-        with pytest.raises(ValueError, match="transfer limit"):
-            while reader.read(65536):
-                pass
+        assert reader.read(12) == b"x" * 12
+    assert source.range_reader(source.entries()[0]).total_size() == 9 * 1024**3
