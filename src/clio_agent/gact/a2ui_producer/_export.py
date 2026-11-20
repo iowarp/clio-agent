@@ -40,7 +40,12 @@ from clio_agent.gact.a2ui_catalogs.media_sources import (
     external_url_notice,
     insecure_url_detail,
 )
-from clio_agent.gact.a2ui_catalogs.validation import A2UI_URL_KEYS, is_allowed_a2ui_url
+from clio_agent.gact.a2ui_catalogs.validation import (
+    A2UI_URL_KEYS,
+    OPEN_URL_FUNCTION,
+    is_allowed_a2ui_url,
+    is_loopback_link,
+)
 from clio_agent.gact.a2ui_producer._refusal import refusal
 
 if TYPE_CHECKING:
@@ -197,8 +202,12 @@ class _Exporter:
         self.exported.append(entry)
         return str(entry["uri"])
 
-    def walk(self, value: Any, component_id: str) -> dict[str, Any] | None:
-        """Rewrite path literals in ``value`` in place; return a refusal to stop."""
+    def walk(self, value: Any, component_id: str, *, link: bool = False) -> dict[str, Any] | None:
+        """Rewrite path literals in ``value`` in place; return a refusal to stop.
+
+        ``link`` marks an ``openUrl`` call's ``args``, whose ``url`` may be a loopback
+        ``http:`` page (:func:`is_loopback_link`), kept as written.
+        """
 
         if isinstance(value, list):
             for item in value:
@@ -208,8 +217,11 @@ class _Exporter:
             return None
         if not isinstance(value, dict):
             return None
+        open_url = value.get("call") == OPEN_URL_FUNCTION
         for key, item in value.items():
             if isinstance(item, str) and key.lower() in A2UI_URL_KEYS:
+                if link and key == "url" and is_loopback_link(item):
+                    continue
                 parts = urlsplit(item.strip())
                 scheme = parts.scheme.lower()
                 if scheme == "http":
@@ -239,7 +251,7 @@ class _Exporter:
                     return reference
                 value[key] = reference
             else:
-                stop = self.walk(item, component_id)
+                stop = self.walk(item, component_id, link=open_url and key == "args")
                 if stop is not None:
                     return stop
         return None

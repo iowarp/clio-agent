@@ -262,6 +262,27 @@ def validate_event_context(
 #: ``study:`` names a live study source a view reads (Addendum B).
 A2UI_URL_SCHEMES = frozenset({"https", "artifact", "resource", "study"})
 
+#: The catalog function that opens a link for the person. Its ``url`` alone may
+#: also be a plain ``http:`` page on this machine (:func:`is_loopback_link`), such
+#: as a local server's sign-in page; nothing fetches it until the person opens it.
+OPEN_URL_FUNCTION = "openUrl"
+_LOOPBACK_LINK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def is_loopback_link(value: str) -> bool:
+    """``http://`` on a loopback literal with a port and no user info, nothing else."""
+
+    if any(ord(char) <= 0x20 or char == "\\" for char in value):
+        return False
+    parts = urlsplit(value)
+    if parts.scheme.lower() != "http" or "@" in parts.netloc:
+        return False
+    try:
+        port = parts.port
+    except ValueError:
+        return False
+    return port is not None and (parts.hostname or "").lower() in _LOOPBACK_LINK_HOSTS
+
 
 def is_allowed_a2ui_url(value: str) -> bool:
     """Whether ``value`` is an allowed A2UI URL: an allowed scheme or a bare CLIO id."""
@@ -271,11 +292,14 @@ def is_allowed_a2ui_url(value: str) -> bool:
     return is_bare_reference_id(value) or urlsplit(value).scheme.lower() in A2UI_URL_SCHEMES
 
 
-def _validate_url(value: str) -> None:
+def _validate_url(value: str, *, link: bool = False) -> None:
+    if link and is_loopback_link(value):
+        return
     if not is_allowed_a2ui_url(value):
         raise A2UIValidationError(
             "A2UI URLs must use an allowed non-executable scheme (https:, artifact:, "
-            f"resource:, study:, or a bare artifact_/res_ id); got {value[:120]!r}"
+            "resource:, study:, or a bare artifact_/res_ id; an openUrl link may also be "
+            f"http on 127.0.0.1, [::1] or localhost); got {value[:120]!r}"
         )
 
 
@@ -361,6 +385,7 @@ def validate_value(
     depth: int = 0,
     max_depth: int,
     max_string: int,
+    link: bool = False,
 ) -> None:
     """Walk one A2UI value, enforcing CLIO's catalog-aware safety policy.
 
@@ -381,6 +406,8 @@ def validate_value(
         depth: Current recursion depth.
         max_depth: Nesting bound (caller resolves config once).
         max_string: Per-string character bound (caller resolves config once).
+        link: ``value`` is an ``openUrl`` call's ``args`` or their ``url``, which
+            may also be a loopback ``http:`` page.
 
     Raises:
         A2UIValidationError: On any safety-policy violation.
@@ -392,7 +419,7 @@ def validate_value(
         if len(value) > max_string:
             raise A2UIValidationError("A2UI string exceeds the size limit")
         if key.lower() in A2UI_URL_KEYS:
-            _validate_url(value)
+            _validate_url(value, link=link and key == "url")
         return
     if isinstance(value, list):
         for item in value:
@@ -425,6 +452,7 @@ def validate_value(
         and key == "components"
         and value.get("component") == MCP_APP_COMPONENT
     )
+    open_url = value.get("call") == OPEN_URL_FUNCTION
     for child_key, child_value in value.items():
         if not isinstance(child_key, str):
             raise A2UIValidationError("A2UI object keys must be strings")
@@ -452,6 +480,7 @@ def validate_value(
             depth=depth + 1,
             max_depth=max_depth,
             max_string=max_string,
+            link=(open_url and child_key == "args") or (link and child_key == "url"),
         )
     if str(value.get("component") or "") == "clio.mermaid.v1":
         source = value.get("source")
@@ -472,7 +501,9 @@ __all__ = [
     "A2UIValidationError",
     "MAX_MCP_APP_ARGUMENT_BYTES",
     "MCP_APP_COMPONENT",
+    "OPEN_URL_FUNCTION",
     "is_allowed_a2ui_url",
+    "is_loopback_link",
     "validate_components",
     "validate_value",
 ]
