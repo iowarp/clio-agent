@@ -155,22 +155,29 @@ class ForegroundRun:
         return round(time.monotonic() - self.started, 1)
 
     def calls(self) -> int:
+        """Tool calls the script has finished."""
         return len(getattr(self.live.get("dispatcher"), "records", ()) or ())
+
+    def calls_running(self) -> int:
+        """Tool calls the script is waiting on now."""
+        return len(getattr(self.live.get("dispatcher"), "pending", ()) or ())
 
 
 def moved_outcome(run: ForegroundRun, receipt: dict[str, Any], code: str) -> dict[str, Any]:
     """The call's outcome when its script moved to a background task, and what the
     model reads: where the script is, what it had done, and what changed for it."""
     handle = str(receipt.get("handle") or "")
-    calls, elapsed = run.calls(), run.elapsed_s()
+    calls, running, elapsed = run.calls(), run.calls_running(), run.elapsed_s()
     why = (
         "the person pressed Send to background while it ran"
         if run.moved_by == "person"
         else f"it ran past {background_after_s():g} s"
     )
+    done = f"{calls} tool call{'s' if calls != 1 else ''} finished"
+    waiting = f", {running} still running" if running else ""
     moved = (
-        f"Still running after {elapsed:g} s ({calls} tool call{'s' if calls != 1 else ''} so "
-        f"far); moved to the background because {why}."
+        f"Still running after {elapsed:g} s ({done}{waiting}); moved to the background "
+        f"because {why}."
     )
     text = (
         f"{moved} It is task {handle}{f' ({run.label})' if run.label else ''} and keeps "
@@ -192,6 +199,7 @@ def moved_outcome(run: ForegroundRun, receipt: dict[str, Any], code: str) -> dic
         "status": BACKGROUNDED,
         "code": code,
         "calls": calls,
+        "calls_running": running,
         "elapsed_s": elapsed,
         "moved_by": run.moved_by,
         "moved": moved,
