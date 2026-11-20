@@ -45,6 +45,23 @@ def configured_bearer_token() -> str | None:
     return os.environ.get("CLIO_AUTH_TOKEN", "").strip() or None
 
 
+def loopback_requires_token() -> bool:
+    """Whether loopback peers must present the bearer token too.
+
+    Set when a reverse proxy on the same host forwards requests from the network
+    (the clio-web image published beyond loopback): every request then arrives
+    from the proxy over loopback, as this server's own user.
+    """
+
+    return conf.as_bool(
+        conf.resolve(
+            "gact.auth.loopback_requires_token",
+            env="CLIO_GACT_LOOPBACK_REQUIRES_TOKEN",
+            default=False,
+        )
+    )
+
+
 def peer_address_from_scope(scope: Scope) -> str | None:
     """Return the direct ASGI peer address without trusting forwarding headers."""
 
@@ -175,7 +192,7 @@ class BearerAuthMiddleware:
             peer_address_from_scope,
         )
         loopback = is_loopback_address(getter(scope))
-        if loopback:
+        if loopback and not getattr(self._state, "loopback_requires_token", False):
             same_user: PeerUserCheck = getattr(
                 self._state, "peer_user_check", loopback_peer_is_server_user
             )
@@ -204,7 +221,7 @@ class BearerAuthMiddleware:
             await self._app(scope, receive, send)
             return
 
-        if loopback:
+        if loopback and not getattr(self._state, "loopback_requires_token", False):
             await _authentication_refusal(
                 "This connection comes from another account on this computer; "
                 "it needs this server's bearer token."
@@ -237,6 +254,7 @@ def configure_bearer_auth(app: FastAPI) -> None:
     app.state.bearer_token = token
     app.state.peer_address_getter = peer_address_from_scope
     app.state.peer_user_check = loopback_peer_is_server_user
+    app.state.loopback_requires_token = token is not None and loopback_requires_token()
     # Inner to the bearer check: a request admitted without a valid token
     # (loopback, or no token configured) still may not change state from an
     # untrusted web page.

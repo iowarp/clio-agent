@@ -52,6 +52,10 @@ docker compose up clio-web
 # Open http://localhost:8080
 ```
 
+The UI is published on this computer only. To open it from other machines, set
+`CLIO_WEB_BIND=0.0.0.0` and `CLIO_GACT_BEARER_TOKEN=<secret>`, then connect by
+address with that token.
+
 For a local service with Web, run the install script **without** `--desktop`
 (`-Desktop` on Windows), then run `clio` or `clio web`. Use `clio start` for a
 headless service, and `clio status`, `clio stop` and `clio logs` to manage it.
