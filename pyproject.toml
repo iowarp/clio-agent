@@ -173,6 +173,9 @@ dependencies = [
     "gdrive-fsspec>=0.4.1",
     "globusfs==0.2.1",
     "markdown-it-py>=3.0,<5",
+    # The Windows fence's ssh/scp/sftp shims are distlib console launchers (.exe), so a
+    # bare-name CreateProcess spawn finds them before System32 OpenSSH (runtime/fence_ssh.py).
+    "distlib>=0.4,<1 ; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

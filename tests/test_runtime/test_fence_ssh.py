@@ -399,13 +399,17 @@ def test_a_fenced_shell_finds_the_shims_first(monkeypatch: pytest.MonkeyPatch) -
     assert overlay["PATH"] == os.pathsep.join([str(shims), "/usr/bin"])
     assert overlay["CLIO_EXECUTION_PATH"] == os.pathsep.join([str(shims), "/managed"])
     suffix = ".cmd" if os.name == "nt" else ""
-    assert overlay["GIT_SSH"] == str(shims / f"ssh{suffix}")
+    assert overlay["GIT_SSH"] == str(shims / ("ssh.exe" if os.name == "nt" else "ssh"))
     for tool in net_connect.TOOLS:
         shim = shims / f"{tool}{suffix}"
         text = shim.read_text(encoding="utf-8")
         assert HELPER in text and tool in text and sys.executable in text
         if os.name != "nt":
             assert os.access(shim, os.X_OK)
+        else:
+            # A bare-name CreateProcess spawn only tries .exe, so the launcher sits beside it.
+            exe = (shims / f"{tool}.exe").read_bytes()
+            assert exe.startswith(b"MZ") and f'#!"{sys.executable}" -I\n'.encode() in exe
 
 
 def test_a_chosen_git_ssh_is_kept(monkeypatch: pytest.MonkeyPatch) -> None:
