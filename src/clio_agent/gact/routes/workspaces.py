@@ -30,6 +30,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 from clio_agent.gact.composer_runtime import delete_workspace_resources
+from clio_agent.gact.inline_safety import inline_safe
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.protocol_v3 import project_for_request, workspace_to_v3
 from clio_agent.gact.routes._body import json_body
@@ -745,11 +746,16 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         # Starlette's FileResponse streams from a worker thread and implements
         # RFC range requests. PDF.js can therefore render page one of a remote
         # document without CLIO reading the entire file into the event loop.
-        return FileResponse(
-            path=target,
-            media_type=media_type,
-            filename=target.name,
-            content_disposition_type="inline",
+        # Inline-safety headers: an HTML/SVG/XML file opened directly in a browser
+        # must not run as a document of CLIO's origin (gact/inline_safety.py).
+        return inline_safe(
+            FileResponse(
+                path=target,
+                media_type=media_type,
+                filename=target.name,
+                content_disposition_type="inline",
+            ),
+            media_type,
         )
 
     register_workspace_h5grove_routes(app)
