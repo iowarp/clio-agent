@@ -389,8 +389,13 @@ def build_plan_exit_tool(agent_def: Any) -> Any:
         you wrote with plan_update from the session's plan file, so it takes no plan text. Provide a 1-2
         sentence ``summary``, optionally a ``recommendedMode`` (``auto`` = execute automatically,
         ``interactive`` = execute prompting per action, ``exit_only`` = leave plan mode but wait
-        before executing), and optional ``riskNotes``. Your turn ends here: the user approves or
-        rejects out-of-band, and on approval you are resumed with authorization to execute."""
+        before executing), and optional ``riskNotes``. The recommendation is the posture the
+        Execute button starts with. Recommend ``auto`` when the plan's real decisions are either
+        asked by the tools themselves when reached (a tool that asks before spending, installing
+        or submitting for review still asks) or are steps of this plan. Recommend
+        ``interactive`` only when the person asked to review each action. Your turn ends here:
+        the user approves or rejects out-of-band, and on approval you are resumed with
+        authorization to execute."""
 
         app = _ctx.active_app()
         sid = _ctx.active_session_id()
@@ -423,7 +428,11 @@ def build_plan_exit_tool(agent_def: Any) -> Any:
             },
             "recommendedMode": {
                 "type": "string",
-                "description": "Optional exit posture hint: 'auto' | 'interactive' | 'exit_only'.",
+                "description": (
+                    "Posture the Execute button starts with: 'auto' when tools ask for their "
+                    "own decisions or they are plan steps; 'interactive' only when the person "
+                    "asked to review each action; 'exit_only' to leave without executing."
+                ),
             },
             "riskNotes": {
                 "type": "string",
