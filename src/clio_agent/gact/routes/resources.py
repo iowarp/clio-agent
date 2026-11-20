@@ -17,6 +17,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 
 from clio_agent import conf
+from clio_agent.gact.inline_safety import inline_safe
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.resource_custody import (
     ResourceConflictError,
@@ -57,8 +58,6 @@ _PREVIEWABLE_APPLICATION_TYPES = {
 # uploaded document is untrusted input, so serving one same-origin without a
 # policy is stored XSS against the authenticated API — the derivative route
 # already knew this; the preview route did not.
-_ACTIVE_INLINE_TYPES = {"text/html", "application/xhtml+xml", "image/svg+xml"}
-_INLINE_SANDBOX_CSP = "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'"
 
 # ``ResourceQueryError.code`` -> HTTP status. Bounded refusals from the owner
 # implementations keep their exact status instead of surfacing as a 500.
@@ -141,10 +140,7 @@ def _inline_response(
     )
     if disposition != "inline":
         return response
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    if media_type in _ACTIVE_INLINE_TYPES:
-        response.headers["Content-Security-Policy"] = _INLINE_SANDBOX_CSP
-    return response
+    return inline_safe(response, media_type)
 
 
 async def _read_capped_body(request: Request, cap: int) -> bytes:

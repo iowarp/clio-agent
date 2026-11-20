@@ -48,6 +48,7 @@ from clio_agent.gact.artifacts.registry import ArtifactRegistry, get_registry
 from clio_agent.gact.artifacts.registry_index import produced_by
 from clio_agent.gact.artifacts.wire import fetch_url_for, mime_for
 from clio_agent.gact.artifacts.wire import version_uri as _version_uri
+from clio_agent.gact.inline_safety import inline_safe
 from clio_agent.gact.runtime.retention import enforce_list_bound
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
@@ -759,16 +760,15 @@ def _open_verify_stream(
 ) -> Response:
     """Open, hash-verify and stream a file through the SOLE byte-serving primitive.
 
-    The ONE ``StreamingResponse`` site in the artifact routes (the one-ladder review
-    guard): hash + serve from ONE open handle so the served bytes ARE the verified
-    bytes — no read-then-send TOCTOU — and stream chunked so a large blob never
-    buffers whole in RAM. A recorded-hash MISMATCH is a 409 ``integrity_violation``;
-    a stat-pinned version (no recorded sha) skips the check (identity was never
-    hashed). Residual TOCTOU: a same-fd truncation between hash and stream is a
-    documented app-private-store limit. Extended Windows paths preserve deep CAS downloads.
-    """
+    The ONE ``StreamingResponse`` site in the artifact routes (one-ladder review guard): hash
+    + serve from ONE open handle so the served bytes ARE the verified bytes (no read-then-send
+    TOCTOU), streamed chunked so a large blob never buffers in RAM. A recorded-hash MISMATCH is
+    a 409 ``integrity_violation``; a stat-pinned version (no recorded sha) skips the check.
+    Residual TOCTOU: a same-fd truncation between hash and stream is a documented app-private-
+    store limit. Extended Windows paths preserve deep CAS downloads."""
     handle = _open_verified_handle(source, recorded_sha, version)
-    return StreamingResponse(_stream_handle(handle), media_type=mime_for(version, record_name))
+    media_type = mime_for(version, record_name)  # inline_safe: no script if a browser opens it
+    return inline_safe(StreamingResponse(_stream_handle(handle), media_type=media_type))
 
 
 def _open_verified_handle(
