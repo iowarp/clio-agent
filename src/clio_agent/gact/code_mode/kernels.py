@@ -306,6 +306,9 @@ class Kernel:
 
 
 _KERNELS: dict[tuple[str, str], Kernel] = {}
+#: Scopes whose kernel left with a script moved to a background task: the scope's next
+#: kernel says why it is new (``replaced_backgrounded``).
+_DETACHED: dict[tuple[str, str], str] = {}
 _LOCK = threading.Lock()
 _REAPER: threading.Thread | None = None
 
@@ -337,7 +340,7 @@ def kernel_for(session_id: str, scope: str, workspace: Path, *, read_only: bool 
         ):
             kernel.last_used = time.monotonic()
             return kernel
-        replaced = ""
+        replaced = _DETACHED.pop(key, "")
         if kernel is not None:
             why = _replaced_because(kernel, workspace, read_only)
             kernel.stop(why)
@@ -348,6 +351,17 @@ def kernel_for(session_id: str, scope: str, workspace: Path, *, read_only: bool 
         _start_reaper()
     kernel.start()
     return kernel
+
+
+def detach(kernel: Kernel, reason: str) -> None:
+    """Take a running kernel from its scope without stopping it: its script now belongs
+    to a background task, which stops it when the script ends. The scope's next script
+    starts a new kernel whose :attr:`Kernel.replaced` is ``reason``."""
+    with _LOCK:
+        if _KERNELS.get(kernel.key) is kernel:
+            del _KERNELS[kernel.key]
+            _DETACHED[kernel.key] = reason
+    trace.event("CODE", "kernel detached key=%s reason=%s", kernel.key, reason)
 
 
 def discard(kernel: Kernel, reason: str) -> None:

@@ -73,6 +73,9 @@ class CodeLaunch:
     session_id: str
     workspace: Path
     read_only: bool
+    #: A foreground script already running, which the task takes over as it is
+    #: (:class:`clio_agent.gact.code_mode.foreground.ForegroundRun`); None starts it.
+    adopted: Any = None
 
 
 _LAUNCHES: dict[str, CodeLaunch] = {}
@@ -191,6 +194,8 @@ def _run(
     from clio_agent.gact.code_mode import kernels  # noqa: PLC0415
     from clio_agent.gact.code_mode.tool import execute_script  # noqa: PLC0415
 
+    if launch.adopted is not None:
+        return _adopt(launch, handle, stop, live)
     kernel = kernels.kernel_for(
         launch.session_id, "task:" + handle, launch.workspace, read_only=launch.read_only
     )
@@ -220,6 +225,27 @@ def _run(
     finally:
         grouper.flush()  # what was held is recorded when the script ends
         kernels.discard(kernel, "task_settled")
+        _script_ended(app, launch.session_id, handle)
+
+
+def _adopt(
+    launch: CodeLaunch, handle: str, stop: threading.Event, live: dict[str, Any]
+) -> dict[str, Any]:
+    """Take over a foreground script still running: its kernel and dispatcher become this
+    task's, its cancel this task's ``stop``, and the kernel stops when the script ends."""
+    from clio_agent.gact import context as gact_context  # noqa: PLC0415
+    from clio_agent.gact import session_processes  # noqa: PLC0415
+    from clio_agent.gact.code_mode import kernels  # noqa: PLC0415
+
+    run = launch.adopted
+    live.update(kernel=run.live.get("kernel"), dispatcher=run.live.get("dispatcher"))
+    app = launch.prepared.context.run(gact_context.active_app)
+    session_processes.script_started(launch.session_id, handle)
+    try:
+        return run.adopt(stop)
+    finally:
+        if live.get("kernel") is not None:
+            kernels.discard(live["kernel"], "task_settled")
         _script_ended(app, launch.session_id, handle)
 
 
