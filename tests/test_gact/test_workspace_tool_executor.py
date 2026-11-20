@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 from clio_agent.agent import ClioAgent
 from clio_agent.tools.execution import tool_workspace_context
+from clio_agent.tools.workspace_mcp_trust import trust_workspace_mcp
 from clio_agent.tools.workspace_root import canonical_workspace_root
 
 
@@ -133,6 +134,7 @@ def test_workspace_gateway_reads_that_workspace_mcp_yaml(tmp_path, monkeypatch) 
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    trust_workspace_mcp(shared / "mcp.yaml")
     agent = _bare_agent()
     monkeypatch.setattr(agent, "_discover_plugin_servers", lambda server_set="": {})
     seen: dict[str, object] = {}
