@@ -23,6 +23,7 @@ from __future__ import annotations
 import contextvars
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable
 
 from clio_agent.runtime import trace
@@ -32,6 +33,7 @@ __all__ = [
     "ForegroundRun",
     "background_after_s",
     "moved_outcome",
+    "output_log",
     "request_background",
     "running_scripts",
 ]
@@ -41,6 +43,18 @@ BACKGROUNDED = "backgrounded"
 
 _RUNNING: dict[str, set["ForegroundRun"]] = {}
 _RUNNING_LOCK = threading.Lock()
+
+
+def output_log(session_id: str) -> Path | None:
+    """A new file in the session's scratch for one foreground script's output (None when
+    the session has no scratch): a script that moves keeps writing to it, and its task's
+    status reads it."""
+    from uuid import uuid4  # noqa: PLC0415
+
+    from clio_agent.runtime.session_scratch import session_scratch_dir  # noqa: PLC0415
+
+    scratch = session_scratch_dir(session_id)
+    return None if scratch is None else scratch / f"code-run-{uuid4().hex}.log"
 
 
 def background_after_s() -> float:

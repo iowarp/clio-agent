@@ -23,6 +23,7 @@ and the next script starts a fresh one.
 from __future__ import annotations
 
 import contextvars
+import functools
 import queue
 import time
 from collections.abc import Callable, Mapping
@@ -393,7 +394,9 @@ def run_script(
     kernel = kernels.kernel_for(session_id, scope, _workspace(), read_only=read_only)
     run = foreground.ForegroundRun(session_id, label or _first_line(code))
     run.live["kernel"] = kernel  # a task that takes the script over stops it at the end
-    run.start(execute_script, prepared, kernel)
+    log = foreground.output_log(session_id)  # what it prints, readable if it moves
+    run.live["output_path"] = str(log or "")
+    run.start(functools.partial(execute_script, output_path=str(log or "")), prepared, kernel)
     state = run.wait(cancellation_requested, poll_s(), foreground.background_after_s())
     if state == "move":
         kernels.detach(kernel, "replaced_backgrounded")
@@ -403,6 +406,8 @@ def run_script(
         )  # fmt: skip
         return foreground.moved_outcome(run, receipt, code)
     outcome = run.outcome()
+    if log is not None:
+        log.unlink(missing_ok=True)  # it ended here: its output is in the outcome
     if state == "cancelled" or outcome["status"] == "cancelled":
         from clio_agent.gact.agents.clio_react import _turn_cancelled  # noqa: PLC0415
 

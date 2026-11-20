@@ -48,6 +48,10 @@ def test_a_long_script_moves_to_the_background_with_its_state(
     assert (sid, "main") not in kernels._KERNELS  # the running kernel left the scope
     task = _settled(app, outcome["handle"])
     assert task.kind == "Code" and task.status == "completed", task
+    from clio_agent.runtime.session_scratch import session_scratch_dir
+
+    [log] = list(session_scratch_dir(sid).glob("code-run-*.log"))
+    assert "done 42" in log.read_text()  # printed after it moved, into the same file
     monkeypatch.setattr(foreground, "background_after_s", lambda: 0.0)
     after = _run(app, sid, root, "x")
     assert after["status"] == "failed" and "NameError" in after["error"]
@@ -111,9 +115,14 @@ def test_a_short_script_stays_in_the_foreground(
 ) -> None:
     app, sid, root = world
     monkeypatch.setattr(foreground, "background_after_s", lambda: 30.0)
-    outcome = _run(app, sid, root, "y = 2\ny * 21")
+    outcome = _run(app, sid, root, "y = 2\nprint('hello')\ny * 21")
     assert outcome["status"] == "completed" and outcome["value"] in (42, "42")
+    assert outcome["output"].strip() == "hello"
     assert (sid, "main") in kernels._KERNELS
+    from clio_agent.runtime.session_scratch import session_scratch_dir
+
+    scratch = session_scratch_dir(sid)
+    assert scratch is None or not list(scratch.glob("code-run-*.log"))  # no log left
 
 
 def test_a_moved_script_presents_where_it_went_and_why() -> None:

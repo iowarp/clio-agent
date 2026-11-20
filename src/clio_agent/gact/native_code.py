@@ -238,7 +238,11 @@ def _adopt(
     from clio_agent.gact.code_mode import kernels  # noqa: PLC0415
 
     run = launch.adopted
-    live.update(kernel=run.live.get("kernel"), dispatcher=run.live.get("dispatcher"))
+    live.update(
+        kernel=run.live.get("kernel"),
+        dispatcher=run.live.get("dispatcher"),
+        output_path=run.live.get("output_path") or "",  # where it has printed all along
+    )
     app = launch.prepared.context.run(gact_context.active_app)
     session_processes.script_started(launch.session_id, handle)
     try:
