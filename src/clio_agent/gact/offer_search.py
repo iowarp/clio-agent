@@ -4,10 +4,13 @@ The session facts name only some of the plugins and connectors a conversation co
 (:func:`clio_agent.gact.plugin_offer.offerable_facts`), and say how many more there are.
 ``offer_plugin`` reaches the rest:
 
-* ``search`` (words, any case): a row matches when every word is in its id, name,
-  summary, category, keywords or, for a plugin, the instructions its MCP servers last
-  sent (what they reach: sites, datasets, packages); rows whose name or id holds a word
-  come first, and a row matched by its instructions quotes the sentence (``mentions``).
+* ``search`` (words, any case, a plain sentence's filler words dropped): a row matches
+  when every word is in its id, name, description, category, keywords or, for a plugin,
+  the instructions its MCP servers last sent (what they reach: sites, datasets,
+  packages), or when the search holds its id, name or a declared keyword as a whole word
+  (a connector also answers to the plugins that follow it); rows whose name or id holds
+  a word come first, and a row matched by its instructions quotes the sentence
+  (``mentions``).
 * ``category`` (any case, exact): a connector's category is its Discover group, a
   plugin's the category its marketplace entry declares (else none).
 * Neither (and no plugin): the categories with their counts and the total, and a line
@@ -51,8 +54,8 @@ def left_out_fact(count: int) -> str:
 
 
 def _haystack(row: Mapping[str, Any]) -> str:
-    parts = [row.get("id"), row.get("name"), row.get("summary"), row.get("category")]
-    parts += list(row.get("keywords") or ())
+    parts = [row.get("id"), row.get("name"), row.get("summary"), row.get("about")]
+    parts += [row.get("category"), *(row.get("keywords") or ())]
     parts.append(row.get("instructions"))
     return " ".join(str(part or "") for part in parts).casefold()
 
@@ -87,6 +90,7 @@ def mention(row: Mapping[str, Any], words: Sequence[str]) -> str:
             row.get("id"),
             row.get("name"),
             row.get("summary"),
+            row.get("about"),
             row.get("category"),
             *(row.get("keywords") or ()),
         )
@@ -101,16 +105,44 @@ def mention(row: Mapping[str, Any], words: Sequence[str]) -> str:
     return ""
 
 
-def words_of(text: str) -> list[str]:
-    """The search words of ``text`` (lowercased, split on spaces and commas)."""
+#: Words a need said in plain words carries that name nothing to find ("in my notebook").
+_FILLER = frozenset(
+    "a an the my our your me i we us it its this that these those to of in on at for from "
+    "with by and or into onto as is are be please can could would should will".split()
+)
 
-    return [word for word in text.replace(",", " ").casefold().split() if word]
+
+def words_of(text: str) -> list[str]:
+    """The search words of ``text`` (lowercased, split on spaces and commas, without the
+    filler words of a plain sentence)."""
+
+    return [w for w in text.replace(",", " ").casefold().split() if w and w not in _FILLER]
+
+
+def _said_in(phrase: Any, asked: str) -> bool:
+    folded = " ".join(str(phrase or "").casefold().split())
+    return bool(folded) and re.search(rf"(?<!\w){re.escape(folded)}(?!\w)", asked) is not None
+
+
+def found_by(row: Mapping[str, Any], words: Sequence[str]) -> bool:
+    """Whether ``row`` answers a search: every word is in what it says of itself (id, name,
+    description, category, keywords, its servers' instructions), or the search names it
+    or one of its declared keywords as a whole word ("prepare Spack", "field notebook")."""
+
+    if not words:
+        return False
+    if all(word in _haystack(row) for word in words):
+        return True
+    asked = " ".join(words)
+    named = (row.get("id"), row.get("name"), *(row.get("keywords") or ()))
+    return any(_said_in(phrase, asked) for phrase in named)
 
 
 def matching(rows: Sequence[Mapping[str, Any]], words: Sequence[str]) -> list[Any]:
-    """The rows holding every word, those with a word in their name or id first."""
+    """The rows a search finds (:func:`found_by`), those with a word in their name or id
+    first."""
 
-    hits = [row for row in rows if all(word in _haystack(row) for word in words)]
+    hits = [row for row in rows if found_by(row, words)]
 
     def named(row: Mapping[str, Any]) -> bool:
         title = f"{row.get('id')} {row.get('name')}".casefold()
