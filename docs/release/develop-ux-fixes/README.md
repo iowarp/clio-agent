@@ -4,8 +4,7 @@ The issues below were reported from a Desktop 0.7.1 demo (backend v0.9.7.1). Eac
 was checked against develop: clio-agent `8247abe`, gact-tui `22fc042` and the
 marketplace commit develop pins, `7d1933c`. Each was reproduced on a live,
 isolated develop stack where that was possible. The fixes are on
-`claude/develop-ux-fixes` in clio-agent (9 commits) and, because this session cannot
-push gact-tui, as patches in [`gact-tui-patches/`](gact-tui-patches/) (7 commits).
+`claude/develop-ux-fixes` in clio-agent and in gact-tui (7 commits).
 
 The gact-tui commits are pushed as `claude/develop-ux-fixes` in gact-tui (on `develop`
 `22fc042`, tree `4670120`). The same commits are kept here as patches; to apply them
