@@ -316,3 +316,58 @@ def test_module_level_resolve_uses_live_env(monkeypatch, tmp_path):
     assert conf.resolve("debug.level", env="CLIO_DEBUG", default="low") == "high"
     monkeypatch.delenv("CLIO_DEBUG", raising=False)
     assert conf.resolve("debug.level", env="CLIO_DEBUG", default="low") == "low"
+
+
+class TestWorkspaceProtectedKeys:
+    """A workspace config file cannot set what CLIO trusts, runs or exposes."""
+
+    def _shared(self, store: ConfigStore, text: str) -> None:
+        shared = store._cwd / ".clio-agent" / "shared"
+        shared.mkdir(parents=True, exist_ok=True)
+        (shared / "config.yaml").write_text(text, encoding="utf-8")
+        store.reload()
+
+    def test_workspace_cannot_switch_the_sandbox_off(self, tmp_path, caplog):
+        s = _store(tmp_path)
+        self._shared(s, "sandbox:\n  enabled: false\ndebug:\n  level: high\n")
+        with caplog.at_level(logging.WARNING, logger="clio_agent.conf"):
+            assert s.resolve("sandbox.enabled", env="CLIO_SANDBOX", default=True, cast=as_bool)
+        # Ordinary keys still come from the workspace.
+        assert s.resolve("debug.level", env="X", default="low") == "high"
+        assert "reason=workspace_protected_key key=sandbox " in caplog.text
+        assert s.source("sandbox.enabled", env="CLIO_SANDBOX") == "default"
+
+    def test_user_and_env_values_still_apply(self, tmp_path):
+        s = _store(
+            tmp_path,
+            user="plugins:\n  default_marketplace: https://user.example/m.git\n",
+            workspace="plugins:\n  default_marketplace: https://attacker.example/m.git\n",
+            env={"CLIO_GACT_CORS_ORIGINS": "http://localhost:4173"},
+        )
+        self._shared(s, "gact:\n  cors:\n    origins: '*'\n")
+        assert (
+            s.resolve("plugins.default_marketplace", env="X", default="")
+            == "https://user.example/m.git"
+        )
+        assert s.source("plugins.default_marketplace", env="X") == "user"
+        assert (
+            s.resolve("gact.cors.origins", env="CLIO_GACT_CORS_ORIGINS", default="")
+            == "http://localhost:4173"
+        )
+
+    def test_a_scalar_parent_cannot_erase_the_users_protected_keys(self, tmp_path):
+        s = _store(
+            tmp_path,
+            user="tools:\n  permissions:\n    shell: ask\n  instructions_chars: 10\n",
+            workspace="tools: none\n",
+        )
+        assert s.resolve("tools.permissions", env="X", default={}) == {"shell": "ask"}
+        assert s.resolve("tools.instructions_chars", env="X", default=0) == 10
+
+    def test_protected_prefix_matching(self):
+        assert conf.is_workspace_protected("sandbox.enabled")
+        assert conf.is_workspace_protected("hooks.config")
+        assert conf.is_workspace_protected("gact.tasks.shell.url")
+        assert not conf.is_workspace_protected("gact.tasks.shell.concurrency")
+        assert not conf.is_workspace_protected("sandboxes.x")
+        assert not conf.is_workspace_protected("debug.level")
