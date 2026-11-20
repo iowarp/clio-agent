@@ -4,10 +4,12 @@ The issues below were reported from a Desktop 0.7.1 demo (backend v0.9.7.1). Eac
 was checked against develop: clio-agent `8247abe`, gact-tui `22fc042` and the
 marketplace commit develop pins, `7d1933c`. Each was reproduced on a live,
 isolated develop stack where that was possible. The fixes are on
-`claude/develop-ux-fixes` in clio-agent (8 commits) and, because this session cannot
+`claude/develop-ux-fixes` in clio-agent (9 commits) and, because this session cannot
 push gact-tui, as patches in [`gact-tui-patches/`](gact-tui-patches/) (7 commits).
 
-Apply the gact-tui patches on a branch from gact-tui `develop`:
+The gact-tui commits are pushed as `claude/develop-ux-fixes` in gact-tui (on `develop`
+`22fc042`, tree `4670120`). The same commits are kept here as patches; to apply them
+by hand on a branch from gact-tui `develop`:
 
 ```bash
 git switch -c claude/develop-ux-fixes origin/develop
@@ -29,7 +31,7 @@ branch (`8b7fe01`).
 | 6 | Raw model reply as the flow error | **Present.** The 2,000-character message was the red headline. | clio-agent: `flow_error` carries `reason` and `message_truncated_chars`. gact-tui: headline is the first line; Details has the error type and full message. |
 | 7 | "Task history incomplete" chip unreadable | **Not reproduced.** Readable in both themes (dark: text 236,230,218 on 38,35,31). | None. |
 | 8 | Step panel shows the whole run's request | Fixed on develop (gact-tui `f2ef5a7`). | None. |
-| 9 | `limit="15"` refused | Present in code; this run's model sent integers, so it did not occur live. | clio-agent: integer, number and boolean arguments sent as JSON text are decoded; other text is still refused. |
+| 9 | `limit="15"` refused | **Present.** Claude writes calls as invoke markup, which carries every value as text; the parser turns "15" into 15 from the tool's schema and keeps it as text when it cannot find that schema (checked against v0.9.7.1 and develop). Web and literature search are MCP tools, and only CLIO's native tools decoded such text, so the call met "'15' is not of type 'integer'". | clio-agent: one shared decode (`tools/typed_text_arguments.py`) for native and MCP tools; a number, decimal or yes/no sent as its text becomes that value; anything else is still refused. A test on a real MCP server fails with the reported error without it. |
 | 10 | `run_code` refused in Deep research | **Present.** All five researchers' scripts were refused in one run. | clio-agent: allowed behind an enforced fence, read-only as in Plan mode. Live: 28 of 31 scripts ran, and the run completed with its report saved. |
 | 12 | Consent cards: a tiny radio, then Send response | **Present.** A one-choice MCP form ("Allow searches through the literature sources?") rendered a radio list and a separate button. | gact-tui: a form that is one choice of two or three options shows one numbered button per option; pressing it answers. |
 | 13 | Composer mode as a word on the right | The mode ("Execute", "Deep research") was a word beside the model; the spec of Nov 9 put it there. | gact-tui: the mode is an icon with the other behavior controls on the left, named in its tooltip and accented when not Execute; the spec is updated. Checked at 1280 px and 390 px. |
