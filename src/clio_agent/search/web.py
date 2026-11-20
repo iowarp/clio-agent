@@ -97,13 +97,24 @@ def _usable(source: str) -> bool:
     return not SEARCH_LIMITS.declined(source) and SEARCH_LIMITS.cooldown(source) is None
 
 
-async def _approved(source: str, settings: SearchSettings) -> bool:
-    if settings.is_approved(source):
-        return True
+async def _approved(source: str, settings: SearchSettings, later: list[str]) -> bool:
+    """Whether ``source`` may be asked; the person decides when it is still unanswered.
+
+    The question covers ``source`` and every later source still unanswered, so a person
+    who declines it is not asked about the next one at once (``broker.web_approval``).
+    A search that never reaches an unanswered source asks nothing.
+    """
+    if settings.is_approved(source) or load_search_settings().is_approved(source):
+        return True  # the second read sees an approval given earlier in this search
     if SEARCH_LIMITS.declined(source):
         return False
-    answer = await broker.gate(broker.approval(source))
-    return answer == broker.APPROVE
+    pending = [source] + [
+        name
+        for name in later
+        if not settings.is_approved(name) and not SEARCH_LIMITS.declined(name)
+    ]
+    decision = broker.web_approval(tuple(pending)) if len(pending) > 1 else broker.approval(source)
+    return await broker.gate(decision) == broker.APPROVE
 
 
 async def web_search(query: WebQuery) -> dict[str, Any]:
@@ -126,7 +137,7 @@ async def web_search(query: WebQuery) -> dict[str, Any]:
     index = 0
     while index < len(sources):
         source = sources[index]
-        if not await _approved(source, settings):
+        if not await _approved(source, settings, sources[index + 1 :]):
             notes.append(note("search_not_approved", source))
             index += 1
             continue
