@@ -11,6 +11,7 @@ from typing import Any
 
 from clio_agent.gact.events import Event
 from clio_agent.gact.tool_result_presentation import ToolPresentation
+from clio_agent.tools.tool_observation import REFUSED_BY
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,8 @@ def completed_presentation(
     """Prepare the observer view; failures cannot alter the tool's result or status.
 
     ``outcome`` (``denied`` or ``cancelled``) is an unsuccessful call that is not the
-    tool's failure: the view says it was not run, or was stopped, rather than failed.
+    tool's failure: the view says it was not run, or was stopped, rather than failed. A
+    denied call also says what blocked it when no person did (``REFUSED_BY``).
     """
     from clio_agent.gact.agents.tool_instrumentation import present_native_result
     from clio_agent.tools.tool_presentation import present_mcp_result
@@ -135,6 +137,16 @@ def completed_presentation(
         if error and outcome in {"cancelled", "denied"}:
             presentation["status"] = outcome
             presentation["summary"] = ""
+            if outcome == "denied" and (decided_by := REFUSED_BY.get()):
+                # What blocked it when no person did, read after "Denied" (the mode, a rule).
+                presentation["blocks"].append(
+                    {
+                        "id": "permission-decision",
+                        "type": "text",
+                        "label": "Decision",
+                        "text": decided_by,
+                    }
+                )
             presentation["blocks"].append(
                 {
                     "id": "execution-outcome",

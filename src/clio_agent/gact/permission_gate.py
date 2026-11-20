@@ -110,7 +110,7 @@ from clio_agent.gact.runtime.permission_policies import (
     append_surface_consent_policies,
 )
 from clio_agent.gact.runtime.retention import enforce_dict_bound
-from clio_agent.gact.side_sessions import policy_deny_reason, policy_mode
+from clio_agent.gact.side_sessions import policy_deny_reason, policy_deny_source, policy_mode
 from clio_agent.gact.spotter_permission import enforce_spotter_clearance as _spotter_clearance
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.tools.catalog import action_subject, get_tool_entry
@@ -143,14 +143,15 @@ class DenyDecision(str):
     raises to the model in place of the generic ``"denied by permission gate"`` string
     (read via ``getattr`` at the execution boundary, so the low ``tools`` layer never
     imports gact). The typed audit reason (``policy_deny``) is decided separately and is
-    NOT affected — this class only enriches the human/model-facing wording.
+    NOT affected; :attr:`decided_by` names, for the person, what blocked it when no person did.
     """
 
     deny_message: str
+    decided_by: str
 
-    def __new__(cls, deny_message: str = "") -> "DenyDecision":
+    def __new__(cls, deny_message: str = "", decided_by: str = "") -> "DenyDecision":
         obj = super().__new__(cls, "deny")
-        obj.deny_message = deny_message
+        obj.deny_message, obj.decided_by = deny_message, decided_by
         return obj
 
 
@@ -620,8 +621,8 @@ def _layered_deny(
         + ("permission policy" if by_rule else "its default permission"),
         reason=policy_deny_reason(mode) if by_rule else layers.REASON_DEFAULT_DENY,
     )
-    # P1.2 #1064: a plan_acl-authored deny carries a mode-aware message for the model.
-    return DenyDecision(plan_deny_message) if plan_deny_message else "deny"
+    # P1.2 #1064: a plan_acl deny's message is mode-aware; ``decided_by`` is for the person.
+    return DenyDecision(plan_deny_message, policy_deny_source(mode, plan_deny_message, by_rule))
 
 
 def _make_permission_gate(app: "FastAPI"):
@@ -712,9 +713,8 @@ def _make_permission_gate(app: "FastAPI"):
                 summary=f"{subject} {name!r} blocked by a PreToolUse hook",
                 reason="hook_deny",
             )
-            return DenyDecision(
-                hook_outcome.reason or f"tool call {name!r} denied by a PreToolUse hook"
-            )
+            hook_reason = hook_outcome.reason or f"tool call {name!r} denied by a PreToolUse hook"
+            return DenyDecision(hook_reason, "a hook blocked it")
         # P2.6: a PreToolUse ``defer`` PARKS this call for out-of-band approval (the
         # headline durable-defer path). deny beats defer (tighten-only): a policy deny
         # is evaluated FIRST so a matching deny-rule still blocks rather than parks;
@@ -737,7 +737,7 @@ def _make_permission_gate(app: "FastAPI"):
                     summary=f"{subject} {name!r} blocked by permission policy",
                     reason=policy_deny_reason(mode),
                 )
-                return DenyDecision(defer_plan_msg) if defer_plan_msg else "deny"
+                return DenyDecision(defer_plan_msg, policy_deny_source(mode, defer_plan_msg, True))
             from clio_agent.gact.hooks.defer import park_pretool_defer  # noqa: PLC0415
 
             return park_pretool_defer(

@@ -26,6 +26,9 @@ OBSERVATION_GROUP: ContextVar[Any | None] = ContextVar("clio_observation_group",
 #: True while a refused call's completion is reported (:func:`notify_refused_call`), so
 #: the observer records it as denied, not as a call that ran and failed.
 REFUSED_CALL: ContextVar[bool] = ContextVar("clio_refused_call", default=False)
+#: What refused that call when no person did (a gate decision's ``decided_by``, such as
+#: the session's mode); empty when a person refused it or nothing named a source.
+REFUSED_BY: ContextVar[str] = ContextVar("clio_refused_by", default="")
 #: The completed call's result before its record was bounded, for the observer's effects
 #: (a write's change record and previous content), which must see it whole. Set only for
 #: the observer call.
@@ -195,9 +198,11 @@ def notify_refused_call(
         notify_tool_observer(observer, name, args, "completed", str(error))
         return error
     token = REFUSED_CALL.set(True)
+    by_token = REFUSED_BY.set(str(getattr(decision, "decided_by", "") or ""))
     try:
         notify_tool_observer(observer, name, args, "completed", reason)
     finally:
+        REFUSED_BY.reset(by_token)
         REFUSED_CALL.reset(token)
     return PermissionError(reason)
 
