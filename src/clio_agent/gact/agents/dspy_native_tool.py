@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import copy
 import inspect
-import json
 import logging
 import threading
 from collections.abc import Callable
@@ -23,62 +22,9 @@ import dspy
 from jsonschema import Draft202012Validator
 from referencing import Registry
 
+from clio_agent.tools.typed_text_arguments import decode_typed_text_arguments, schema_types
+
 logger = logging.getLogger(__name__)
-
-
-def _schema_types(schema: dict[str, Any] | None) -> list[str]:
-    """The JSON types an argument's schema accepts (``anyOf``/``oneOf`` included)."""
-
-    schema = schema or {}
-    kind = schema.get("type")
-    if isinstance(kind, str):
-        return [kind]
-    if isinstance(kind, list):
-        return [str(item) for item in kind]
-    types: list[str] = []
-    for option in schema.get("anyOf") or schema.get("oneOf") or []:
-        for item in _schema_types(option if isinstance(option, dict) else None):
-            if item not in types:
-                types.append(item)
-    return types
-
-
-#: The Python types a JSON-schema type admits for :func:`_decoded` (``bool`` is not a number).
-_DECODED_TYPES: dict[str, tuple[type, ...]] = {
-    "object": (dict,),
-    "array": (list,),
-    "integer": (int,),
-    "number": (int, float),
-    "boolean": (bool,),
-}
-
-
-def _decoded(value: Any, schema: dict[str, Any] | None) -> Any:
-    """A JSON value given as its text, decoded: a format fix only.
-
-    Models sometimes send a structured or scalar argument as its JSON text
-    (``options='{"max_rounds": 0}'``, ``limit="15"``, ``exact="true"``). When the
-    argument does not take text and the text is exactly one JSON value of a type it
-    does take, the value is that; nothing else changes. Any other text is left for
-    validation to refuse.
-    """
-
-    if not isinstance(value, str):
-        return value
-    types = _schema_types(schema)
-    if "string" in types or not set(_DECODED_TYPES) & set(types):
-        return value
-    try:
-        decoded = json.loads(value)
-    except ValueError:
-        return value
-    for kind in types:
-        admitted = _DECODED_TYPES.get(kind, ())
-        if isinstance(decoded, admitted) and not (
-            isinstance(decoded, bool) and kind in {"integer", "number"}
-        ):
-            return decoded
-    return value
 
 
 class _Parsed(NamedTuple):
@@ -144,7 +90,7 @@ class ToolArgumentError(ValueError):
 
     def __init__(self, tool: str, reason: str, args: dict[str, Any], required: set[str]) -> None:
         listed = ", ".join(
-            f"{key} ({' or '.join(_schema_types(schema)) or 'any'}"
+            f"{key} ({' or '.join(schema_types(schema)) or 'any'}"
             f"{', required' if key in required else ''})"
             for key, schema in args.items()
         )
@@ -218,17 +164,7 @@ class ClioNativeTool(dspy.Tool):
                 and parameters[key].default not in (None, inspect.Parameter.empty)
             )
         }
-        schemas = dict(self.args or {})
-        for key, value in list(given.items()):
-            decoded = _decoded(value, schemas.get(key))
-            if decoded is not value:
-                logger.info(
-                    "tool_argument_json_text_decoded tool=%s argument=%s "
-                    "reason=json_text_for_typed_argument",
-                    self.name,
-                    key,
-                )
-                given[key] = decoded
+        given = decode_typed_text_arguments(self.name, given, dict(self.args or {}))
         try:
             # A required argument (no default) the call left out is a schema error the
             # model can correct, not a TypeError from inside the tool.
