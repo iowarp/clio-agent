@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 from clio_agent import paths
+from clio_agent.runtime.fence_loopback_agent import MXC_LOOPBACK_DETAILS
 
 logger = logging.getLogger(__name__)
 
@@ -324,7 +325,7 @@ def _activate_codex(det: Any, base_details: dict[str, Any]) -> SandboxResult:
             "codex_binary": det.binary_path,
             "codex_version": det.version,
             "net_enforcement": net_enforcement,
-            **({"host_loopback": "direct", "detached_children": "terminated"} if mxc else {}),
+            **(MXC_LOOPBACK_DETAILS if mxc else {}),
         },
     )
 

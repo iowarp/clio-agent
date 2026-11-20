@@ -61,8 +61,16 @@ class FencedNamespace:
 
 
 def fenced_services_possible() -> bool:
-    """Whether a launched server can be in a network namespace of its own (an active Linux fence)."""
+    """Whether a launched server's loopback can be out of the host's direct reach.
 
+    That is an active Linux fence (a network namespace of its own), or Windows' MXC fence
+    with a server behind CLIO's loopback agent (:mod:`clio_agent.runtime.fence_loopback`).
+    """
+
+    if sys.platform == "win32":
+        from clio_agent.runtime.fence_loopback import publishing_active  # noqa: PLC0415
+
+        return publishing_active()
     if not sys.platform.startswith("linux"):
         return False
     from clio_agent.runtime.sandbox import fence_enforced  # noqa: PLC0415 - import cycle
@@ -149,8 +157,14 @@ def find_fenced_namespace(port: int, child_id: str = "") -> FencedNamespace | No
     With ``child_id`` (the serving child's egress channel), only that child's namespace is
     considered when its processes carry the marker. More than one candidate is ambiguous and
     returns ``None``, so a token is never sent to a namespace that may not be the server's.
+    On Windows the result names the server's loopback agent (``inode`` 0).
     """
 
+    if sys.platform == "win32":
+        from clio_agent.runtime.fence_loopback import find_server  # noqa: PLC0415
+
+        agent = find_server(port, child_id)
+        return FencedNamespace(agent, 0) if agent is not None else None
     if not sys.platform.startswith("linux"):
         return None
     namespaces = _fenced_namespaces()
@@ -186,6 +200,10 @@ def connect_in_namespace(
         OSError: The namespace is gone, could not be joined, or nothing accepted.
     """
 
+    if sys.platform == "win32":
+        from clio_agent.runtime.fence_loopback import connect  # noqa: PLC0415
+
+        return connect(target.pid, port, timeout)
     ours, theirs = socket.socketpair()
     with ours:
         try:

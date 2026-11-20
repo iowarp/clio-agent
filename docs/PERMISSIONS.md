@@ -476,6 +476,44 @@ the connected socket back (`runtime/fence_service.py`,
 in the namespace is dialed, so the fence gains no inbound path. When two namespaces
 could be the server's, CLIO refuses to guess and the view reports `service_unreachable`.
 
+On Windows the Codex fence runs a fenced MCP server in an MXC AppContainer. The
+container shares the host's port space, but the desktop (a browser, the ParaView
+client, CLIO itself) cannot connect to a port the server listens on inside it: the
+loopback SYN is dropped. CLIO adds no firewall rule or loopback exemption. Instead each
+fenced stdio server runs under a small in-fence agent (`runtime/fence_loopback_agent.py`,
+marked by `CLIO_FENCE_LOOPBACK`), and a host publisher in CLIO
+(`runtime/fence_loopback.py`) carries traffic for that one container:
+
+- When the server writes a `127.0.0.1`/`localhost` address or URL to its stdout, the agent
+  asks the publisher to publish that port. The publisher answers only a CLIO descendant
+  holding that spawn's token, and only for a port that a process in that agent's own tree
+  is listening on, on loopback.
+- It opens a host listener on `127.0.0.1:<new port>`, plus `[::1]:<same port>` when the
+  server bound only IPv4. Each accepted connection is spliced to a connection that the
+  agent dials from inside the container (outbound to host loopback is allowed).
+- The agent rewrites the address in the server's output:
+  - a URL becomes `http://localhost:<same port>/…`, so pages that check `Origin` against
+    their own port, such as relay's ask page, keep working;
+  - a bare address, such as a serve-route forward port for an IPv4-only client, becomes
+    `127.0.0.1:<new port>`.
+- On the way in, published addresses are mapped back to the server's own port.
+- The published listeners close when the server exits. A port no process in that tree
+  listens on is never published, so the fence gains no general inbound path.
+- The MCP App service probe and proxies use the same publisher (`fence_service.py`).
+
+`inbound_loopback: "published"` in the fence details reports this.
+
+Known limits:
+
+- Only addresses in the server's text output are translated. A port sent as a separate
+  JSON number is not.
+- A sign-in that sends an identity provider straight to the server's own loopback
+  callback is not translated.
+- A desktop CLI that reads the server's state files, such as `clio-relay asks answer`,
+  sees the unpublished port.
+- If the server itself holds `[::1]` on its port, URLs use the new port, and a page that
+  checks `Origin` may refuse its form posts.
+
 On macOS the Codex write fence does not restrict network routes. Tools that honor
 `HTTP(S)_PROXY`/`ALL_PROXY` (curl, Python, pip/uv, git over HTTPS) and the shell's
 `ssh`/`scp`/`sftp` shims go through CLIO's proxy and are recorded. A client that
