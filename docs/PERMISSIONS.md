@@ -376,6 +376,13 @@ it once or always (the helper says it is waiting) or declines it. The person's k
 agent and `known_hosts` are used as they are; nothing is copied into the workspace.
 Remote commands run with the SSH account's permissions, and the local write fence
 does not constrain the remote filesystem.
+On Windows each shim is an `.exe` console launcher (distlib's, as pip uses) with a
+`.cmd` beside it. `CreateProcess` — Python's `subprocess` with a list, Node's `spawn`
+without a shell — tries only `.exe` for a bare `ssh`, so without the launcher such a
+spawn reaches System32 OpenSSH, whose direct connect the fence blocks. The launcher
+also passes arguments verbatim; the `.cmd` goes through `cmd.exe`, which expands
+`%VAR%` and strips `^` in a remote command, so `GIT_SSH`, `scp -S` and `ProxyJump`
+hops use the `.exe` too.
 On the floor (no fence) the shims are not installed and `ssh` connects directly.
 
 Results recorded by the former built-in SSH tool in old sessions keep their

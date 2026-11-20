@@ -8,16 +8,26 @@ policy. Git over SSH reaches the same shim through ``PATH``, or through ``GIT_SS
 person has not chosen an ssh command of their own.
 
 On the floor (no fence) nothing changes: a direct ``ssh`` already works there.
+
+On Windows each tool has a ``.cmd`` shim and, when distlib's console launcher is available, an
+``.exe`` beside it. ``CreateProcess`` (Python's ``subprocess`` with a list, Node's ``spawn``
+without a shell) only tries ``.exe`` for a bare name, so without the ``.exe`` such a spawn of
+``ssh`` would skip the shim and dial straight out through System32 OpenSSH.
 """
 
 from __future__ import annotations
 
 import hashlib
+import io
 import logging
 import os
+import platform
 import shlex
 import shutil
+import struct
 import sys
+import zipfile
+from importlib import resources
 from pathlib import Path
 
 from clio_agent.runtime import net_connect
@@ -38,26 +48,77 @@ def _shim_text(python: str, helper: str, shim_dir: str, tool: str) -> str:
     return f'#!/bin/sh\nexec {shlex.join(argv)} "$@"\n'
 
 
+def _windows_launcher() -> bytes | None:
+    """distlib's console launcher for this interpreter's architecture, or ``None``."""
+    if struct.calcsize("P") == 8:
+        bits = "64-arm" if platform.machine().lower() == "arm64" else "64"
+    else:
+        bits = "32"
+    try:
+        return resources.files("distlib").joinpath(f"t{bits}.exe").read_bytes()
+    except (ImportError, OSError) as exc:
+        logger.warning(
+            "fence ssh exe shims unavailable reason=fence_ssh_launcher_missing error=%s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+
+def _exe_shim(launcher: bytes, python: str, helper: str, shim_dir: str, tool: str) -> bytes:
+    """A launcher + shebang + zipped ``__main__`` that runs the helper as ``<tool>``.
+
+    The launcher forwards argv, stdio and the exit code, and ties the interpreter to its own
+    lifetime, exactly as a pip console script does.
+    """
+    main = (
+        "import runpy, sys\n"
+        f"sys.argv[:1] = [{helper!r}, {shim_dir!r}, {tool!r}]\n"
+        f"runpy.run_path({helper!r}, run_name='__main__')\n"
+    )
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr(zipfile.ZipInfo("__main__.py", (1980, 1, 1, 0, 0, 0)), main)
+    shebang = f'#!"{python}" -I\n'.encode()
+    return launcher + shebang + archive.getvalue()
+
+
+def _shims(python: str, helper: str, shim_dir: str) -> dict[str, bytes]:
+    """Every shim file name and its bytes for this platform."""
+    if os.name != "nt":
+        return {
+            tool: _shim_text(python, helper, shim_dir, tool).encode() for tool in net_connect.TOOLS
+        }
+    shims = {
+        f"{tool}.cmd": _shim_text(python, helper, shim_dir, tool).encode()
+        for tool in net_connect.TOOLS
+    }
+    launcher = _windows_launcher()
+    if launcher is not None:
+        for tool in net_connect.TOOLS:
+            shims[f"{tool}.exe"] = _exe_shim(launcher, python, helper, shim_dir, tool)
+    return shims
+
+
 def shim_directory() -> Path | None:
     """Write (once) and return the shim directory for this interpreter and helper.
 
-    The directory name hashes the interpreter, the helper and the shim text, so an upgraded
+    The directory name hashes the interpreter, the helper and the shims, so an upgraded
     CLIO writes a fresh set and never runs a stale one. ``None`` when it cannot be written.
     """
     from clio_agent import paths  # noqa: PLC0415
 
     python, helper = sys.executable, str(_helper())
-    seed = "\0".join([python, helper, _shim_text(python, helper, "", "ssh")])
-    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
-    directory = paths.user_cache_dir() / "fence-ssh" / digest
-    suffix = ".cmd" if os.name == "nt" else ""
+    seed = hashlib.sha256("\0".join([python, helper]).encode("utf-8"))
+    for name, content in sorted(_shims(python, helper, "").items()):
+        seed.update(name.encode("utf-8") + b"\0" + content)
+    directory = paths.user_cache_dir() / "fence-ssh" / seed.hexdigest()[:16]
     try:
         directory.mkdir(parents=True, exist_ok=True)
-        for tool in net_connect.TOOLS:
-            shim = directory / f"{tool}{suffix}"
-            text = _shim_text(python, helper, str(directory), tool)
-            if not shim.is_file() or shim.read_text(encoding="utf-8") != text:
-                shim.write_text(text, encoding="utf-8")
+        for name, content in _shims(python, helper, str(directory)).items():
+            shim = directory / name
+            if not shim.is_file() or shim.read_bytes() != content:
+                shim.write_bytes(content)
             if os.name != "nt":
                 shim.chmod(0o755)
     except OSError as exc:
@@ -95,7 +156,7 @@ def fence_ssh_environment(environment: dict[str, str]) -> dict[str, str]:
     }
     if not (environment.get("GIT_SSH") or os.environ.get("GIT_SSH")):
         # Lowest of Git's ssh settings: GIT_SSH_COMMAND and core.sshCommand still win.
-        overlay["GIT_SSH"] = str(directory / ("ssh.cmd" if os.name == "nt" else "ssh"))
+        overlay["GIT_SSH"] = net_connect.shim_ssh(str(directory))
     return overlay
 
 

@@ -333,6 +333,14 @@ def connect_main(host: str, port_text: str) -> int:
 # --------------------------------------------------------------------------- #
 
 
+def shim_ssh(shim_dir: str) -> str:
+    """The ssh shim in ``shim_dir``: on Windows its ``.exe`` when written, else its ``.cmd``."""
+    if os.name != "nt":
+        return os.path.join(shim_dir, "ssh")
+    exe = os.path.join(shim_dir, "ssh.exe")
+    return exe if os.path.isfile(exe) else os.path.join(shim_dir, "ssh.cmd")
+
+
 def real_program(name: str, shim_dir: str) -> str:
     """The real ``name`` on ``PATH``, skipping the shim directory."""
     shim = os.path.normcase(os.path.realpath(shim_dir))
@@ -456,11 +464,11 @@ def ssh_argv(real_ssh: str, shim_dir: str, args: list[str]) -> list[str]:
     if proxy_command.lower() != "none":
         # A configured ProxyCommand stays; one that runs `ssh -W` meets these shims on PATH.
         return [real_ssh, *args]
-    shim_ssh = os.path.join(shim_dir, "ssh.cmd" if os.name == "nt" else "ssh")
+    shim = shim_ssh(shim_dir)
     jump = config.get("proxyjump", "none")
     if jump.lower() != "none":
         hops = [hop for hop in jump.split(",") if hop]
-        inner = [_escape_percent(shim_ssh)]
+        inner = [_escape_percent(shim)]
         if len(hops) > 1:
             inner += ["-J", _escape_percent(",".join(hops[:-1]))]
         inner += ["-W", "[%h]:%p", _escape_percent(_hop_destination(hops[-1]))]
@@ -496,8 +504,7 @@ def copy_argv(real: str, shim_dir: str, args: list[str], tool: str = "scp") -> l
     options, _rest = split_ssh_args(args, value_flags)
     if any(flag == "S" for flag, _value, _raw in _option_items(options, value_flags)):
         return [real, *args]
-    shim_ssh = os.path.join(shim_dir, "ssh.cmd" if os.name == "nt" else "ssh")
-    return [real, "-S", shim_ssh, *args]
+    return [real, "-S", shim_ssh(shim_dir), *args]
 
 
 def _run(argv: list[str]) -> int:
