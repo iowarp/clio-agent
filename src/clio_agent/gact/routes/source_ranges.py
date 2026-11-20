@@ -10,7 +10,9 @@ served so far. A ``GET`` without ``Range`` streams the whole file in chunks: GDA
 every large tile as an unsupported format. A trailing file name after the handle must be the handle's own file:
 readers such as GDAL probe sidecars by appending to the URL (``….tif.aux.xml``,
 ``….msk``), and answering those with the file's own bytes made GDAL parse a raster as
-XML, hundreds of reads per open. Any other name is 404, as a missing sidecar is.
+XML, hundreds of reads per open. A path beside the file that names another linked file
+(a VRT's tiles, :mod:`clio_agent.gact.storage.range_siblings`) is served through that
+file's own handle; any other name is 404, as a missing sidecar is.
 
 The handle without its file name is the file's folder to a reader, not the file: GDAL
 lists it on open (``GET …/{handle}/``, redirected to ``…/{handle}``), and streaming the
@@ -31,6 +33,7 @@ from fastapi.responses import StreamingResponse
 
 from clio_agent.gact.auth import is_loopback_address
 from clio_agent.gact.storage.range_handles import RangeHandle, registry
+from clio_agent.gact.storage.range_siblings import resolve_sibling
 
 _RANGE = re.compile(r"^bytes=(\d*)-(\d*)$")
 #: Typed 404 detail: the handle without its file name was read whole, as a folder listing.
@@ -51,7 +54,12 @@ def _handle(app: FastAPI, request: Request, sid: str, handle: str, name: str = "
     except TimeoutError as exc:
         raise HTTPException(status_code=410, detail=str(exc)) from None
     if name and name != found.path.rsplit("/", 1)[-1]:
-        raise HTTPException(status_code=404, detail="Not this handle's file")
+        # A path beside the file (a VRT's tile): served when that file is linked too.
+        service = getattr(app.state, "connected_storage", None)
+        sibling = service and resolve_sibling(service, registry(app), found, name)
+        if not sibling:
+            raise HTTPException(status_code=404, detail="Not this handle's file")
+        return sibling
     return found
 
 
@@ -93,9 +101,9 @@ def register_source_range_routes(app: FastAPI) -> None:
     """Serve minted range handles."""
 
     @app.head("/v1/sessions/{sid}/source-ranges/{handle}")
-    @app.head("/v1/sessions/{sid}/source-ranges/{handle}/{name}")
+    @app.head("/v1/sessions/{sid}/source-ranges/{handle}/{name:path}")
     async def range_head(sid: str, handle: str, request: Request, name: str = "") -> Response:
-        found = _handle(app, request, sid, handle, name)
+        found = await asyncio.to_thread(_handle, app, request, sid, handle, name)
         return Response(
             headers={
                 "Content-Length": str(found.size),
@@ -106,9 +114,9 @@ def register_source_range_routes(app: FastAPI) -> None:
         )
 
     @app.get("/v1/sessions/{sid}/source-ranges/{handle}")
-    @app.get("/v1/sessions/{sid}/source-ranges/{handle}/{name}")
+    @app.get("/v1/sessions/{sid}/source-ranges/{handle}/{name:path}")
     async def range_get(sid: str, handle: str, request: Request, name: str = "") -> Response:
-        found = _handle(app, request, sid, handle, name)
+        found = await asyncio.to_thread(_handle, app, request, sid, handle, name)
         span = _span(request.headers.get("range"), found.size)
         if span is None and not name:
             raise HTTPException(

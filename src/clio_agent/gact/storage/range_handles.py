@@ -55,6 +55,9 @@ class RangeHandle:
     read: Reader = field(repr=False)
     bytes_served: int = 0
     requests: int = 0
+    #: The file's upstream URL (NDP), against which a path beside it resolves
+    #: (:mod:`clio_agent.gact.storage.range_siblings`); never shown.
+    origin: str = field(default="", repr=False)
 
     def stats(self) -> dict[str, Any]:
         return {
@@ -75,6 +78,8 @@ class RangeHandles:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._handles: dict[str, RangeHandle] = {}
+        #: (parent handle, relative path) -> the handle serving that sibling file.
+        self._children: dict[tuple[str, str], str] = {}
 
     def add(self, handle: RangeHandle) -> RangeHandle:
         with self._lock:
@@ -83,6 +88,18 @@ class RangeHandles:
                 del self._handles[key]
             self._handles[handle.id] = handle
         return handle
+
+    def child(self, parent_id: str, relative: str) -> RangeHandle | None:
+        """The live handle already serving ``relative`` beside ``parent_id``'s file."""
+        with self._lock:
+            handle = self._handles.get(self._children.get((parent_id, relative), ""))
+        return handle if handle is not None and handle.expires_at >= time.time() else None
+
+    def adopt_child(self, parent_id: str, relative: str, child: RangeHandle) -> RangeHandle:
+        """Remember ``child`` as the handle for ``relative`` beside ``parent_id``'s file."""
+        with self._lock:
+            self._children[(parent_id, relative)] = child.id
+        return child
 
     def get(self, session_id: str, handle_id: str) -> RangeHandle:
         with self._lock:
@@ -171,6 +188,8 @@ def mint(
     entry = next((r for r in manifest.entries if r.path == relative and r.kind == "file"), None)
     if entry is None:
         raise ValueError("Select a file in the linked folder")
+    from clio_agent.gact.storage.range_siblings import origin_url  # noqa: PLC0415
+
     read, size = _reader(service, record, entry)
     return handles.add(
         RangeHandle(
@@ -185,5 +204,6 @@ def mint(
             provider=record.source.provider,
             expires_at=time.time() + HANDLE_TTL_S,
             read=read,
+            origin=origin_url(service, record, entry.path),
         )
     )
