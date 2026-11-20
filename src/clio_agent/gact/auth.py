@@ -15,9 +15,11 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from clio_agent import conf
+from clio_agent.gact.peer_user import loopback_peer_is_server_user
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 PeerAddressGetter = Callable[[Scope], str | None]
+PeerUserCheck = Callable[[Scope], bool]
 
 
 def configured_bearer_token() -> str | None:
@@ -128,11 +130,13 @@ def has_valid_bearer(scope: Scope, expected: str | None) -> bool:
     return bool(supplied) and hmac.compare_digest(supplied, expected)
 
 
-def _authentication_refusal() -> JSONResponse:
+def _authentication_refusal(
+    message: str = "A valid bearer token is required for remote access.",
+) -> JSONResponse:
     envelope = ErrorEnvelope(
         error=ErrorInfo(
             error="authentication_required",
-            message="A valid bearer token is required for remote access.",
+            message=message,
             details={"scheme": "bearer"},
             recoverable=True,
         )
@@ -145,9 +149,17 @@ def _authentication_refusal() -> JSONResponse:
 
 
 class BearerAuthMiddleware:
-    """Require the configured bearer token for every non-loopback HTTP peer."""
+    """Require the configured bearer token from every HTTP peer but this server's own user.
 
-    def __init__(self, app: ASGIApp, *, token: str, state: State) -> None:
+    A loopback peer is admitted without the token only when its socket belongs to
+    the account this server runs as (:mod:`clio_agent.gact.peer_user`). Another
+    account's loopback connection is handled like a remote peer. With no token
+    configured, remote peers are admitted as before (``serve`` refuses to bind
+    beyond loopback without one), and another account's loopback peer is refused,
+    since it has no way to authenticate.
+    """
+
+    def __init__(self, app: ASGIApp, *, token: str | None, state: State) -> None:
         self._app = app
         self._token = token
         self._state = state
@@ -162,7 +174,15 @@ class BearerAuthMiddleware:
             "peer_address_getter",
             peer_address_from_scope,
         )
-        if is_loopback_address(getter(scope)):
+        loopback = is_loopback_address(getter(scope))
+        if loopback:
+            same_user: PeerUserCheck = getattr(
+                self._state, "peer_user_check", loopback_peer_is_server_user
+            )
+            if same_user(scope):
+                await self._app(scope, receive, send)
+                return
+        elif self._token is None:
             await self._app(scope, receive, send)
             return
 
@@ -174,7 +194,7 @@ class BearerAuthMiddleware:
             return
 
         supplied_token = _request_bearer_token(scope)
-        if hmac.compare_digest(supplied_token, self._token):
+        if self._token is not None and hmac.compare_digest(supplied_token, self._token):
             await self._app(scope, receive, send)
             return
 
@@ -184,6 +204,12 @@ class BearerAuthMiddleware:
             await self._app(scope, receive, send)
             return
 
+        if loopback:
+            await _authentication_refusal(
+                "This connection comes from another account on this computer; "
+                "it needs this server's bearer token."
+            )(scope, receive, send)
+            return
         await _authentication_refusal()(scope, receive, send)
 
 
@@ -210,14 +236,14 @@ def configure_bearer_auth(app: FastAPI) -> None:
     token = configured_bearer_token()
     app.state.bearer_token = token
     app.state.peer_address_getter = peer_address_from_scope
+    app.state.peer_user_check = loopback_peer_is_server_user
     # Inner to the bearer check: a request admitted without a valid token
     # (loopback, or no token configured) still may not change state from an
     # untrusted web page.
     from clio_agent.gact.origin_guard import OriginGuardMiddleware  # noqa: PLC0415
 
     app.add_middleware(OriginGuardMiddleware, state=app.state)
-    if token is not None:
-        app.add_middleware(BearerAuthMiddleware, token=token, state=app.state)
+    app.add_middleware(BearerAuthMiddleware, token=token, state=app.state)
 
 
 class OpenBindRefused(SystemExit):
