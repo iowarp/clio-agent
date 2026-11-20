@@ -39,6 +39,7 @@ __all__ = [
     "answered",
     "decide",
     "native_gate",
+    "person_answered",
     "person_rule",
     "tool_default",
 ]
@@ -139,6 +140,21 @@ _ANSWERED: ContextVar[str] = ContextVar("clio_tool_answered", default="")
 def answered(name: str) -> bool:
     """Whether a person approved this very call of ``name`` already."""
     return bool(name) and _ANSWERED.get() == name
+
+
+@contextlib.contextmanager
+def person_answered(name: str) -> Iterator[None]:
+    """Mark a host call of ``name`` the person approved in CLIO's own UI.
+
+    For a call CLIO makes on the person's explicit choice outside any conversation (the
+    Desktop quit prompt's "Also close open relays"), so the gate does not ask again.
+    """
+
+    token = _ANSWERED.set(name)
+    try:
+        yield
+    finally:
+        _ANSWERED.reset(token)
 
 
 def _native(tool: Any) -> bool:
