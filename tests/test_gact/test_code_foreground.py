@@ -82,7 +82,7 @@ def test_the_person_sends_a_running_script_to_the_background(
     caller.join(timeout=30)
     assert not caller.is_alive()
     assert result["status"] == foreground.BACKGROUNDED and result["moved_by"] == "person"
-    assert "the person asked" in result["text"]
+    assert "the person pressed Send to background" in result["text"]
     assert foreground.running_scripts(sid) == []  # now a task, not a foreground script
     _cancel(app, sid, result["handle"])
 

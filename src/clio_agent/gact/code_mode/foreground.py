@@ -164,7 +164,7 @@ def moved_outcome(run: ForegroundRun, receipt: dict[str, Any], code: str) -> dic
     handle = str(receipt.get("handle") or "")
     calls, elapsed = run.calls(), run.elapsed_s()
     why = (
-        "the person asked"
+        "the person pressed Send to background while it ran"
         if run.moved_by == "person"
         else f"it ran past {background_after_s():g} s"
     )
