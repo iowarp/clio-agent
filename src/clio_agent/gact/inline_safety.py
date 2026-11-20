@@ -12,7 +12,11 @@ viewers) are unaffected: these headers only govern a navigated document.
 
 from __future__ import annotations
 
+from typing import TypeVar
+
 from starlette.responses import Response
+
+_R = TypeVar("_R", bound=Response)
 
 INLINE_SANDBOX_CSP = "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'"
 
@@ -27,7 +31,7 @@ def is_active_type(media_type: str | None) -> bool:
     return essence in _ACTIVE_TYPES or essence.endswith("+xml")
 
 
-def inline_safe(response: Response, media_type: str | None = None) -> Response:
+def inline_safe(response: _R, media_type: str | None = None) -> _R:
     """Add the inline-safety headers to ``response`` and return it."""
     response.headers["X-Content-Type-Options"] = "nosniff"
     if is_active_type(media_type or response.media_type):
