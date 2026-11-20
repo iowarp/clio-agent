@@ -123,3 +123,22 @@ def test_without_a_token_another_accounts_loopback_peer_is_refused(
         assert client.get("/v1/capabilities").status_code == 401
     with TestClient(own_app) as client:
         assert client.get("/v1/capabilities").status_code == 200
+
+
+def test_loopback_requires_token_covers_the_servers_own_account(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A reverse proxy on the same host (the clio-web image published beyond
+    # loopback) reaches the server as its own user; every request needs the token.
+    monkeypatch.setenv("CLIO_GACT_LOOPBACK_REQUIRES_TOKEN", "1")
+    app = _app(tmp_path, token=_BEARER_TOKEN, same_user=True)
+
+    with TestClient(app) as client:
+        refused = client.get("/v1/capabilities")
+        admitted = client.get(
+            "/v1/capabilities", headers={"Authorization": f"Bearer {_BEARER_TOKEN}"}
+        )
+
+    assert refused.status_code == 401
+    assert "another account" not in refused.json()["error"]["message"]
+    assert admitted.status_code == 200
