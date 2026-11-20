@@ -23,10 +23,17 @@ def confine_stdio_server(
     with the existing ``pdeathsig=False`` lifetime.
     """
     from clio_agent.runtime import sandbox  # noqa: PLC0415 - avoid import cycle
+    from clio_agent.runtime.fence_loopback import wrap_publishing  # noqa: PLC0415
     from clio_agent.runtime.fence_ssh import fence_ssh_environment  # noqa: PLC0415
     from clio_agent.runtime.session_scratch import socket_safe_temp  # noqa: PLC0415
 
     env = {**env, **fence_ssh_environment(env), **socket_safe_temp(env)}
+    # Windows' MXC fence drops host connections to the server's loopback listeners, so the
+    # server runs behind CLIO's loopback agent, which publishes them (fence_loopback).
+    command, args, loopback_env, loopback_token = wrap_publishing(
+        command, list(args), sandbox.current_state()
+    )
+    env.update(loopback_env)
     confined = sandbox.wrap_confined(
         command,
         args,
@@ -43,6 +50,10 @@ def confine_stdio_server(
     # tool-observer can join ``call_id -> serving child`` for the egress ingest mint (#978
     # pt 5). Runtime-layer registry (sandbox_net) so this seam never imports gact.
     net_child = str(confined.result.details.get("net_child_id") or "")
+    if loopback_token:
+        from clio_agent.runtime.fence_loopback import publisher  # noqa: PLC0415
+
+        publisher().label(loopback_token, net_child)
     if net_child:
         from clio_agent.runtime.sandbox_net import register_namespace_child  # noqa: PLC0415
 
