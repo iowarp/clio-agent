@@ -11,6 +11,13 @@ every large tile as an unsupported format. A trailing file name after the handle
 readers such as GDAL probe sidecars by appending to the URL (``….tif.aux.xml``,
 ``….msk``), and answering those with the file's own bytes made GDAL parse a raster as
 XML, hundreds of reads per open. Any other name is 404, as a missing sidecar is.
+
+The handle without its file name is the file's folder to a reader, not the file: GDAL
+lists it on open (``GET …/{handle}/``, redirected to ``…/{handle}``), and streaming the
+whole file there made every open of a 3.3 GB raster pull all 3.3 GB first (eight
+minutes per open; a basin read of three rasters ran 23). A ``GET`` there without
+``Range`` is 404 (:data:`NOT_A_LISTING`), as an unlistable folder is; ranged reads of
+it still answer.
 """
 
 from __future__ import annotations
@@ -26,6 +33,8 @@ from clio_agent.gact.auth import is_loopback_address
 from clio_agent.gact.storage.range_handles import RangeHandle, registry
 
 _RANGE = re.compile(r"^bytes=(\d*)-(\d*)$")
+#: Typed 404 detail: the handle without its file name was read whole, as a folder listing.
+NOT_A_LISTING = "range_handle_not_a_listing"
 #: A read without ``Range`` up to this size is answered in one body; larger, it streams.
 WHOLE_READ_LIMIT = 8 * 2**20
 #: The chunk a streamed whole read fetches at a time.
@@ -101,6 +110,11 @@ def register_source_range_routes(app: FastAPI) -> None:
     async def range_get(sid: str, handle: str, request: Request, name: str = "") -> Response:
         found = _handle(app, request, sid, handle, name)
         span = _span(request.headers.get("range"), found.size)
+        if span is None and not name:
+            raise HTTPException(
+                status_code=404,
+                detail=f"{NOT_A_LISTING}: read the file at its named URL (handle_url)",
+            )
         if span is None:
             if found.size > WHOLE_READ_LIMIT:
                 return StreamingResponse(

@@ -97,6 +97,25 @@ def test_a_large_file_without_range_streams_whole(monkeypatch: pytest.MonkeyPatc
     assert stats["bytes_served"] == len(body) and stats["requests"] == 8
 
 
+def test_the_handles_folder_is_not_answered_with_the_whole_file() -> None:
+    """GDAL lists the folder on open (``…/rng_test/``, redirected to ``…/rng_test``).
+    Streaming the file there made each open of a 3.3 GB raster pull all of it first.
+    SABOTAGE: drop the ``not name`` refusal and the listing returns the file's bytes."""
+    from clio_agent.gact.routes.source_ranges import NOT_A_LISTING
+
+    body = bytes(range(256)) * 2
+    app, _ = _app_with(body)
+    client = TestClient(app, client=LOOPBACK)
+    folder = "/v1/sessions/sess_a/source-ranges/rng_test"
+    for url in (folder, folder + "/"):
+        listing = client.get(url)
+        assert listing.status_code == 404 and NOT_A_LISTING in listing.text
+    assert client.get(folder, headers={"Range": "bytes=0-1"}).content == bytes(range(2))
+    assert client.get(folder + "/a.bin").content == body
+    stats = client.get("/v1/sessions/sess_a/source-range-stats/rng_test").json()
+    assert stats["bytes_served"] == 2 + len(body)
+
+
 def test_refusals_are_typed_by_status() -> None:
     app, _ = _app_with(b"x" * 100)
     loop = TestClient(app, client=LOOPBACK)
