@@ -53,7 +53,11 @@ from clio_agent.gact.runtime.plan_acl import (
     plans_dir,
     playbook_step_matches,
 )
-from clio_agent.tools.catalog import annotations_are_read_only, get_tool_entry
+from clio_agent.tools.catalog import (
+    annotations_are_read_only,
+    classification_tags,
+    get_tool_entry,
+)
 
 #: Re-exported plan-ACL owner-module symbols (⚑ no accretion — the data/messaging live in
 #: :mod:`clio_agent.gact.runtime.plan_acl`) so existing ``grant_resolver.plans_dir`` /
@@ -247,6 +251,24 @@ def is_read_only(
         if "read" in tags and "write" not in tags:
             return True
     return False
+
+
+def is_closed_world_write(name: str, context: Mapping[str, Any] | None) -> bool:
+    """Return whether a call is a bounded, closed-world write ``auto-edits`` may auto-approve.
+
+    The same two signals as :func:`is_read_only`, through the same projection
+    (:func:`classification_tags`): the call's own external-MCP ``annotations``, or the catalog's
+    ``write`` tag. The catalog is built at boot from the default gateway, so a plugin or server
+    joined into a conversation later has no entry; its listed annotations ride on each call and
+    classify it exactly as the catalog would. Per call, so no conversation's joined tools change
+    how another's are classified. Open-world or unannotated tools stay not-a-write (they ask).
+    """
+
+    if isinstance(context, Mapping) and context.get("kind") == EXTERNAL_MCP_CONTEXT_KIND:
+        if "write" in classification_tags(context.get("annotations")):
+            return True
+    entry = get_tool_entry(name)
+    return entry is not None and "write" in entry.tags
 
 
 def _scope_matches(
@@ -716,6 +738,7 @@ __all__ = [
     "PLAN_ACL_PLAN_TOOLS",
     "annotations_are_read_only",
     "default_plan_acl_rows",
+    "is_closed_world_write",
     "is_read_only",
     "migrate_priorities",
     "next_append_priority",

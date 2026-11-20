@@ -166,6 +166,7 @@ def _tool_rows(app: Any, record: Any) -> list[dict[str, Any]]:
                     "read_only": read_only,
                     "destructive": destructive,
                     "flags_known": True,
+                    "_annotations": normalize_mcp_annotations(definition),
                 }
             )
         if not found:
@@ -223,7 +224,12 @@ def _outcome(row: Mapping[str, Any], rule: str, default: str, mode: str, script:
         return RUNS  # CLIO's own and plugins' Python tools act without the mode's question
     from clio_agent.gact.permission_gate import default_decision  # noqa: PLC0415
 
-    if default_decision(mode, "tool", row["name"], {}) == "allow":
+    context = (
+        {"kind": "external_mcp", "annotations": row["_annotations"]}
+        if row.get("_annotations")
+        else None
+    )
+    if default_decision(mode, "tool", row["name"], {}, context) == "allow":
         return RUNS
     if script and mode in covering_postures():
         return COVERED
@@ -304,6 +310,7 @@ def _view(app: Any, label: str, record: Any) -> dict[str, Any]:
             }
             for mode in approval_modes()
         }
+        row.pop("_annotations", None)
         tools.append(row)
     return {
         "plugin": label,

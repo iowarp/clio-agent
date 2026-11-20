@@ -97,6 +97,7 @@ from clio_agent.gact.runtime import tool_permission_layers as layers
 from clio_agent.gact.runtime.globals import _resolve_tool_session
 from clio_agent.gact.runtime.grant_resolver import (
     EXTERNAL_MCP_CONTEXT_KIND,
+    is_closed_world_write,
     is_read_only,
     resolve,
     resolve_detail,
@@ -113,7 +114,7 @@ from clio_agent.gact.runtime.retention import enforce_dict_bound
 from clio_agent.gact.side_sessions import policy_deny_reason, policy_deny_source, policy_mode
 from clio_agent.gact.spotter_permission import enforce_spotter_clearance as _spotter_clearance
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
-from clio_agent.tools.catalog import action_subject, get_tool_entry
+from clio_agent.tools.catalog import action_subject
 from clio_agent.tools.tool_observation import call_identity_claimed, peek_call_identity
 
 if TYPE_CHECKING:
@@ -160,6 +161,7 @@ def default_decision(
     kind: str,
     name: str,
     args: Mapping[str, Any],
+    context: Mapping[str, Any] | None = None,
 ) -> str:
     """Decide a non-read tool call at the gate's PROMPT boundary from the approval mode (#1034).
 
@@ -170,8 +172,9 @@ def default_decision(
     the existing interactive prompt; it never manufactures a denial (that stays with the lock and
     explicit deny policies above). Returns:
 
-    * ``allow`` — ``bypass`` (any non-read call), ``auto-edits`` for an fs WRITE (a call whose
-      static catalog entry carries the ``write`` tag), or the server-owned
+    * ``allow`` — ``bypass`` (any non-read call), ``auto-edits`` for a bounded closed-world
+      WRITE (:func:`is_closed_world_write`: the catalog ``write`` tag, or the same projection of
+      the call ``context``'s MCP annotations for a tool joined after boot), or the server-owned
       ``spotter-watcher`` profile for CLIO's native ``raise_alert_card`` (containment itself
       is CLIO's SPOTTER clearance, not a tool call);
     * ``ask``   — ``ask`` (default), ``auto-edits`` for a non-write (e.g. ``shell_bash``, whose
@@ -184,7 +187,7 @@ def default_decision(
     this default) is what can still stop a call it has contained.
 
     ``kind``/``args`` are accepted for a stable signature (a future kind may inspect them) but the
-    two current signals (mode + the catalog ``write`` tag) do not consult them.
+    current signals (mode, the catalog ``write`` tag, the call's annotations) do not consult them.
     """
 
     _ = (kind, args)
@@ -193,10 +196,7 @@ def default_decision(
     if approval_mode in ("bypass", "spotter-ai"):
         return "allow"
     if approval_mode == "auto-edits":
-        entry = get_tool_entry(name)
-        if entry is not None and "write" in entry.tags:
-            return "allow"
-        return "ask"
+        return "allow" if is_closed_world_write(name, context) else "ask"
     if approval_mode in ("ask", "ai-review"):
         # ask (default) and ai-review route to the existing interactive prompt.
         return "ask"
@@ -793,7 +793,7 @@ def _make_permission_gate(app: "FastAPI"):
         decision_posture = approval_profile or approval_mode
         if (
             policy_action != "ask"
-            and default_decision(decision_posture, "tool", name, args) == "allow"
+            and default_decision(decision_posture, "tool", name, args, context) == "allow"
         ):
             # bypass or auto-edits: auto-approve, still on the record (the OS fence is untouched).
             _record_resolved_permission(
