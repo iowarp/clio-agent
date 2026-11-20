@@ -211,6 +211,9 @@ class LoopbackPublisher:
         if port in server.published:
             listeners = server.published[port]
             return listeners[0].getsockname()[1], len(listeners) > 1
+        if self._owns(port):
+            # Another server's published address (e.g. a pvserver handed to a client).
+            return None
         deadline = time.monotonic() + _LISTEN_WAIT_S
         address = _listener_address(server.pid, port)
         while address is None and time.monotonic() < deadline:
@@ -240,6 +243,20 @@ class LoopbackPublisher:
             server.pid,
         )
         return outer, same
+
+    def _owns(self, port: int) -> bool:
+        """Whether ``port`` is one of this publisher's own host listeners."""
+
+        if port == self.port:
+            return True
+        with self._lock:
+            servers = list(self._servers.values())
+        for other in servers:
+            for listeners in list(other.published.values()):
+                for listener in listeners:
+                    if listener.fileno() != -1 and listener.getsockname()[1] == port:
+                        return True
+        return False
 
     def _relay(self, server: _Server, listener: socket.socket, address: str, port: int) -> None:
         while True:
