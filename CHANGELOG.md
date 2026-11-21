@@ -43,6 +43,10 @@ TUI/HTTP surface aren't tracked here.
   get the not-available reply, and new `--agent`, `--model` and `--workspace` flags
   apply. Its JSON drops `selected_expert`.
 - `serve.ensure_server` starts `clio-agent serve`, not `clio-agent-gact`.
+- The browser's actions (`browser_open`, `browser_navigate`, `browser_act`,
+  `browser_close`, `browser_evaluate`) follow the session's approval mode, as an MCP
+  tool does: plan mode refuses them, `ask` asks, `bypass` runs them. Called from a
+  `run_code` script they had run unasked in every mode. Its reads are unchanged.
 
 ### Removed
 

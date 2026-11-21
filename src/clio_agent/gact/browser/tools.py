@@ -411,6 +411,9 @@ def _native(func: Callable[..., Any], *, read_only: bool, title: str, args: dict
         title=title,
         read_only=read_only,
         callers="code",
+        # Everything but a read acts on a web page as the person: it follows the approval
+        # mode as an MCP tool does (plan mode refuses it, ask asks, bypass runs).
+        outside=not read_only,
     )
 
 
