@@ -397,6 +397,20 @@ loopback separately; on macOS Codex and on Landlock/floor tiers egress is proxy-
 cooperation only (`env-cooperative`, raw sockets bypass) — the per-edge label never
 claims enforcement the tier can't provide.
 
+Windows' MXC AppContainer replaces a fenced child's `LOCALAPPDATA`, `TEMP` and `TMP`
+with a per-launch `Packages\sandbox.{GUID}\AC` profile that the fence does not grant and
+that is discarded on the next launch (uv failed there with *Access is denied*). Setting
+them before the container starts breaks MXC's own bootstrap, so the child runs under a
+small in-fence shim (`runtime/fence_container_env.py`) that sets them inside: to the
+child's cache folder under `CLIO_AGENT_HOME` (`cache/sandbox/<hash>`, `Temp` beneath it),
+which is granted and the same on every launch. A fenced shell keeps its session scratch
+`TEMP`. `APPDATA` stays the real roaming folder, which holds uv's tools, Pythons and
+credentials and other tools' settings: a fenced child reads it but does not write it, as
+`~/.config` elsewhere. Python's `platformdirs` asks Windows' Known Folder API rather than
+these variables, so inside MXC it still names the per-launch profile; tools built on it
+need their own override (`FASTMCP_HOME`, `CLIO_KIT_CACHE_DIR`).
+
+
 On macOS the Codex write fence does not restrict network routes. Tools that honor
 `HTTP(S)_PROXY`/`ALL_PROXY` (curl, Python, pip/uv, git over HTTPS) go through CLIO's
 proxy and are recorded. A client that ignores those variables (raw `ssh`, raw sockets,

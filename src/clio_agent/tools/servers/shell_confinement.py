@@ -49,11 +49,18 @@ def outside_refusal(command: str, call_id: str) -> dict[str, Any] | None:
     return None
 
 
-def confine(argv: list[str], safe_cwd: Path, *, outside_sandbox: bool) -> "ConfinedSpawn":
+def confine(
+    argv: list[str],
+    safe_cwd: Path,
+    *,
+    outside_sandbox: bool,
+    temp: dict[str, str] | None = None,
+) -> "ConfinedSpawn":
     """The spawn for ``argv``: fenced to the ``shell`` profile, or unfenced once allowed.
 
     Floor-first: when the backend is passthrough, argv/env are byte-identical; the shell
-    seam carries no pdeathsig today, so it stays off here.
+    seam carries no pdeathsig today, so it stays off here. ``temp`` is the session scratch
+    ``TEMP``/``TMP``, kept inside Windows' MXC container, which would replace them.
     """
     from clio_agent.runtime import sandbox  # noqa: PLC0415 - avoid import cycle
 
@@ -79,4 +86,5 @@ def confine(argv: list[str], safe_cwd: Path, *, outside_sandbox: bool) -> "Confi
         profile=sandbox.PROFILE_SHELL,
         pdeathsig=False,
         cwd=safe_cwd,
+        container_env=temp,
     )
