@@ -253,6 +253,22 @@ def _windows_shell_backend() -> str:
     return normalized if normalized in {"powershell", "bash", "cmd"} else "powershell"
 
 
+#: Prefixed to every PowerShell command so text crosses the process boundary as UTF-8,
+#: the encoding the shell tool decodes. Without a console (the server's case) PowerShell
+#: writes and pipes in the OEM code page, so an em dash comes back as ``-`` or ``?``, and
+#: Windows PowerShell 5.1 reads a BOM-less UTF-8 file as ANSI (``—`` → ``â€”``). Only the
+#: readers' default changes: an explicit ``-Encoding`` still wins, a BOM is still honoured,
+#: and writing cmdlets keep their defaults. Setting the console encoding fails harmlessly
+#: when there is no console handle to set.
+POWERSHELL_UTF8_PREAMBLE = (
+    "try{[Console]::OutputEncoding=[Console]::InputEncoding="
+    "[System.Text.UTF8Encoding]::new($false)}catch{};"
+    "$OutputEncoding=[System.Text.UTF8Encoding]::new($false);"
+    "foreach($c in 'Get-Content','Select-String','Import-Csv')"
+    "{$PSDefaultParameterValues[\"${c}:Encoding\"]='UTF8'};"
+)
+
+
 def _shell_argv(command: str, *, prepared_environment: dict[str, str] | None = None) -> list[str]:
     """Return a platform-appropriate shell invocation."""
 
@@ -270,7 +286,7 @@ def _shell_argv(command: str, *, prepared_environment: dict[str, str] | None = N
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                command,
+                POWERSHELL_UTF8_PREAMBLE + command,
             ]
         return ["cmd.exe", "/d", "/s", "/c", command]
     shell = shutil.which("bash") or shutil.which("sh")
@@ -386,7 +402,9 @@ def build_shell_tool_description(facts: ShellEnvFacts, limits: ShellLimits | Non
         invocation = (
             "Windows drive paths in commands are translated to /mnt/<drive>/ for bash. "
             if is_bash
-            else "The tool invokes PowerShell with -NoLogo -NoProfile -NonInteractive -Command. "
+            else "The tool invokes PowerShell with -NoLogo -NoProfile -NonInteractive -Command, "
+            "with UTF-8 console I/O and UTF-8 the default for Get-Content, Select-String "
+            "and Import-Csv. "
             if "PowerShell" in facts.shell_label
             else "The tool invokes cmd.exe with /d /s /c. "
         )
