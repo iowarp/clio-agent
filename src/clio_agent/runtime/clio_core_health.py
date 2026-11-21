@@ -484,7 +484,7 @@ def probe_clio_core_liveness(*, snapshot: list[dict] | None = None) -> list[Inte
         next_action = (
             "Restart the CLIO agent to establish a fresh native clio-core client."
             if restart_required
-            else "Restart the shared clio-core daemon (clio start / clio_run start); "
+            else "Restart the shared clio-core daemon (clio start / clio-run start); "
             "the store reconnects on the next ARC op."
         )
         return [
@@ -658,7 +658,7 @@ def probe_clio_core_daemon_memory(
     next_action = replay_note + (
         "The shared clio-core daemon has grown daemon-internally (upstream-filed; the "
         "#890 data-tier cap does not bound it). Restart it with no live clients (clio "
-        "restart / clio_run stop), or enable the opt-in bounded recycle "
+        "restart / clio-run stop), or enable the opt-in bounded recycle "
         "(CLIO_ARC_CLIO_CORE_DAEMON_RECYCLE=1 / arc.clio_core.daemon_recycle_enabled) to "
         "auto-recycle it when critical AND idle."
     )

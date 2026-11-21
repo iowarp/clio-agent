@@ -169,7 +169,7 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
     exe = _runtime_launcher_path(iowarp_core)
     if exe is None:
         raise RuntimeError(
-            f"clio-core runtime launcher (clio_run) not found in "
+            f"clio-core runtime launcher (clio-run) not found in "
             f"{iowarp_core.get_bin_dir()!r}; cannot spawn the shared clio-core daemon "  # type: ignore[attr-defined]
             "(reinstall the iowarp-core package; run clio doctor)."
         )

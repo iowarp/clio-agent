@@ -178,8 +178,9 @@ compose:
 _DEFAULT_CTE_RAM_CAPACITY = "1GB"
 _DEFAULT_CTE_CORE_PORT = 9413
 
-# clio-core binds its RPC servers on every interface (0.0.0.0) unless
-# ``CLIO_BIND_ADDR`` names an address. CLIO's runtime is single-node and serves only
+# clio-core before 2.5.0 bound its RPC servers on every interface (0.0.0.0) unless
+# ``CLIO_BIND_ADDR`` named an address; 2.5.0 defaults to loopback (98bb4eb4), and
+# CLIO still pins it explicitly. CLIO's runtime is single-node and serves only
 # this machine's own processes, so it is pinned to loopback; an explicit value
 # (for a hand-authored multi-node hostfile) is respected. Only clio-core child
 # environments are pinned; the server's own ``os.environ`` is left alone.
