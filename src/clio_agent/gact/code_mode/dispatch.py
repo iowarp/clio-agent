@@ -275,8 +275,12 @@ class Dispatcher:
                 # message, the server's error), which the script needs to correct itself.
                 # Its structured content (a relay error's code and phase, say) rides along
                 # as ``ToolError.structured``, so a script can act on it.
-                detail = _error_detail(observed)
-                ok, error = False, f"{sink_error}: {detail}" if detail else str(sink_error)
+                # An MCP error's code is already its first text, which the detail repeats.
+                detail, code = _error_detail(observed), str(sink_error)
+                ok = False
+                error = (
+                    detail if detail.startswith(code) else f"{code}: {detail}" if detail else code
+                )
                 raw = observed.get("structuredContent") if isinstance(observed, Mapping) else None
                 value = raw if isinstance(raw, Mapping | list) else None
             elif found:
