@@ -16,13 +16,53 @@ from fastmcp import Client
 from clio_agent import conf
 from clio_agent.tools.execution import tool_workspace_context
 from clio_agent.tools.servers.shell_server import (
+    POWERSHELL_UTF8_PREAMBLE,
     ShellEnvFacts,
     _detect_shell_env,
     _resolve_cwd,
+    _shell_argv,
     _translate_windows_paths_for_bash,
     build_shell_tool_description,
     shell_server,
 )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="PowerShell backend is Windows-only")
+def test_powershell_commands_cross_the_pipe_as_utf8(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A BOM-less UTF-8 file read with Get-Content, a literal and a Python child's output
+    all come back as UTF-8 without a console (the server's case), not ``â€”`` or ``?``."""
+
+    import shutil
+    import subprocess
+
+    if not (shutil.which("pwsh.exe") or shutil.which("powershell.exe")):
+        pytest.skip("no PowerShell")
+    monkeypatch.setenv("CLIO_WINDOWS_SHELL_BACKEND", "powershell")
+    script = tmp_path / "script.py"
+    script.write_text("print('em — dash, 21°C')\n", encoding="utf-8")
+    command = (
+        f"Get-Content '{script}'; Write-Output 'literal — 21°C'; "
+        f"& '{sys.executable}' '{script}'; "
+        f"'piped — 21°C' | & '{sys.executable}' -c \"import sys; print(sys.stdin.read())\"; "
+        "exit 5"
+    )
+    argv = _shell_argv(command)
+    assert argv[-1] == POWERSHELL_UTF8_PREAMBLE + command
+    result = subprocess.run(
+        argv,
+        capture_output=True,
+        env={**os.environ, "PYTHONUTF8": "1"},
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        timeout=60,
+    )
+    text = result.stdout.decode("utf-8")
+    assert result.returncode == 5
+    assert text.count("em — dash, 21°C") == 2  # the file's text, then the script's output
+    assert "literal — 21°C" in text
+    assert "piped — 21°C" in text
+    assert "â€" not in text and "\ufffd" not in text
 
 
 def test_shell_bash_declares_open_world_destructive_annotations() -> None:
