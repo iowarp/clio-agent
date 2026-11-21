@@ -45,7 +45,10 @@ The gate decides in this order:
    operator, and no pipeline stage outside that list
    (`clio_agent/tools/shell_read_only.py`). Anything the classifier cannot prove
    stays a non-read. A read returns `allow` **before** the mode lock and
-   records no tool-action permission row, in every `session.mode`. This does not
+   records no tool-action permission row, in every `session.mode`. The durable
+   task check that accepts the call (`task_runtime.authorization_mode`) agrees:
+   a read is accepted with no plan lock, so a plan-mode shell read is not revoked
+   after the gate allowed it; person policies still apply. This does not
    grant access to a new folder: a managed built-in file call outside permitted
    roots parks on a `kind="folder_access"` request first.
 

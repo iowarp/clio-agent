@@ -144,3 +144,27 @@ def test_gate_read_predicate_uses_the_classifier(monkeypatch: pytest.MonkeyPatch
         assert not grant_resolver.is_read_only("tool", name, write, None)
     assert not grant_resolver.is_read_only("tool", "shell_bash", None, None)
     assert not grant_resolver.is_read_only("tool", "run_code", read, None)
+
+
+def test_durable_submission_keeps_a_shell_read_out_of_the_plan_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.gact.task_runtime import authorization_mode
+
+    monkeypatch.setattr(shell_read_only, "shell_dialect", lambda: "powershell")
+    read = {"command": "Get-ChildItem -Name"}
+    write = {"command": "Remove-Item notes.txt"}
+    assert authorization_mode("shell_bash", read, session_mode="plan", human_action=False) == ""
+    assert authorization_mode("shell_bash", write, session_mode="plan", human_action=False) == (
+        "plan"
+    )
+    assert authorization_mode("shell_bash", write, session_mode="plan", human_action=True) == ""
+    assert grant_resolver.resolve("tool", "shell_bash", policies=[], mode="plan") == "deny"
+    assert grant_resolver.resolve("tool", "shell_bash", policies=[], mode="") != "deny"
+    person_deny = [
+        {"scope": "session", "scope_id": "s", "tool_name_pattern": "shell_bash", "action": "deny"}
+    ]
+    assert (
+        grant_resolver.resolve("tool", "shell_bash", policies=person_deny, session_id="s", mode="")
+        == "deny"
+    )
