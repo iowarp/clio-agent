@@ -87,6 +87,25 @@ def _mcp_failed_structured(job: str) -> str:
     return f"job {job} failed"
 
 
+def _mcp_failed_exec(command: str) -> str:
+    """Stands in for a relay `exec_read` that timed out with no output: its text is
+    `"\n[exit None, timed out]"`, which the gateway names (stripped) as its error."""
+    sink = RESULT_SINK.get()
+    text = "\n[exit None, timed out]"
+    if sink is not None:
+        sink.append(
+            (
+                text.strip(),
+                {
+                    "content": [{"type": "text", "text": text}],
+                    "structuredContent": {"exit_code": None, "timed_out": True},
+                    "isError": True,
+                },
+            )
+        )
+    return text
+
+
 setattr(_finish, CALLERS_ATTR, "direct")  # as core's submit declares itself
 
 
@@ -101,6 +120,7 @@ def _agent() -> Any:
         "fs_stat": dspy.Tool(_mcp_shaped, name="fs_stat", desc="Stat a file."),
         "fs_touch": dspy.Tool(_mcp_failed, name="fs_touch", desc="Touch a file."),
         "fs_poll": dspy.Tool(_mcp_failed_structured, name="fs_poll", desc="Poll a job."),
+        "fs_exec": dspy.Tool(_mcp_failed_exec, name="fs_exec", desc="Run a command."),
         "submit": dspy.Tool(_finish, name="submit", desc="Finish."),
     }
     agent = SimpleNamespace(
@@ -206,6 +226,16 @@ class TestKernel:
             "job 7 failed",  # said once, not "job 7 failed: job 7 failed"
             "plain None",
         ], outcome
+
+    def test_an_error_whose_text_is_its_code_is_said_once(self, workspace: Path) -> None:
+        """W17 take 1o: a timed-out relay read ended a stream with "[exit None, timed
+        out]: [exit None, timed out]". SABOTAGE: drop the `strip()` of the detail in
+        `Dispatcher._run` and this fails."""
+        outcome = _run(
+            "try:\n    await tools.fs.exec(command='squeue')\n"
+            "except ToolError as exc:\n    print(repr(str(exc)), exc.structured['timed_out'])"
+        )
+        assert outcome["output"].splitlines()[0] == "'[exit None, timed out]' True", outcome
 
     def test_direct_only_blocked_and_unknown_names_are_refused_apart(self, workspace: Path) -> None:
         """A5: a direct-only tool says to call it directly, a blocked one gives the typed
