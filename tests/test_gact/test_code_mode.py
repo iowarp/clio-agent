@@ -76,7 +76,7 @@ def _mcp_failed_structured(job: str) -> str:
     if sink is not None:
         sink.append(
             (
-                "tool_result_is_error",
+                f"job {job} failed",  # what the gateway names an MCP error: its first text
                 {
                     "content": [{"type": "text", "text": f"job {job} failed"}],
                     "structuredContent": {"code": "job_failed", "phase": "run", "job": job},
@@ -197,10 +197,15 @@ class TestKernel:
         outcome = _run(
             "try:\n    await tools.fs.poll(job='7')\n"
             "except ToolError as exc:\n    print(exc.structured['code'], exc.structured['job'])\n"
+            "    print(str(exc))\n"
             "try:\n    await tools.fs.touch(path='a.txt')\n"
             "except ToolError as exc:\n    print('plain', exc.structured)"
         )
-        assert outcome["output"].splitlines()[:2] == ["job_failed 7", "plain None"], outcome
+        assert outcome["output"].splitlines()[:3] == [
+            "job_failed 7",
+            "job 7 failed",  # said once, not "job 7 failed: job 7 failed"
+            "plain None",
+        ], outcome
 
     def test_direct_only_blocked_and_unknown_names_are_refused_apart(self, workspace: Path) -> None:
         """A5: a direct-only tool says to call it directly, a blocked one gives the typed
