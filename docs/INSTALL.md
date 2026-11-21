@@ -115,6 +115,15 @@ docker compose --profile api up clio-api  # headless API at :8100
 These use `ghcr.io/iowarp/clio-web` and `ghcr.io/iowarp/clio-api`. The old TUI
 image remains historical and is not a supported deployment.
 
+`clio-web` is published on `127.0.0.1:8080`, so only this computer reaches it.
+To open it from other machines, set `CLIO_WEB_BIND` to `0.0.0.0` (or one of the
+host's addresses) and `CLIO_GACT_BEARER_TOKEN` to a secret, and connect by
+address with that token. The image refuses to start on a non-loopback
+`CLIO_WEB_BIND` without a token. Whenever a token is set, every client needs it,
+which also keeps other accounts on a shared Docker host out. The container runs
+as the `clio` user; on first start it hands that user the state volumes that
+earlier images wrote as root.
+
 ## Selecting a release
 
 The default selects the latest published stable release. `--dev` / `-Dev`

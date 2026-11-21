@@ -632,6 +632,12 @@ compaction.keep.working_state: true
 # protect a server exposed beyond localhost.
 # gact.auth.bearer_token:  # default unset; resolved in code
 
+# CLIO_GACT_LOOPBACK_REQUIRES_TOKEN  (str)  <- src/clio_agent/gact/auth.py
+# Require the bearer token from loopback peers too (only when a token is
+# set); default off. Set when a same-host reverse proxy forwards network
+# requests, as the clio-web image does.
+gact.auth.loopback_requires_token: "false"
+
 # CLIO_CONTEXT_REFERENCE_BROWSE_LIMIT  (int)  <- src/clio_agent/gact/context_reference_search.py
 # Rows returned per reference kind when the picker opens with no query
 # typed; raise to browse more of a large workspace at a glance.

@@ -612,6 +612,10 @@ KEY_NOTES: dict[str, str] = {
         "Optional bearer token required on non-loopback GACT API requests; set to protect a server "
         "exposed beyond localhost."
     ),
+    "gact.auth.loopback_requires_token": (
+        "Require the bearer token from loopback peers too (only when a token is set); default off. "
+        "Set when a same-host reverse proxy forwards network requests, as the clio-web image does."
+    ),
     "gact.context_references.browse_limit_per_kind": (
         "Rows returned per reference kind when the picker opens with no query typed; raise to "
         "browse more of a large workspace at a glance."

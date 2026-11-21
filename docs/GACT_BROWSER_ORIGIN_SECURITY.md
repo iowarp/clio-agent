@@ -2,9 +2,13 @@
 
 CLIO's GACT backend uses `trust_socket` for local clients: a request from a
 loopback peer needs no bearer token, and a server with no token configured
-needs none from anyone. That is appropriate for native local clients, but
-browsers are different: a page loaded from an unrelated site can make the
-user's browser send requests to `http://127.0.0.1:<port>`.
+needs none from anyone. On Linux, "local" means the server's own account: the
+server looks up the peer's socket owner in `/proc/net/tcp`, and another
+account's loopback connection needs the token like a remote one
+(`src/clio_agent/gact/peer_user.py`). macOS and Windows have no such table, so
+there every loopback peer is still trusted. That is appropriate for native
+local clients, but browsers are different: a page loaded from an unrelated
+site can make the user's browser send requests to `http://127.0.0.1:<port>`.
 
 CLIO applies three layers to requests that carry no valid bearer token
 (`src/clio_agent/gact/origin_guard.py`). A request with a valid token is not
