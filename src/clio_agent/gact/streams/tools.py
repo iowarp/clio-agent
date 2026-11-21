@@ -120,7 +120,15 @@ def _native(func: Any, fields: str, *, title: str, args: dict[str, Any], read_on
     )
 
 
-_NAME = {"type": "string", "description": "The stream's name (its artifact's name)."}
+_NAME = {
+    "type": "string",
+    "minLength": 1,
+    "description": (
+        "The stream's name (its artifact's name), up to 80 characters. A human name such "
+        "as 'Pressure probe 2' is kept as the stream's title and keyed by its slug "
+        "(letters, digits, '-', '_', '.': 'Pressure-probe-2'); either finds the stream."
+    ),
+}
 
 
 def build_open_stream_tool() -> Any:
@@ -147,7 +155,12 @@ def build_read_stream_tool() -> Any:
         "name,state,latest,entries,held,writes,updated_at,closed_at,reason,detail",
         title="Read stream",
         args={
-            "name": {**_NAME, "default": "", "description": "The stream; none lists them."},
+            "name": {
+                **_NAME,
+                "minLength": 0,
+                "default": "",
+                "description": "The stream; none lists them.",
+            },
             "limit": {"type": "integer", "minimum": 1, "default": _READ_ENTRIES},
         },
         read_only=True,

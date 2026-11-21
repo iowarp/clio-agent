@@ -70,6 +70,23 @@ def _finish(answer: str) -> str:
     return answer
 
 
+def _mcp_failed_structured(job: str) -> str:
+    """Stands in for an MCP call whose error result carries structured content."""
+    sink = RESULT_SINK.get()
+    if sink is not None:
+        sink.append(
+            (
+                "tool_result_is_error",
+                {
+                    "content": [{"type": "text", "text": f"job {job} failed"}],
+                    "structuredContent": {"code": "job_failed", "phase": "run", "job": job},
+                    "isError": True,
+                },
+            )
+        )
+    return f"job {job} failed"
+
+
 setattr(_finish, CALLERS_ATTR, "direct")  # as core's submit declares itself
 
 
@@ -83,6 +100,7 @@ def _agent() -> Any:
         ),
         "fs_stat": dspy.Tool(_mcp_shaped, name="fs_stat", desc="Stat a file."),
         "fs_touch": dspy.Tool(_mcp_failed, name="fs_touch", desc="Touch a file."),
+        "fs_poll": dspy.Tool(_mcp_failed_structured, name="fs_poll", desc="Poll a job."),
         "submit": dspy.Tool(_finish, name="submit", desc="Finish."),
     }
     agent = SimpleNamespace(
@@ -171,6 +189,18 @@ class TestKernel:
     def test_mcp_calls_return_structured_content(self, workspace: Path) -> None:
         outcome = _run("(await tools.fs.stat(path='a.txt'))['lines']")
         assert outcome["value"] == "3"
+
+    def test_a_failed_mcp_call_keeps_its_structured_error(self, workspace: Path) -> None:
+        """An ``isError`` result's structured content reaches the script as
+        ``ToolError.structured``, so a watcher can end on it instead of polling on.
+        SABOTAGE: return ``None`` as a failed call's value in ``Dispatcher._run`` -> red."""
+        outcome = _run(
+            "try:\n    await tools.fs.poll(job='7')\n"
+            "except ToolError as exc:\n    print(exc.structured['code'], exc.structured['job'])\n"
+            "try:\n    await tools.fs.touch(path='a.txt')\n"
+            "except ToolError as exc:\n    print('plain', exc.structured)"
+        )
+        assert outcome["output"].splitlines()[:2] == ["job_failed 7", "plain None"], outcome
 
     def test_direct_only_blocked_and_unknown_names_are_refused_apart(self, workspace: Path) -> None:
         """A5: a direct-only tool says to call it directly, a blocked one gives the typed

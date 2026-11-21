@@ -42,5 +42,9 @@ def write(args: Mapping[str, Any]) -> dict[str, Any]:
 
 @host_call("__stream_stop__")
 def stop(args: Mapping[str, Any]) -> dict[str, Any]:
-    stream = _store().stop(str(args.get("stream_id") or ""), str(args.get("key") or ""))
-    return {"state": stream.state, "writes": stream.seq}
+    stream = _store().stop(
+        str(args.get("stream_id") or ""),
+        str(args.get("key") or ""),
+        reason=str(args.get("reason") or "stopped"),
+    )
+    return {"state": stream.state, "writes": stream.seq, "closed_reason": stream.closed_reason}

@@ -273,8 +273,12 @@ class Dispatcher:
             if sink_error:
                 # The code says that it failed; the result's text says why (a validation
                 # message, the server's error), which the script needs to correct itself.
+                # Its structured content (a relay error's code and phase, say) rides along
+                # as ``ToolError.structured``, so a script can act on it.
                 detail = _error_detail(observed)
                 ok, error = False, f"{sink_error}: {detail}" if detail else str(sink_error)
+                raw = observed.get("structuredContent") if isinstance(observed, Mapping) else None
+                value = raw if isinstance(raw, Mapping | list) else None
             elif found:
                 value = structured
         if ok and not sink:
@@ -282,7 +286,7 @@ class Dispatcher:
         duration = int((time.monotonic() - started) * 1000)
         with self.lock:
             self.records.append(CallRecord(tool, ok, duration, error[:500]))
-        return ok, value if ok else None, error
+        return ok, value, error
 
     def close(
         self,

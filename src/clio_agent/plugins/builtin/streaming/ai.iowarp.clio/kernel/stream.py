@@ -67,6 +67,19 @@ class Stream:
         """Stop writing: the entries stay, shown as closed."""
         return tools.call("__stream_stop__", stream_id=self._id, key=self._key)
 
+    async def fail(self, error, **fields):
+        """End the stream on an error: write ``{"state": "failed", "error": ...}`` as its
+        last entry, then close it as ``failed``. ``error`` is a message or a ``ToolError``
+        (its ``structured`` content, when the tool gave one, is kept as ``detail``)."""
+        entry = {"state": "failed", "error": str(error), **fields}
+        structured = getattr(error, "structured", None)
+        if structured is not None:
+            entry["detail"] = structured
+        await self.write(entry)
+        return await tools.call(
+            "__stream_stop__", stream_id=self._id, key=self._key, reason="failed"
+        )
+
 
 class _Streams:
     """``await stream.open(name, window=1, media_type="")``; ``await stream.read(name)``."""
