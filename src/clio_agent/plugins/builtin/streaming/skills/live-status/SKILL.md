@@ -25,7 +25,12 @@ example the last few hundred readings for a chart.
 ```python
 s = await stream.open("printer", window=300)
 while True:
-    status = await read_status()            # however this source is read
+    try:
+        status = await read_status()        # however this source is read
+    except ToolError as error:              # the read itself failed: end, do not poll on
+        await s.fail(error)                 # last entry {"state": "failed", "error", "detail"}
+        await task.notify("Printer watch failed", data={"error": str(error)})
+        raise
     await s.write(t=now_iso(), **status)
     if status["state"] in ("error", "done"):
         await task.notify(f"Printer {status['state']}", data=status)
@@ -36,7 +41,11 @@ while True:
 
 Each write goes straight to the stream in clio-core. Wake the conversation
 with `task.notify` only for what the person should hear about. When the script
-ends, its stream closes: its entries stay, shown as closed.
+ends, its stream closes: its entries stay, shown as closed. A failed tool call
+raises `ToolError`, whose `structured` is the tool's own error content (a
+code, a phase) when it gave one. Never catch it and keep polling: the watch
+would show "running" forever. `s.fail(error)` writes the error as the last
+entry and closes the stream as failed.
 
 ## 3. Show it
 

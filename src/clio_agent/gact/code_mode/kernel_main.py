@@ -55,7 +55,16 @@ _FLAGS = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
 
 
 class ToolError(Exception):
-    """A tool call made by the script failed; the message is the tool's error."""
+    """A tool call made by the script failed; the message is the tool's error.
+
+    ``structured`` is the failed result's structured content when the tool returned one
+    (an MCP ``isError`` result's ``structuredContent``: its code, phase, retry hint), else
+    ``None``.
+    """
+
+    def __init__(self, message: str = "", structured: Any = None) -> None:
+        super().__init__(message)
+        self.structured = structured
 
 
 def _wire(value: Any) -> Any:
@@ -124,7 +133,9 @@ class _Host:
             if message.get("ok"):
                 future.set_result(message.get("value"))
             else:
-                future.set_exception(ToolError(str(message.get("error") or "tool call failed")))
+                future.set_exception(
+                    ToolError(str(message.get("error") or "tool call failed"), message.get("value"))
+                )
 
         loop.call_soon_threadsafe(settle)
 

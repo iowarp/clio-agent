@@ -36,6 +36,7 @@ from clio_agent.gact.streams.store import (
     WRITER_ENDED,
     StreamError,
     StreamStore,
+    stream_slug,
     stream_store,
 )
 from clio_agent.gact.streams.tools import open_stream, read_stream, stop_stream
@@ -293,6 +294,115 @@ def kernel_workspace(tmp_path: Path) -> Iterator[Path]:
     with tool_workspace_context(str(tmp_path)):
         yield tmp_path
     kernels.close_session("streams")
+
+
+def _binding_agent(tools: dict[str, Any]) -> Any:
+    """An agent with ``tools`` and the streaming plugin's ``stream`` binding attached."""
+    agent = SimpleNamespace(
+        tools={**tools, "run_code": dspy.Tool(lambda: None, name="run_code", desc="run")},
+        _clio_tool_servers=frozenset(),
+        _clio_deferred_catalog=None,
+    )
+    apply_tool_settings(agent, SimpleNamespace(tools=[], mcp_servers={}))
+    from clio_agent.plugins import store as plugin_store
+
+    record = {r.id: r for r in plugin_store.builtin_records()}["streaming"]
+    resolution = SimpleNamespace(kernel_bindings=kernel_bindings.resolution_rows([record]))
+    kernel_bindings.attach(agent, resolution)
+    return agent
+
+
+def test_a_watch_whose_read_fails_ends_its_stream_as_failed(
+    session: Any, kernel_workspace: Path
+) -> None:
+    """The live-status loop: a read that fails raises ``ToolError`` with the tool's
+    structured error; ``s.fail`` writes it as the last entry and closes the stream as
+    ``failed``, so the watch does not read as running forever.
+
+    SABOTAGE: drop ``reason="failed"`` from ``Stream.fail`` -> the stream closes as
+    ``stopped`` -> red; drop the failed value in ``Dispatcher._run`` -> no detail -> red."""
+    from clio_agent.tools.tool_observation import RESULT_SINK
+
+    app, workspace_id, *_ = session
+
+    def poll(job: str) -> str:
+        sink = RESULT_SINK.get()
+        if sink is not None:
+            sink.append(
+                (
+                    "tool_result_is_error",
+                    {
+                        "content": [{"type": "text", "text": "job lost"}],
+                        "structuredContent": {"code": "job_unknown", "job": job},
+                        "isError": True,
+                    },
+                )
+            )
+        return "job lost"
+
+    agent = _binding_agent(
+        {
+            "open_stream": dspy.Tool(open_stream, name="open_stream", desc="open"),
+            "relay_poll": dspy.Tool(poll, name="relay_poll", desc="poll"),
+        }
+    )
+    outcome = tool_module.run_script(
+        agent,
+        "s = await stream.open('watch', window=10)\n"
+        "while True:\n"
+        "    try:\n"
+        "        status = await tools.call('relay_poll', job='j1')\n"
+        "    except ToolError as error:\n"
+        "        print((await s.fail(error))['closed_reason'])\n"
+        "        break\n"
+        "    await s.write(**status)\n",
+        session_id="streams",
+        scope="main",
+    )
+    assert outcome["status"] == "completed", outcome
+    assert outcome["output"].strip() == "failed"
+    store = stream_store(app)
+    watch = store.by_name(workspace_id, "watch")
+    assert watch.state == "closed" and watch.closed_reason == "failed"
+    last = store.read(watch, 1)[0]["value"]
+    assert last["state"] == "failed" and "job lost" in last["error"]
+    assert last["detail"] == {"code": "job_unknown", "job": "j1"}
+
+
+def test_a_stream_ends_stopped_or_failed_only(session: Any) -> None:
+    app, workspace_id, sid, *_ = session
+    store = stream_store(app)
+    stream = store.open(sid, workspace_id, "ending")
+    with pytest.raises(StreamError) as bad:
+        store.stop(stream.id, stream.token, reason="exploded")
+    assert bad.value.code == "stream_reason_invalid" and stream.state == "open"
+    assert store.stop(stream.id, stream.token, reason="failed").closed_reason == "failed"
+
+
+def test_a_human_stream_name_is_kept_as_its_title_and_keyed_by_its_slug(session: Any) -> None:
+    """W17: ``open_stream("Pressure probe 2")`` was refused ``stream_name_invalid``.
+
+    SABOTAGE: restore the NAME_PATTERN refusal in ``open`` -> the open is refused -> red."""
+    app, workspace_id, sid, *_ = session
+    opened = open_stream("Température — probe 2", window=3)
+    assert opened["ok"], opened
+    assert opened["name"] == "Temperature-probe-2"
+    assert opened["title"] == "Température — probe 2"
+    assert opened["view_uri"].endswith("/Temperature-probe-2@latest")
+    stream_store(app).write(opened["stream_id"], opened["write_key"], [{"t": 21.5}])
+    assert read_stream("Température — probe 2")["latest"]["value"] == {"t": 21.5}
+    assert read_stream("Temperature-probe-2")["stream_id"] == opened["stream_id"]
+    assert open_stream("feed")["title"] == "feed"  # a valid name is its own key and title
+    assert open_stream("  — ")["reason"] == "stream_name_invalid"
+    assert stop_stream("Température — probe 2")["state"] == "closed"
+    assert sid and workspace_id
+
+
+def test_stream_slug_keeps_valid_names_and_bounds_the_rest() -> None:
+    assert stream_slug("pump.rate_2") == "pump.rate_2"
+    assert stream_slug("Inlet  flow (m/s)") == "Inlet-flow-m-s"
+    assert stream_slug("x" * 200 + " y") == "x" * 80
+    assert stream_slug("🔥") == ""
 
 
 def test_a_script_writes_and_reads_through_the_binding_with_no_call_per_write(
