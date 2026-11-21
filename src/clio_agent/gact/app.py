@@ -65,6 +65,7 @@ from clio_agent.gact import boot_timing, composer_runtime, host_semantics_boot, 
 from clio_agent.gact.auth import configure_bearer_auth
 from clio_agent.gact.cors import gact_cors_origins as _gact_cors_origins
 from clio_agent.gact.error_middleware import install_error_envelope, install_typed_error_handlers
+from clio_agent.gact.protocol.json_charset import install_json_charset
 from clio_agent.gact.protocol.negotiation import install_protocol_negotiation
 from clio_agent.gact.runtime.rework_state import initialize_a2ui_store, initialize_session_defaults
 from clio_agent.gact.semantic_events import (
@@ -1630,6 +1631,7 @@ def build_app(
     from clio_agent.gact.web_mount import mount_web_ui  # noqa: PLC0415
 
     mount_web_ui(app, _web_dir())
+    install_json_charset(app)
 
     return app
 
