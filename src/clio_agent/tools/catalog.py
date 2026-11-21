@@ -18,6 +18,7 @@ from clio_agent.tools.builtin_annotations import (
     SHELL_TOOL_ANNOTATIONS,
     WEB_TOOL_ANNOTATIONS,
 )
+from clio_agent.tools.shell_read_only import SHELL_TOOL_NAMES, shell_call_subject
 
 #: Standard MCP boolean hint keys. A non-boolean value for any of these makes the annotation
 #: block untrustworthy, so classification fails CLOSED (treated as effectful / not read-only).
@@ -172,14 +173,19 @@ _BUILTIN_ANNOTATIONS: dict[str, dict[str, Any]] = {
 }
 
 
-def action_subject(name: str) -> str:
+def action_subject(name: str, args: Mapping[str, Any] | None = None) -> str:
     """The permission gate's noun for a call that is not a read.
 
-    A built-in declared non-destructive (``destructiveHint`` false) is a ``network tool``
+    A shell call is a ``shell command`` unless its command visibly deletes, overwrites,
+    moves or kills (:func:`~clio_agent.tools.shell_read_only.shell_call_subject`). A
+    built-in declared non-destructive (``destructiveHint`` false) is a ``network tool``
     when it reaches hosted services (``openWorldHint``), else a ``tool``; any other
-    action keeps ``destructive tool``.
+    action keeps ``destructive tool``. The noun only names the call; it never decides
+    whether the call asks.
     """
 
+    if name in SHELL_TOOL_NAMES and args is not None:
+        return shell_call_subject(args)
     annotations = _BUILTIN_ANNOTATIONS.get(name) or {}
     if annotations.get("destructiveHint") is not False:
         return "destructive tool"

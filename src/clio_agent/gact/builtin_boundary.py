@@ -376,6 +376,7 @@ class BuiltinBoundary:
                 _record_resolved_permission,
                 _spotter_clearance,
             )
+            from clio_agent.tools.shell_read_only import shell_call_subject
 
             denial = await run_owned_callable(
                 functools.partial(
@@ -385,7 +386,7 @@ class BuiltinBoundary:
                     session,
                     name,
                     public,
-                    "destructive tool",
+                    shell_call_subject(public),
                     _record_resolved_permission,
                 ),
                 captured=captured.copy(),
