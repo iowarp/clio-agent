@@ -30,7 +30,9 @@ DURABLE_LEVELS = frozenset({"temporary", "long_term"})
 _PERSISTENCE_LINE = '        persistence_level: "temporary"\n'
 _REMEDY = (
     'mark the clio-core file tier durable: add `persistence_level: "temporary"` to its '
-    "storage entry (a volatile tier keeps nothing across a daemon restart)"
+    "storage entry (a volatile tier keeps nothing across a daemon restart). From "
+    "iowarp-core 2.5 one volatile tier (a RAM data tier) also turns the whole core's "
+    "metadata log off unless the clio_cte_core module states `durability: persistent`"
 )
 
 

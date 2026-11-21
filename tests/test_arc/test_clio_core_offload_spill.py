@@ -85,6 +85,8 @@ compose:
     pool_query: local
     pool_id: "512.0"
     restart: true
+    # iowarp-core 2.5: unstated, a volatile RAM tier makes the core volatile (no WAL).
+    durability: persistent
     storage:
       - path: "ram::cte_ram_tier"
         bdev_type: "ram"
