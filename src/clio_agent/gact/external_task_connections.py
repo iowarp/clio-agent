@@ -15,7 +15,7 @@ from fastmcp_tasks.client_models import ClientGetTaskResult
 
 from clio_agent.arc.task_types import BackendReference
 from clio_agent.gact import view_call_cancel, view_call_ledger
-from clio_agent.tools import fleet_close_listeners
+from clio_agent.tools import fleet_close_listeners, namespace_instances
 from clio_agent.tools.mcp_runtime import enter_connection
 from clio_agent.tools.task_client import AcceptedNativeCall, TaskAwareClient
 from clio_agent.tools.task_transport import TaskObservationTransport
@@ -263,6 +263,24 @@ def watch_fleets(self: ExternalTasks) -> None:
         asyncio.run_coroutine_threadsafe(retire_owned(tasks, owners, root, reason), loop)
 
     self._unwatch_fleets = fleet_close_listeners.listen(dropped)
+
+    async def stop(proxies: tuple[Any, ...], reason: str) -> int:
+        tasks = owner()
+        if tasks is None or tasks._closing:
+            return 0
+        owners = {f"in-process:{id(proxy):x}" for proxy in proxies}
+        return await retire_owned(tasks, owners, "-", reason)
+
+    # MI1: a connector's server about to start in a folder first retires the kept-alive
+    # connection to its other server there.
+    unstop = namespace_instances.add_stopper(loop, stop)
+    unwatch = self._unwatch_fleets
+
+    def unwatch_all() -> None:
+        unwatch()
+        unstop()
+
+    self._unwatch_fleets = unwatch_all
 
 
 async def retire_owned(self: ExternalTasks, owners: set[str], root: str, reason: str) -> int:

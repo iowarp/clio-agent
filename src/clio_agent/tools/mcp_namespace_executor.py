@@ -220,6 +220,11 @@ class AsyncNamespacePreparationMixin:
                 capability = record_definitive_capability(namespace, client, listed)
                 if not capability.task_capable:
                     await self._evict_namespace_client(namespace)
+                    from clio_agent.tools import namespace_instances  # noqa: PLC0415
+
+                    # The proxy's own backend serves it from now on: the direct server
+                    # the listing started must not stay alive beside it (MI1).
+                    await namespace_instances.stop_pooled((proxy,), MCP_PLAIN_SERVER_ON_PROXY)
                     trace.event("TOOLS", "%s namespace=%s", MCP_PLAIN_SERVER_ON_PROXY, namespace)
         return listed
 
@@ -305,6 +310,10 @@ class AsyncNamespacePreparationMixin:
             return client
         if not resolve_namespace_route(namespace).use_direct:
             return client
+        from clio_agent.tools import namespace_instances  # noqa: PLC0415
+
+        if not await namespace_instances.may_go_direct(self, namespace, proxy):
+            return client  # its server still draws views or serves calls: healed later
         self._namespace_heal_attempted.add(namespace)
         await self._evict_namespace_client(namespace)
         reconnected = await self._connect_namespace(namespace, proxy)
@@ -413,6 +422,18 @@ class SyncNamespacePreparationMixin:
             self._async_executor.get_namespace_prompt(namespace, name, arguments),
             action=f"prompt {namespace}/{name}",
         )
+
+    def stop_namespace_instance(self, namespace: str, reason: str) -> int:
+        """Stop the server ``namespace`` runs now, before its proxy is replaced (MI1)."""
+
+        from clio_agent.tools import namespace_instances  # noqa: PLC0415
+
+        proxy = self._async_executor._namespace_servers.get(namespace)
+        if self._closed or proxy is None:
+            return 0
+        return asyncio.run_coroutine_threadsafe(
+            namespace_instances.stop_instance(proxy, reason), self._loop
+        ).result()
 
     def reset_namespace(self, namespace: str) -> None:
         """Close ``namespace``'s persistent connection (its server process stops)."""

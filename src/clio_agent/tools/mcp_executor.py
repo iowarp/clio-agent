@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, cast
 from urllib.parse import urlsplit
 
+from clio_agent.tools import namespace_instances
 from clio_agent.tools.launcher_cache_lock import (
     aacquire_launcher_cache_lock,
     uses_shared_launcher_cache,
@@ -398,6 +399,8 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                         return _MCPCallOutcome(json.dumps(value), result, "shell")
                     namespace, _, bare = name.partition("_")
                     proxy = self._namespace_servers.get(namespace)
+                    pool_owner = proxy  # the fleet's own proxy, not a builtin fallback
+                    proxy_route = False
                     if proxy is None and bare and name in self._mcp_tools:
                         proxy = _builtin_namespace_server(namespace)
                     if proxy is not None:
@@ -405,8 +408,17 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                             namespace, self._clio_namespace_direct_factories
                         )
                         record_namespace_route_decision(namespace, decision)
+                        if (
+                            configured is not None
+                            and pool_owner is not None
+                            and not await namespace_instances.may_go_direct(self, namespace, proxy)
+                        ):
+                            configured = None  # its proxy backend still draws views (MI1)
                         if configured is None:
                             configured = self._client_factory(proxy)
+                            proxy_route = pool_owner is not None
+                        if pool_owner is not None:
+                            await namespace_instances.claim(self, namespace, proxy)
                         server, tool = namespace, bare
                         spec = getattr(self, "_clio_namespace_specs", {}).get(namespace, {})
                     else:
@@ -422,6 +434,11 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                     auth_scope = hashlib.sha256(
                         json.dumps(spec, sort_keys=True, default=str).encode()
                     ).hexdigest()
+                    end_proxy_call = (
+                        namespace_instances.begin_proxy_call(self, namespace)
+                        if proxy_route
+                        else None
+                    )
                     try:
                         result = await app.state.external_tasks.call(
                             server,
@@ -440,6 +457,9 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                         ):
                             return await product_call()  # the same call, set up again (CN5)
                         raise
+                    finally:
+                        if end_proxy_call is not None:
+                            end_proxy_call()
                     self._namespace_succeeded(namespace if proxy is not None else None)
                     return _MCPCallOutcome(
                         _result_to_text(result), result, namespace if proxy is not None else None
@@ -523,6 +543,11 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         try:
             direct_client, decision = resolve_and_build_direct_client(namespace, direct_factories)
             record_namespace_route_decision(namespace, decision)
+            if direct_client is not None and not await namespace_instances.may_go_direct(
+                self, namespace, proxy
+            ):
+                direct_client = None  # its proxy backend still draws views (MI1)
+            await namespace_instances.claim(self, namespace, proxy)
             ctx = direct_client if direct_client is not None else self._client_factory(proxy)
             if spec is not None and uses_shared_launcher_cache(spec):
                 async with aacquire_launcher_cache_lock(namespace):

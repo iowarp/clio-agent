@@ -272,6 +272,8 @@ class MCPAppRecord:
     surface_pinned: bool = False
     #: Weak reference to the fleet whose server opened the view (``mcp_app_fleet``).
     fleet: Any = None
+    #: That fleet's start of the namespace's server when the view opened (MI1).
+    instance_generation: int = 0
 
     @property
     def pinned(self) -> bool:
@@ -528,6 +530,7 @@ def _registry(app: FastAPI) -> MCPAppRegistry:
         app.state.mcp_app_registry = registry
     if registry.on_closed is None:
         registry.on_closed = lambda record, reason: publish_closed(app, record, reason)
+        mcp_app_fleet.watch_views(registry)
     return registry
 
 
