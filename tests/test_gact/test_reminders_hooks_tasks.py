@@ -152,6 +152,32 @@ def test_the_failure_note_can_be_switched_off() -> None:
     assert state._consecutive_failures["t"] == 2
 
 
+def test_polled_reads_that_answer_errors_do_not_trip_the_breaker() -> None:
+    """W17 take 1o: a cell polled ``relay_exec_read`` for a result file not yet written
+    beside a disabled ``sacct``; three answered errors of different calls warned. An
+    answered error counts against its own call, and any success resets the tool."""
+    from clio_agent.tools.execution import SyncMCPToolExecutor
+
+    injections.update("circuit_breaker_warning", params={"after": 3})
+    state = _breaker({})
+    record = SyncMCPToolExecutor._record_tool_failure
+    cat = {"site": "ares", "command": ["cat", "result.json"]}
+    sacct = {"site": "ares", "command": ["sacct", "-j", "1"]}
+    assert record(state, "exec_read", "[exit 1]", cat) == ""
+    assert record(state, "exec_read", "[exit 1]", sacct) == ""
+    assert record(state, "exec_read", "[exit 1]", cat) == ""
+    SyncMCPToolExecutor._record_tool_success(state, "exec_read")  # squeue answered
+    assert state._consecutive_failures == {}
+    assert record(state, "exec_read", "[exit 1]", cat) == ""
+    assert record(state, "exec_read", "[exit 1]", dict(reversed(cat.items()))) == ""
+    assert "exec_read has failed 3 times" in record(state, "exec_read", "[exit 1]", cat)
+    # A call that raised still counts against the tool, whatever its arguments.
+    state = _breaker({})
+    assert record(state, "t", "ConnectionError") == ""
+    assert record(state, "t", "ConnectionError") == ""
+    assert "t has failed 3 times" in record(state, "t", "ConnectionError")
+
+
 def test_path_hint_renders_todays_text_and_switches_off(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

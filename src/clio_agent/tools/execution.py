@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextvars
+import hashlib
 import inspect
 import json
 import logging
@@ -749,7 +750,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
         structured_error = structured_tool_result_error(outcome.raw_result)
         breaker_warning = ""
         if structured_error:
-            breaker_warning = self._record_tool_failure(name, structured_error)
+            breaker_warning = self._record_tool_failure(name, structured_error, effective_args)
             notify_tool_observer(
                 tool_observer,
                 name,
@@ -817,15 +818,28 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             action=f"MCP resource {uri!r}",
         )
 
-    def _record_tool_failure(self, name: str, error_text: str) -> str:
+    def _record_tool_failure(
+        self, name: str, error_text: str, arguments: Mapping[str, Any] | None = None
+    ) -> str:
         """Count a failure; at the reminder's ``after``, return the fact the agent gets.
 
-        Nothing is blocked: the next call runs and returns its own result or error.
+        Nothing is blocked: the next call runs and returns its own result or error. A
+        call that raised (the tool did not answer) counts against the tool. A call the
+        tool answered with an error (``arguments`` given) counts against that same call
+        only: a read-only command that exits non-zero, polled beside others, is not
+        the tool failing (W17 take 1o: ``relay_exec_read`` warned after a missing
+        result file and a disabled ``sacct``). Any success of the tool resets both.
         """
         del error_text  # every failure counts; its wording is not classified
+        key = name
+        if arguments is not None:
+            digest = hashlib.sha256(
+                json.dumps(arguments, sort_keys=True, default=str).encode()
+            ).hexdigest()[:16]
+            key = f"{name}\x00{digest}"
         with self._failure_lock:
-            count = self._consecutive_failures.get(name, 0) + 1
-            self._consecutive_failures[name] = count
+            count = self._consecutive_failures.get(key, 0) + 1
+            self._consecutive_failures[key] = count
         if count != harness_notes.failure_warning_after():
             return ""
         return harness_notes.circuit_warning_note(name, count)
@@ -833,8 +847,11 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
     def _record_tool_success(self, name: str) -> None:
         """Clear repeated-failure state after a successful tool call."""
 
+        prefix = f"{name}\x00"
         with self._failure_lock:
             self._consecutive_failures.pop(name, None)
+            for key in [key for key in self._consecutive_failures if key.startswith(prefix)]:
+                del self._consecutive_failures[key]
 
     def _timeout_for_tool(self, name: str) -> float:
         """Return the effective timeout for a single tool invocation."""
