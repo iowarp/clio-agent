@@ -79,3 +79,6 @@ to miss. Then end your turn by handing it back: call `plan_exit` (with a short s
 and an optional recommended posture) when the plan is complete, or the ask-user
 question tool if you need a decision before finishing. Executing waits for the user's
 approval, after which you resume with authorization.
+
+The approval card preselects the approval mode the session had before planning and
+shows your recommended posture beside it.

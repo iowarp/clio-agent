@@ -223,13 +223,27 @@ def answer(world: ApprovalWorld, selected: list[str], text: str = "") -> dict[st
 @pytest.mark.parametrize(
     "selection,mode,approval_mode,expected_text,expects_resume",
     [
+        (["ask"], "edit", "ask", "prompted to approve each action", True),
+        (["auto-edits"], "edit", "auto-edits", "Begin implementing the approved plan now.", True),
+        (["ai-review"], "edit", "ai-review", "Begin implementing the approved plan now.", True),
+        (["bypass"], "edit", "bypass", "Begin implementing the approved plan now.", True),
         (["auto"], "edit", "auto-edits", "Begin implementing the approved plan now.", True),
         (["interactive"], "edit", "ask", "prompted to approve each action", True),
         (["exit_only"], "edit", "ask", "", False),
         (["reject"], "plan", "ask", "add a rollback section", True),
         ([], "plan", "ask", "REJECTED", True),
     ],
-    ids=["auto", "interactive", "exit-only", "reject", "empty-safe-reject"],
+    ids=[
+        "ask",
+        "auto-edits",
+        "ai-review",
+        "bypass",
+        "legacy-auto",
+        "legacy-interactive",
+        "exit-only",
+        "reject",
+        "empty-safe-reject",
+    ],
 )
 def test_approval_decision_commits_posture_and_exact_resume_input(
     approval_world: ApprovalWorld,
@@ -376,11 +390,11 @@ def test_context_modifier_forms_share_one_canonical_answer(
 ) -> None:
     """Old selected-option and explicit-metadata forms have one retained outcome."""
     world = approval_world
-    first = answer(world, ["auto", "clear_context"])
+    first = answer(world, ["auto-edits", "clear_context"])
     current = world.app.state.task_history.task_snapshot(world.question.handle)
     assert current is not None and current.result is not None
     stored = world.app.state.task_history.read_content(current.result)
-    assert stored["selected_options"] == ["auto"]
+    assert stored["selected_options"] == ["auto-edits"]
     assert stored["metadata"]["clear_context"] is True
     response = world.client.post(
         f"/v1/sessions/{world.sid}/questions/{world.question.handle}/answer",
@@ -442,3 +456,86 @@ def test_plan_posture_is_updated_before_approved_work_enters_mailbox(
     monkeypatch.setattr(history, "record_mail", record)
     answer(world, ["auto"])
     assert seen and all(posture == ("edit", "auto-edits") for posture in seen)
+
+
+# --------------------------------------------------------------------------- #
+# One approve option per approval mode (user-directed)
+# --------------------------------------------------------------------------- #
+
+
+def test_the_card_offers_one_approve_option_per_approval_mode(
+    approval_world: ApprovalWorld,
+) -> None:
+    """Values are the approval modes, labels are the approval control's, ask is preselected."""
+    definition = approval_world.app.state.task_history.read_content(approval_world.question.details)
+    options = [(option["value"], option["label"]) for option in definition["options"]]
+    assert options == [
+        ("ask", "Approve — Ask first"),
+        ("auto-edits", "Approve — Workspace edits"),
+        ("ai-review", "Approve — AI review"),
+        ("spotter-ai", "Approve — SPOTTER review"),
+        ("bypass", "Approve — Bypass checks"),
+        ("exit_only", "Approve — exit only"),
+        ("reject", "Request changes — keep planning"),
+        ("clear_context", "Also clear context (modifier)"),
+    ]
+    assert definition["metadata"]["default_option"] == "ask"
+
+
+@pytest.mark.parametrize("mode", ["ask", "auto-edits", "ai-review", "spotter-ai", "bypass"])
+def test_the_preselected_option_is_the_mode_the_session_had_before_planning(mode: str) -> None:
+    from clio_agent.gact.plan_mode import plan_exit_default_option
+
+    assert plan_exit_default_option(SimpleNamespace(approval_mode=mode)) == mode
+    assert plan_exit_default_option(SimpleNamespace(approval_mode="")) == "ask"
+
+
+def test_exit_only_keeps_the_sessions_approval_mode(approval_world: ApprovalWorld) -> None:
+    world = approval_world
+    world.app.state.sessions.update(world.sid, approval_mode="bypass")
+    answer(world, ["exit_only"])
+    session = world.app.state.sessions.get(world.sid)
+    assert session.mode == "edit" and session.approval_mode == "bypass"
+
+
+def test_approving_into_spotter_review_arms_its_watcher_or_falls_back_to_ask(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi import HTTPException
+
+    from clio_agent.gact import plan_exit_resolution, spotter_watcher
+
+    class _Inline:
+        def __init__(self, *, target: Any, **_: Any) -> None:
+            self.target = target
+
+        def start(self) -> None:
+            self.target()
+
+    updates: list[dict[str, Any]] = []
+    session = SimpleNamespace(id="s", approval_mode="spotter-ai")
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            sessions=SimpleNamespace(
+                get=lambda sid: session, update=lambda sid, **kw: updates.append(kw)
+            ),
+            bus=SimpleNamespace(publish=lambda event: None),
+        )
+    )
+    calls: list[str] = []
+
+    def refused(app: Any, session: Any, *, prior_approval_mode: str = "") -> None:
+        calls.append(prior_approval_mode)
+        raise HTTPException(status_code=422, detail="watcher_unavailable")
+
+    monkeypatch.setattr(plan_exit_resolution.threading, "Thread", _Inline)
+    monkeypatch.setattr(spotter_watcher, "sync_watcher_for_mode", refused)
+    plan_exit_resolution._sync_spotter_watcher(app, "s", "ask")
+    assert calls == ["ask"] and updates == [{"approval_mode": "ask"}]
+
+    calls.clear()
+    updates.clear()
+    plan_exit_resolution._sync_spotter_watcher(app, "s", "spotter-ai")
+    session.approval_mode = "bypass"
+    plan_exit_resolution._sync_spotter_watcher(app, "s", "auto-edits")
+    assert calls == [] and updates == []
