@@ -302,10 +302,51 @@ PLAN_EXIT_APPROVAL_META = "plan_exit_approval"
 
 _PLAN_EXIT_RECOMMENDED_MODES = frozenset({"auto", "interactive", "exit_only"})
 
+#: The approval modes a plan can be approved into, in the order and with the labels and
+#: descriptions of the session's approval control (gact-tui ``SESSION_APPROVAL_OPTIONS``).
+#: Each option's value IS the ``approval_mode`` the session executes the plan under.
+PLAN_EXIT_APPROVAL_MODES: tuple[tuple[str, str, str], ...] = (
+    ("ask", "Ask first", "Ask before edits or commands."),
+    ("auto-edits", "Workspace edits", "Edit files without asking."),
+    ("ai-review", "AI review", "Let AI review each action."),
+    ("spotter-ai", "SPOTTER review", "An AI agent watches the session."),
+    ("bypass", "Bypass checks", "Run without asking."),
+)
+_PLAN_EXIT_MODE_VALUES = frozenset(
+    value for value, _label, _description in PLAN_EXIT_APPROVAL_MODES
+)
+
+#: Decision values cards minted before per-mode approval still carry, and the mode each meant.
+_LEGACY_PLAN_EXIT_MODES = {"auto": "auto-edits", "interactive": "ask"}
+
 #: The approval decisions the approver selects. ``clear_context`` is a co-selectable MODIFIER, not a
 #: decision — it may accompany any approve/reject.
-_PLAN_EXIT_DECISIONS: tuple[str, ...] = ("auto", "interactive", "exit_only", "reject")
+_PLAN_EXIT_DECISIONS: tuple[str, ...] = (
+    *(value for value, _label, _description in PLAN_EXIT_APPROVAL_MODES),
+    *_LEGACY_PLAN_EXIT_MODES,
+    "exit_only",
+    "reject",
+)
 _PLAN_EXIT_CLEAR_CONTEXT = "clear_context"
+
+
+def plan_exit_approval_mode(decision: str) -> str | None:
+    """The ``approval_mode`` an approving plan-exit decision executes under, else ``None``."""
+
+    if decision in _PLAN_EXIT_MODE_VALUES:
+        return decision
+    return _LEGACY_PLAN_EXIT_MODES.get(decision)
+
+
+def plan_exit_default_option(session: Any) -> str:
+    """The approve option a plan card preselects: the session's approval mode before planning.
+
+    Plan mode never changes ``approval_mode``, so the session's current value is the mode it
+    had before planning.
+    """
+
+    mode = str(getattr(session, "approval_mode", "") or "")
+    return mode if mode in _PLAN_EXIT_MODE_VALUES else "ask"
 
 
 def _record_plan_exit_request(
@@ -389,8 +430,8 @@ def build_plan_exit_tool(agent_def: Any) -> Any:
         you wrote with plan_update from the session's plan file, so it takes no plan text. Provide a 1-2
         sentence ``summary``, optionally a ``recommendedMode`` (``auto`` = execute automatically,
         ``interactive`` = execute prompting per action, ``exit_only`` = leave plan mode but wait
-        before executing), and optional ``riskNotes``. The recommendation is the posture the
-        Execute button starts with. Recommend ``auto`` when the plan's real decisions are either
+        before executing), and optional ``riskNotes``. The approval card preselects the
+        approval mode the session had before planning and shows your recommendation. Recommend ``auto`` when the plan's real decisions are either
         asked by the tools themselves when reached (a tool that asks before spending, installing
         or submitting for review still asks) or are steps of this plan. Recommend
         ``interactive`` only when the person asked to review each action. Your turn ends here:
@@ -429,9 +470,9 @@ def build_plan_exit_tool(agent_def: Any) -> Any:
             "recommendedMode": {
                 "type": "string",
                 "description": (
-                    "Posture the Execute button starts with: 'auto' when tools ask for their "
-                    "own decisions or they are plan steps; 'interactive' only when the person "
-                    "asked to review each action; 'exit_only' to leave without executing."
+                    "Posture you recommend, shown on the approval card: 'auto' when tools ask "
+                    "for their own decisions or they are plan steps; 'interactive' only when the "
+                    "person asked to review each action; 'exit_only' to leave without executing."
                 ),
             },
             "riskNotes": {
@@ -443,20 +484,22 @@ def build_plan_exit_tool(agent_def: Any) -> Any:
 
 
 def _plan_exit_options() -> list[Any]:
-    """Build the N-way approval options for a plan-exit question (P1.4 #1066)."""
+    """Build the N-way approval options for a plan-exit question (P1.4 #1066).
+
+    One approve option per approval mode (:data:`PLAN_EXIT_APPROVAL_MODES`), then exit-only,
+    request-changes and the clear-context modifier.
+    """
 
     from clio_agent.gact.types import UserQuestionOption  # noqa: PLC0415
 
     return [
-        UserQuestionOption(
-            label="Approve — auto-execute",
-            value="auto",
-            description="Exit plan mode to an auto-accept posture and begin executing the plan.",
-        ),
-        UserQuestionOption(
-            label="Approve — interactive",
-            value="interactive",
-            description="Exit plan mode; execute the plan but prompt before each action.",
+        *(
+            UserQuestionOption(
+                label=f"Approve — {label}",
+                value=value,
+                description=f"Leave plan mode and execute the plan. {description}",
+            )
+            for value, label, description in PLAN_EXIT_APPROVAL_MODES
         ),
         UserQuestionOption(
             label="Approve — exit only",
@@ -490,8 +533,9 @@ def _plan_exit_prompt(summary: str, plan_file: str, recommended: str, risk_notes
     if risk_notes:
         lines.append(f"Risk notes: {risk_notes}")
     lines.append(
-        "\nApprove (auto / interactive / exit_only), optionally with 'clear_context', or reject "
-        "with feedback."
+        "\nApprove into an approval mode ("
+        + " / ".join(value for value, _label, _description in PLAN_EXIT_APPROVAL_MODES)
+        + "), or exit_only, optionally with 'clear_context', or reject with feedback."
     )
     return "\n".join(lines)
 
@@ -572,6 +616,7 @@ def maybe_pause_for_plan_exit(
             PLAN_EXIT_APPROVAL_META: True,
             "resume_on_answer": True,
             "recommended_mode": recommended,
+            "default_option": plan_exit_default_option(session),
             "summary": summary,
             "risk_notes": risk_notes,
             "plan_file": plan_file,

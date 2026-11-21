@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import threading
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -16,6 +18,8 @@ from clio_agent.arc.task_types import (
 from clio_agent.gact.plan_exit_resume import approved_plan_resume_text, rejected_plan_resume_text
 from clio_agent.gact.planning import PLAN_VARIANT_METADATA_KEY, transition_playbook_to_execution
 from clio_agent.gact.session_plan import PLAN_STATUS_KEY
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -36,13 +40,24 @@ def normalize_plan_exit_reply(
     definition: QuestionDefinition, reply: QuestionReply
 ) -> QuestionReply:
     """Normalize the plan decision and its advertised auxiliary context modifier."""
-    from clio_agent.gact.plan_mode import _PLAN_EXIT_CLEAR_CONTEXT
+    from clio_agent.gact.plan_mode import _LEGACY_PLAN_EXIT_MODES, _PLAN_EXIT_CLEAR_CONTEXT
 
     choices = {option.value for option in definition.options}
     if not reply.selected_options and not reply.answer.strip() and "reject" in choices:
         # An empty human plan response keeps the existing safe-rejection policy.
         # Ordinary Questions still require an answer in their unchanged owner.
         return reply.model_copy(update={"selected_options": ("reject",)})
+    legacy = tuple(
+        _LEGACY_PLAN_EXIT_MODES[value]
+        if value in _LEGACY_PLAN_EXIT_MODES
+        and value not in choices
+        and _LEGACY_PLAN_EXIT_MODES[value] in choices
+        else value
+        for value in reply.selected_options
+    )
+    if legacy != tuple(reply.selected_options):
+        # A client built before per-mode approval still answers ``auto`` / ``interactive``.
+        reply = reply.model_copy(update={"selected_options": legacy})
     if (
         _PLAN_EXIT_CLEAR_CONTEXT not in reply.selected_options
         or _PLAN_EXIT_CLEAR_CONTEXT not in choices
@@ -166,7 +181,9 @@ def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questio
         session = app.state.sessions.get(sid)
         if session is None or session.metadata.get("execution_gate") != question.id:
             return
-        if question.status == "answered":
+        prior_mode = str(getattr(session, "approval_mode", "") or "")
+        answered = question.status == "answered"
+        if answered:
             _resolve_plan_exit_answer(app, deps, sid, question)
         app.state.sessions.update(
             sid,
@@ -177,6 +194,53 @@ def resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questio
                 "execution_gate": "",
             },
         )
+    if answered:
+        _sync_spotter_watcher(app, sid, prior_mode)
+
+
+def _sync_spotter_watcher(app: "FastAPI", sid: str, prior_mode: str) -> None:
+    """Arm or disarm the SPOTTER watcher when an approval moved the session into or out of it.
+
+    The same transition hook ``PATCH /v1/sessions`` runs. Arming waits on the conversations
+    loop, so it runs on its own short thread; until it completes the spotter clearance
+    barrier keeps the session's effectful calls denied. A refused arm leaves the session
+    in ``ask``.
+    """
+
+    from clio_agent.gact.spotter_watcher import SPOTTER_APPROVAL_MODE
+
+    session = app.state.sessions.get(sid)
+    if session is None or session.approval_mode == prior_mode:
+        return
+    if SPOTTER_APPROVAL_MODE not in (session.approval_mode, prior_mode):
+        return
+
+    def sync() -> None:
+        from fastapi import HTTPException
+
+        from clio_agent.gact.events import Event
+        from clio_agent.gact.spotter_watcher import sync_watcher_for_mode
+
+        try:
+            sync_watcher_for_mode(app, session, prior_approval_mode=prior_mode)
+        except HTTPException as refused:
+            logger.warning("plan exit could not arm SPOTTER review for %s: %s", sid, refused.detail)
+            app.state.sessions.update(sid, approval_mode="ask")
+            app.state.bus.publish(
+                Event(
+                    type="session.updated",
+                    session_id=sid,
+                    payload={
+                        "session_id": sid,
+                        "approval_mode": "ask",
+                        "reason": "plan_exit_spotter_refused",
+                    },
+                )
+            )
+        except Exception:
+            logger.exception("plan exit SPOTTER watcher sync failed for %s", sid)
+
+    threading.Thread(target=sync, name="clio-plan-exit-spotter", daemon=True).start()
 
 
 def _frozen_plan_resolution(app: Any, question: Any) -> dict[str, Any]:
@@ -250,6 +314,7 @@ def _resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questi
     """Stage the deterministic decision before releasing its admission gate."""
 
     from clio_agent.gact.events import Event
+    from clio_agent.gact.plan_mode import plan_exit_approval_mode
 
     frozen = _frozen_plan_resolution(app, question)
     decision, feedback, plan_file = frozen["decision"], frozen["feedback"], frozen["plan_file"]
@@ -291,7 +356,9 @@ def _resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questi
             )
         return
 
-    approval_mode = "auto-edits" if decision == "auto" else "ask"
+    approval_mode = plan_exit_approval_mode(decision) or str(
+        getattr(app.state.sessions.get(sid), "approval_mode", "") or "ask"
+    )
     app.state.sessions.update(
         sid,
         mode="edit",
@@ -340,6 +407,7 @@ def _resolve_plan_exit_answer(app: "FastAPI", deps: "GactDeps", sid: str, questi
             session_id=sid,
             payload={
                 "decision": decision,
+                "approval_mode": approval_mode,
                 "cleared_context": cleared,
                 "plan_file": plan_file,
                 "artifact_ref": saved_plan,

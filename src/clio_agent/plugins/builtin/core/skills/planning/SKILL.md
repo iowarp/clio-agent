@@ -80,8 +80,9 @@ and an optional recommended posture) when the plan is complete, or the ask-user
 question tool if you need a decision before finishing. Executing waits for the user's
 approval, after which you resume with authorization.
 
-The recommended posture is what the Execute button starts with, so choose it for the
-plan's real decisions:
+The approval card preselects the approval mode the session had before planning and
+shows your recommended posture beside it, so choose the recommendation for the plan's
+real decisions:
 - `auto` (auto-execute): recommend it when every decision that needs the person is
   already covered. Either the tools ask for it themselves when they reach it (a tool
   that asks before spending, installing or submitting for review still asks under

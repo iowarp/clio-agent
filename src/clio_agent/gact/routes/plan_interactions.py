@@ -9,6 +9,7 @@ from clio_agent.gact.types import UserQuestion
 _PLAN_REVIEW_KEYS = (
     "summary",
     "recommended_mode",
+    "default_option",
     "risk_notes",
     "plan_file",
     "plan_content",
