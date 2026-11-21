@@ -460,6 +460,15 @@ def source_opened(args: Mapping[str, Any], row: Mapping[str, Any]) -> dict[str, 
                 {"size": "File size", "fetched": "Fetched", "expires": "Handle expires"},
             )
         )
+        if isinstance(mosaic := row.get("vrt"), Mapping):  # a mosaic: its tiles, linked or not
+            blocks.append(
+                _text(
+                    "mosaic-tiles",
+                    "Mosaic tiles",
+                    f"{mosaic.get('linked', 0):,} of {mosaic.get('tiles', 0):,} tile files are "
+                    "linked; a window reads only tiles that are linked.",
+                )
+            )
         return _view("Opened by byte range", blocks, row, subject="source")
     if row.get("resource_id"):
         name = str(row.get("name") or PureWindowsPath(path).name)

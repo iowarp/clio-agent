@@ -21,7 +21,6 @@ if TYPE_CHECKING:
     from clio_agent.gact.storage.store import SourceStore
 
 # Source adapters stream to disk; bounded linked readers enforce their own 512 MiB limit.
-MAX_RESOURCE_BYTES = 8 * 1024 * 1024 * 1024
 
 
 def public_selection(store: SourceStore, record: SourceRecord) -> bool:
@@ -55,8 +54,6 @@ class _ResourceReader(io.RawIOBase):
             except httpx.HTTPError as exc:
                 raise ValueError("NDP stopped streaming this resource; retry the read") from exc
             self.total += len(self.pending)
-            if self.total > MAX_RESOURCE_BYTES:
-                raise ValueError("This resource exceeds CLIO's 8 GiB transfer limit")
         size = min(len(view), len(self.pending))
         view[:size], self.pending = self.pending[:size], self.pending[size:]
         return size
@@ -164,8 +161,6 @@ class NDPSource:
         )
         if selected is None:
             raise PermissionError("Choose a resource attached to this NDP source")
-        if selected.size > MAX_RESOURCE_BYTES:
-            raise ValueError("This resource exceeds CLIO's 8 GiB transfer limit")
         return selected
 
     def _send(
@@ -235,16 +230,13 @@ class NDPSource:
             raise
 
     def open_read(self, entry: FileEntry) -> BinaryIO:
-        """Stream a selected object in 64 KiB chunks with an 8 GiB transfer ceiling.
+        """Stream a selected object in 64 KiB chunks.
 
-        This is not an in-memory text read. Materialization owns disk capacity,
-        cancellation, hashes and atomic publication; linked-file reads retain
-        their separate 512 MiB limit."""
+        This is not an in-memory text read. No size is refused here: a download checks
+        the free disk before it starts (materialization owns capacity, cancellation,
+        hashes and atomic publication), a linked open checks it before copying, and a
+        byte-range read touches no disk."""
         response, client = self._send(self._selected(entry), {})
-        if int(response.headers.get("content-length", "0")) > MAX_RESOURCE_BYTES:
-            response.close()
-            client.close()
-            raise ValueError("This resource exceeds CLIO's 8 GiB transfer limit")
         return cast(BinaryIO, io.BufferedReader(_ResourceReader(response, client)))
 
     def range_reader(self, entry: FileEntry) -> NDPRangeReader:

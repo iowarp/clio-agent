@@ -12,6 +12,8 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
+from clio_agent.runtime import trace
+
 _ENVIRONMENTS: dict[Path, dict[str, str]] = {}
 _LOCK = RLock()
 
@@ -101,17 +103,21 @@ def publish_environment(workspace: Path, runtime: dict[str, Any], cache: Path) -
         _ENVIRONMENTS[workspace.resolve()] = environment
 
 
-def shell_environment(workspace: Path, *, session_id: str | None = None) -> dict[str, str]:
+def shell_environment(
+    workspace: Path, *, session_id: str | None = None, read_only: bool | None = None
+) -> dict[str, str]:
     """Return only this process's verified workspace binding, never workspace input.
 
     ``TMPDIR``/``TEMP``/``TMP`` point at the session's own scratch folder (TD56) when a
     session owns the call (``session_id``, else the active one); ``UV_CACHE_DIR`` and
-    ``CLIO_DOCUMENT_SCRATCH`` stay on the workspace scratch.
+    ``CLIO_DOCUMENT_SCRATCH`` stay on the workspace scratch. ``read_only`` says the
+    caller's fence grants only scratch and temp (a plan-mode kernel); ``None`` reads the
+    active tool's mode.
     """
     with _LOCK:
         environment = dict(_ENVIRONMENTS.get(workspace.resolve(), {}))
     environment.update(_session_temp(session_id))
-    environment.update(_clio_tools(environment, workspace))
+    environment.update(_clio_tools(environment, workspace, read_only=read_only))
     _bundled_git(environment)
     environment.update(_without_command_line_tools_stubs(environment))
     path = environment.get("PATH", os.environ.get("PATH", ""))
@@ -148,16 +154,16 @@ def _bundled_git(environment: dict[str, str]) -> None:
 CLIO_TOOL_VARIABLES = ("CLIO_PYTHON", "CLIO_UV", "UV_CACHE_DIR")
 
 
-def _clio_tools(environment: dict[str, str], workspace: Path | None = None) -> dict[str, str]:
+def _clio_tools(
+    environment: dict[str, str], workspace: Path | None = None, *, read_only: bool | None = None
+) -> dict[str, str]:
     """CLIO's own interpreter and uv, so a command can use them on a host with neither.
 
     ``CLIO_PYTHON`` is the interpreter ``run_code`` runs on (the prepared execution
     Python, else CLIO's own); ``CLIO_UV`` is CLIO's uv (bundled first, see
     ``clio_tool``). uv's cache stays CLIO's, never the person's own: the prepared
-    workspace scratch, else the workspace's sandbox cache, which every session of the
-    workspace shares and the write fence grants. A cache per session folder held a
-    full copy of each session's packages (R9: 4 GB across 30 sessions filled the
-    disk). A read-only shell writes only its scratch, so its cache stays there.
+    workspace scratch, else :func:`shared_uv_cache`. A read-only shell writes only its
+    scratch, so its cache stays there.
     """
     from clio_agent.gact.infrastructure.native_service_platform import clio_tool  # noqa: PLC0415
 
@@ -167,14 +173,47 @@ def _clio_tools(environment: dict[str, str], workspace: Path | None = None) -> d
     if uv:
         tools["CLIO_UV"] = uv
     if "UV_CACHE_DIR" not in environment:
-        from clio_agent import paths  # noqa: PLC0415
-        from clio_agent.tools.write_scope import active_tool_read_only  # noqa: PLC0415
+        if read_only is None:
+            from clio_agent.tools.write_scope import active_tool_read_only  # noqa: PLC0415
 
-        if workspace is not None and not active_tool_read_only():
-            tools["UV_CACHE_DIR"] = str(paths.workspace_cache_dir(workspace) / "uv-cache")
+            read_only = active_tool_read_only()
+        if workspace is not None and not read_only:
+            tools["UV_CACHE_DIR"] = str(shared_uv_cache(workspace))
         elif environment.get("TMPDIR"):
             tools["UV_CACHE_DIR"] = str(Path(environment["TMPDIR"]) / "uv-cache")
     return tools
+
+
+def shared_uv_cache(workspace: Path) -> Path:
+    """The uv cache a writable shell of ``workspace`` uses: one per machine.
+
+    Every workspace's shells share :func:`clio_agent.paths.shared_uv_cache_dir`, so a
+    package is downloaded and unpacked once (one cache per workspace held 160-560 MB
+    each; one per session, 4 GB across 30 sessions, filled the disk). The shell fence
+    grants that folder itself (``sandbox_roots.effective_write_roots``), so uv's staging
+    directories and the buckets it renames them into sit in one granted tree, which
+    Landlock ABI 1 (no REFER) needs. A fence rules only on existing paths, so the folder
+    is created here, before the shell is confined. If it cannot be, the workspace's
+    sandbox cache (also granted) is used and the reason is traced.
+    """
+    from clio_agent import paths  # noqa: PLC0415
+
+    shared = paths.shared_uv_cache_dir()
+    try:
+        shared.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        fallback = paths.workspace_cache_dir(workspace) / "uv-cache"
+        trace.event(
+            "SHELL-ENV",
+            "shared_uv_cache_unavailable reason=shared_uv_cache_create_failed "
+            "dir=%s fallback=%s error=%s: %s",
+            shared,
+            fallback,
+            type(exc).__name__,
+            exc,
+        )
+        return fallback
+    return shared
 
 
 def _without_command_line_tools_stubs(environment: dict[str, str]) -> dict[str, str]:

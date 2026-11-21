@@ -93,8 +93,10 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
     if not row:
         blocks.append({"id": "result", "type": "text", "text": str(result or "")})
         return _view(args, code, "", blocks)
-    if args.get("background"):
-        # A background launch: the script runs on as a task with its own row.
+    moved = row.get("status") == "backgrounded"
+    if args.get("background") or moved:
+        # A background launch, or a running script moved to one: it runs on as a task
+        # with its own row.
         handle = str(row.get("handle") or "")
         blocks.append(
             {
@@ -116,7 +118,11 @@ def present(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, 
                     "label": "Show the task in Work",
                 }
             )
-        return _view(args, code, "Started in the background", blocks)
+        if moved:
+            blocks.insert(0, {"id": "moved", "type": "text", "text": str(row.get("moved") or "")})
+        return _view(
+            args, code, "Moved to the background" if moved else "Started in the background", blocks
+        )
     if row.get("output"):
         blocks.append({"id": "output", "type": "text", "label": "Output", "text": row["output"]})
     if row.get("value") is not None:

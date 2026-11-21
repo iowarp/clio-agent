@@ -337,8 +337,11 @@ def _range_handle(
 
     if not linked:
         raise ValueError("Downloaded files are local; open them by path, not by range")
+    from clio_agent.gact.storage.range_siblings import vrt_note  # noqa: PLC0415
+
     handle = mint(service, record, path, session_id=sid, handles=registry(app))
-    return {
+    mosaic = vrt_note(service, handle)
+    return ({"vrt": mosaic} if mosaic else {}) | {
         "handle": handle.id,
         "handle_url": handle_url(app, handle),
         "source_id": record.source.id,

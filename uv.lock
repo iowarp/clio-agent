@@ -789,7 +789,7 @@ requires-dist = [
     { name = "adios2", marker = "sys_platform != 'win32' and extra == 'adios'", specifier = ">=2.10.0" },
     { name = "claude-agent-sdk", marker = "extra == 'claude-code'", specifier = ">=0.2.159" },
     { name = "clio-agent", extras = ["optimizers", "adios", "argonne", "claude-code", "copilot", "desktop", "flowcept", "dev"], marker = "extra == 'all'" },
-    { name = "clio-kit", git = "https://github.com/iowarp/clio-kit?rev=e7c18558a03e572e881e4dc3cee9652f21cd5cd2" },
+    { name = "clio-kit", git = "https://github.com/iowarp/clio-kit?rev=24769721a72f61d6e6aa3e727d9313cec3b7a7ef" },
     { name = "clio-schemas", git = "https://github.com/iowarp/clio-schemas?rev=26e3f78a2c191762b9d046943ab5aa2106a61ec1" },
     { name = "dspy", specifier = "==3.4.0" },
     { name = "fastapi", specifier = ">=0.140" },
@@ -880,8 +880,8 @@ install-bootstrap = [
 
 [[package]]
 name = "clio-kit"
-version = "2.12.7"
-source = { git = "https://github.com/iowarp/clio-kit?rev=e7c18558a03e572e881e4dc3cee9652f21cd5cd2#e7c18558a03e572e881e4dc3cee9652f21cd5cd2" }
+version = "2.13.0"
+source = { git = "https://github.com/iowarp/clio-kit?rev=24769721a72f61d6e6aa3e727d9313cec3b7a7ef#24769721a72f61d6e6aa3e727d9313cec3b7a7ef" }
 dependencies = [
     { name = "click" },
     { name = "pyyaml" },

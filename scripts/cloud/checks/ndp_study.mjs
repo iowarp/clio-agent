@@ -66,12 +66,35 @@ async function acceptOffers(page, sessionId, log) {
   }
 }
 
+// A person's answers to the two questions a run can stop on. A plan (STUDY_MODE=plan)
+// is approved to run with the same approval posture as a run without one
+// ("interactive": each action still asks, and allowPending answers). A web-search
+// source the person has not approved is declined, so the run goes on without it,
+// rather than waiting on the next source's question. Each answer is logged.
+async function answerQuestions(sessionId, log) {
+  const listed = await api("GET", `/v1/sessions/${sessionId}/interactions`);
+  for (const card of listed.interactions || []) {
+    if (card.kind !== "question" || (card.status || "pending") !== "pending") continue;
+    const options = ((card.payload || {}).options || []).map((o) => o.value);
+    let answer = "";
+    if (options.includes("interactive") && options.includes("reject")) answer = "interactive";
+    else if (/^Allow searches through/.test(card.prompt || "")) answer = "decline";
+    if (!answer) continue;
+    await api("POST", `/v1/sessions/${sessionId}/interactions/${card.id}/respond`, {
+      answer,
+      selected_options: [answer],
+    });
+    log.push(`${new Date().toISOString()} answered ${answer}: ${(card.prompt || card.title || "").split("\n")[0].slice(0, 120)}`);
+  }
+}
+
 async function waitIdle(page, sessionId, log, minutes) {
   const until = Date.now() + minutes * 60_000;
   let quiet = 0;
   while (Date.now() < until) {
     await allowPending(sessionId, log);
     await acceptOffers(page, sessionId, log);
+    await answerQuestions(sessionId, log);
     const session = await api("GET", `/v1/sessions/${sessionId}`);
     quiet = ["idle", "completed"].includes(session.status) ? quiet + 1 : 0;
     if (quiet >= 3) return true;
@@ -106,6 +129,7 @@ export default async function (page, shot) {
     : await api("POST", "/v1/sessions", {
         workspace_id: workspace.id,
         ...(process.env.STUDY_AGENT ? { agent: { id: process.env.STUDY_AGENT } } : {}),
+        ...(process.env.STUDY_MODE ? { mode: process.env.STUDY_MODE } : {}),
       });
   await page.goto(new URL(`/workspaces/${workspace.id}/sessions/${session.id}`, page.url()).toString());
   await page.waitForTimeout(6000);
