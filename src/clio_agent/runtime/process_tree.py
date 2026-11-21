@@ -483,6 +483,7 @@ def shutdown_child_processes(agent: Any) -> dict[str, str]:
 _CHILD_KINDS: tuple[tuple[str, str], ...] = (
     ("clio-kit", "mcp_stdio"),
     ("clio_run", "clio_core_daemon"),
+    ("clio-run", "clio_core_daemon"),
     ("uvx", "mcp_launcher"),
     ("uv", "mcp_launcher"),
     ("claude", "sdk_cli"),
