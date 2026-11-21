@@ -54,6 +54,7 @@ from clio_agent.gact.runtime.plan_acl import (
     playbook_step_matches,
 )
 from clio_agent.tools.catalog import annotations_are_read_only, get_tool_entry
+from clio_agent.tools.shell_read_only import SHELL_TOOL_NAMES, shell_call_is_read_only
 
 #: Re-exported plan-ACL owner-module symbols (⚑ no accretion — the data/messaging live in
 #: :mod:`clio_agent.gact.runtime.plan_acl`) so existing ``grant_resolver.plans_dir`` /
@@ -229,18 +230,24 @@ def is_read_only(
        MCP tools uniformly: native ``fs``/``shell`` tools carry NO gate annotation context
        (built-ins pass ``None``), so this catalog consult — fed by the fs/shell decorator
        annotations — is what classifies e.g. ``fs_read_file`` / ``fs_search_text``.
+    3. **Shell read signal.** A shell call whose command only lists or reads
+       (:func:`clio_agent.tools.shell_read_only.shell_call_is_read_only`: ``Get-ChildItem``,
+       ``Get-Content``, ``ls``, ``cat`` ... with no redirection, subexpression or mutating
+       pipeline stage), and that does not ask to run outside the sandbox.
 
     Fails closed (NOT read-only → the gate proceeds to approval): ``fs_write_file`` /
-    ``fs_edit_file`` (their ``destructiveHint`` projects to the ``write`` tag), ``shell_bash`` (``openWorldHint`` →
-    effectful, no read tag — the OS fence, not the gate, contains its writes/egress), and any
-    tool with NO annotations (fail-safe: no ``read`` tag). ``args``/``kind`` are accepted for a
-    stable signature (a future kind may inspect them) but are not consulted by these two signals.
+    ``fs_edit_file`` (their ``destructiveHint`` projects to the ``write`` tag), any other
+    ``shell_bash`` command (``openWorldHint`` → effectful, no read tag — the OS fence, not
+    the gate, contains its writes/egress), and any tool with NO annotations (fail-safe: no
+    ``read`` tag). ``kind`` is accepted for a stable signature but is not consulted.
     """
 
-    _ = (kind, args)
+    _ = kind
     if isinstance(context, Mapping) and context.get("kind") == EXTERNAL_MCP_CONTEXT_KIND:
         if annotations_are_read_only(context.get("annotations")):
             return True
+    if name in SHELL_TOOL_NAMES and shell_call_is_read_only(args):
+        return True
     entry = get_tool_entry(name)
     if entry is not None:
         tags = entry.tags

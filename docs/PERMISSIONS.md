@@ -37,7 +37,14 @@ The gate decides in this order:
    `grant_resolver.is_read_only(kind, name, args, context)` returns true when a
    tool call is provably read-only — an MCP `readOnlyHint=true` annotation, or a
    static tool-catalog `read` tag with no `write` tag (e.g. `fs_read_file`,
-   `fs_search_text`). A read returns `allow` **before** the mode lock and
+   `fs_search_text`), or a fenced `shell_bash` command made only of listing and
+   reading commands (`Get-ChildItem`, `Get-Content`, `Test-Path`, `Select-String`,
+   `ls`, `cat`, `grep` and their aliases, optionally piped through `Select-Object`,
+   `Sort-Object`, `Format-*`, `Measure-Object`, `head` or `wc`) with no redirection
+   other than discarding stderr, no subexpression, script block, grouping or call
+   operator, and no pipeline stage outside that list
+   (`clio_agent/tools/shell_read_only.py`). Anything the classifier cannot prove
+   stays a non-read. A read returns `allow` **before** the mode lock and
    records no tool-action permission row, in every `session.mode`. This does not
    grant access to a new folder: a managed built-in file call outside permitted
    roots parks on a `kind="folder_access"` request first.
