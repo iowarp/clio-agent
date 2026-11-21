@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 MCP_APP_SERVER_STOPPED = "mcp_app_server_stopped"
 
-__all__ = ["MCP_APP_SERVER_STOPPED", "admitted", "server_stopped"]
+__all__ = ["MCP_APP_SERVER_STOPPED", "admitted", "server_stopped", "watch_views"]
 
 
 def _canonical_root(app: Any, sid: str) -> str:
@@ -61,19 +61,69 @@ def _current_fleet(app: Any, sid: str) -> Any:
     return getattr(agent, "tool_executor", None)
 
 
+def _inner(fleet: Any) -> Any:
+    return getattr(fleet, "_async_executor", fleet)
+
+
 def admitted(app: Any, record: Any) -> None:
-    """Stamp ``record`` with the fleet whose server opened it."""
+    """Stamp ``record`` with the fleet whose server opened it, and that server's start."""
+    from clio_agent.tools.namespace_instances import generation  # noqa: PLC0415
+
     try:
         fleet = _current_fleet(app, record.session_id)
         record.fleet = weakref.ref(fleet) if fleet is not None else None
     except TypeError:  # an executor that cannot be weakly referenced: liveness unknown
         record.fleet = None
+        return
+    if fleet is not None:
+        record.instance_generation = generation(
+            fleet, getattr(record, "source_namespace", None) or ""
+        )
 
 
 def server_stopped(record: Any) -> bool:
-    """Whether the fleet whose server opened ``record`` has been closed."""
+    """Whether the server that opened ``record`` stopped: its fleet closed, or the fleet
+    stopped that namespace's server since (MI1: one server per connector per folder)."""
+    from clio_agent.tools.namespace_instances import generation  # noqa: PLC0415
+
     ref = getattr(record, "fleet", None)
     if ref is None:
         return False  # not stamped: nothing known, never dropped on a guess
     fleet = ref()
-    return fleet is None or bool(getattr(fleet, "closed", False))
+    if fleet is None or bool(getattr(fleet, "closed", False)):
+        return True
+    stamped = getattr(record, "instance_generation", 0)
+    return generation(fleet, getattr(record, "source_namespace", None) or "") != stamped
+
+
+def watch_views(registry: Any) -> None:
+    """Tell the tools layer which namespaces' servers draw open views (MI1).
+
+    A route heal does not replace a server whose views are open; it is retried once
+    they close. Registered once per registry, for its lifetime.
+    """
+    from clio_agent.tools import namespace_instances  # noqa: PLC0415
+
+    ref = weakref.ref(registry)
+    remove: list[Any] = []
+
+    def open_views(executor: Any, namespace: str) -> str:
+        current = ref()
+        if current is None:
+            for undo in remove:
+                undo()
+            return ""
+        with current._lock:
+            records = tuple(current._records.values())
+        for record in records:
+            fleet = record.fleet() if record.fleet is not None else None
+            if (
+                fleet is not None
+                and record.source_namespace == namespace
+                and _inner(fleet) is executor
+                and not server_stopped(record)
+            ):
+                return "open_views"
+        return ""
+
+    remove.append(namespace_instances.add_in_use_probe(open_views))

@@ -117,3 +117,48 @@ def test_the_close_notice_is_a_transient_session_event() -> None:
         "app_instance_id": "app_1",
         "reason": "server_stopped",
     }
+
+
+def test_a_view_whose_server_was_stopped_and_replaced_is_dropped() -> None:
+    """MI1: the fleet stopped the namespace's server (superseded or healed); the view
+    it drew is dead even though the fleet is open, so it closes with Reopen."""
+    from clio_agent.tools import namespace_instances
+
+    registry, closed = _registry()
+    fleet = _Fleet()
+    record = _open(registry)
+    record.fleet = weakref.ref(fleet)
+    record.instance_generation = namespace_instances.generation(fleet, "viz")
+    assert registry.records_for_session("sess_a") == [record]
+
+    namespace_instances._bump(fleet, "other")  # another connector's server: unaffected
+    assert registry.records_for_session("sess_a") == [record]
+    namespace_instances._bump(fleet, "viz")
+    assert registry.records_for_session("sess_a") == []
+    assert closed == [(record.app_instance_id, "server_stopped")]
+
+
+def test_an_open_view_keeps_its_server_from_a_route_heal() -> None:
+    from clio_agent.tools import namespace_instances
+
+    registry, _closed = _registry()
+    inner = _Fleet()
+    fleet = _Fleet()
+    fleet._async_executor = inner  # type: ignore[attr-defined]
+    record = _open(registry)
+    record.fleet = weakref.ref(fleet)
+    probes = len(namespace_instances._PROBES)
+    mcp_app_fleet.watch_views(registry)
+    try:
+        assert namespace_instances.in_use(inner, "viz") == "open_views"
+        assert namespace_instances.in_use(inner, "notebook") == ""
+        assert namespace_instances.in_use(_Fleet(), "viz") == ""
+        registry.remove(record.app_instance_id)
+        assert namespace_instances.in_use(inner, "viz") == ""
+    finally:
+        del registry
+        import gc
+
+        gc.collect()
+        assert namespace_instances.in_use(inner, "viz") == ""  # a gone registry unhooks
+        assert len(namespace_instances._PROBES) == probes

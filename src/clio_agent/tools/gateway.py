@@ -174,11 +174,17 @@ def _proxy_for_spec(
 
     # Surface upstream connection failures and close the shared backend only
     # when its owning proxy lifetime ends, after all borrowed call clients exit.
-    return FastMCPProxy(
+    proxy = FastMCPProxy(
         client_factory=_client_factory,
         provider_error_strategy="raise",
         lifespan=owned_transport_lifespan(transport),
     )
+    if spec.transport == "stdio":
+        from clio_agent.tools import namespace_instances  # noqa: PLC0415
+
+        # One live server of this connector per folder (MI1).
+        namespace_instances.register(proxy, spec.name, cwd, transport)
+    return proxy
 
 
 def _proxy_factory_accepts_cwd(factory: Callable[..., FastMCP]) -> bool:

@@ -129,6 +129,11 @@ def _install(executor: Any, namespace: str, spec: Any, root: str) -> None:
             inner_specs[namespace] = spec
         if proxy is not None:
             replaced = inner._namespace_servers.get(namespace)
+            stop = getattr(executor, "stop_namespace_instance", None)
+            if replaced is not None and callable(stop):
+                # MI1: the replaced proxy's own kept-alive server stops before the new
+                # one can start in the same folder.
+                stop(namespace, "namespace_rebound")
             inner._namespace_servers[namespace] = proxy
             # CV-N2: a connection retained on the replaced proxy keeps its server running.
             proxies_dropped(root, (replaced,), "namespace_rebound")
