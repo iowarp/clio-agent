@@ -74,7 +74,7 @@ def ask_outside_sandbox(
     policy_action, plan_deny_message = gate._policy_detail_for_tool(
         app, session_id=sid, session=current, tool_name=name, args=args, mode=mode
     )
-    subject = gate.action_subject(name)
+    subject = gate.action_subject(name, args)
     if policy_action == "deny":
         layered = layers.Layered("deny", "rule", "outside_sandbox")
         return gate._layered_deny(app, sid, name, args, subject, layered, mode, plan_deny_message)

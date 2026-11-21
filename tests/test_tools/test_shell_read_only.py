@@ -168,3 +168,68 @@ def test_durable_submission_keeps_a_shell_read_out_of_the_plan_lock(
         grant_resolver.resolve("tool", "shell_bash", policies=person_deny, session_id="s", mode="")
         == "deny"
     )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "& $env:CLIO_PYTHON 'D:\\work\\prepare_wing_cfd.py'",
+        "& $env:CLIO_UV run --no-project --python $env:CLIO_PYTHON --with cadquery "
+        "--with trimesh 'D:\\work\\naca0012_wing.py'; exit $LASTEXITCODE",
+        "$r = gh api repos/o/r/commits | ConvertFrom-Json; $r[0].sha",
+        "python -c \"print('a > b')\"",
+        "uv run --with numpy solve.py 2>&1",
+        "New-Item -ItemType Directory -Force out",
+        "Copy-Item a.step b.step",
+        "Get-Command uv",
+    ],
+)
+def test_running_a_program_is_a_shell_command_not_destructive(command: str) -> None:
+    assert not shell_read_only.command_is_destructive(command)
+    assert shell_read_only.shell_call_subject({"command": command}) == "shell command"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "Remove-Item -Recurse out",
+        "ri out -Force; python run.py",
+        "Get-ChildItem *.tmp | Remove-Item",
+        "gci | ForEach-Object { del $_ }",
+        "rm -rf build",
+        "/bin/rm a.txt",
+        "python mesh.py > mesh.log",
+        "Set-Content a.txt 'x'",
+        "'x' | Out-File a.txt",
+        "Move-Item a b",
+        "git reset --hard HEAD~1",
+        "git clean -fdx",
+        "find . -name '*.o' -delete",
+        "sed -i 's/a/b/' f.txt",
+        "[IO.File]::WriteAllText('a.txt', 'x')",
+        "gh api -X DELETE repos/o/r/git/refs/heads/x",
+        'pwsh -Command "Remove-Item x"',
+        "Stop-Process -Id 4242",
+    ],
+)
+def test_deleting_overwriting_or_killing_is_destructive(command: str) -> None:
+    assert shell_read_only.command_is_destructive(command)
+    assert shell_read_only.shell_call_subject({"command": command}) == "destructive tool"
+
+
+def test_an_unreadable_or_unsandboxed_shell_call_stays_destructive() -> None:
+    subject = shell_read_only.shell_call_subject
+    assert subject(None) == "destructive tool"
+    assert subject({}) == "destructive tool"
+    assert subject({"command": "  "}) == "destructive tool"
+    assert subject({"command": "python run.py", "outside_sandbox": True}) == "destructive tool"
+    assert subject({"command": "x" * 5000}) == "destructive tool"
+
+
+def test_the_gate_noun_names_a_shell_call_by_its_command() -> None:
+    from clio_agent.tools.catalog import action_subject
+
+    assert action_subject("shell_bash", {"command": "python run.py"}) == "shell command"
+    assert action_subject("shell_bash", {"command": "rm -rf out"}) == "destructive tool"
+    assert action_subject("shell_bash") == "destructive tool"
+    assert action_subject("fs_write_file", {"path": "a"}) == "destructive tool"

@@ -22,7 +22,14 @@ import shutil
 from collections.abc import Mapping
 from typing import Any
 
-__all__ = ["SHELL_TOOL_NAMES", "command_is_read_only", "shell_call_is_read_only", "shell_dialect"]
+__all__ = [
+    "SHELL_TOOL_NAMES",
+    "command_is_destructive",
+    "command_is_read_only",
+    "shell_call_is_read_only",
+    "shell_call_subject",
+    "shell_dialect",
+]
 
 #: The gate sees the shell tool under its catalog name or the native task name.
 SHELL_TOOL_NAMES = frozenset({"shell_bash", "bash"})
@@ -233,3 +240,116 @@ def shell_call_is_read_only(args: Mapping[str, Any] | None) -> bool:
     if not isinstance(args, Mapping) or args.get("outside_sandbox"):
         return False
     return command_is_read_only(args.get("command"), shell_dialect())
+
+
+#: Commands that delete, overwrite, move or kill when they start a segment. Matched
+#: case-insensitively in every dialect, so a POSIX ``rm`` on Windows still counts.
+_DESTRUCTIVE_COMMANDS = frozenset(
+    {
+        # POSIX
+        "rm",
+        "rmdir",
+        "unlink",
+        "shred",
+        "truncate",
+        "dd",
+        "mv",
+        "kill",
+        "pkill",
+        "killall",
+        # PowerShell aliases and cmd.exe
+        "ri",
+        "del",
+        "erase",
+        "rd",
+        "mi",
+        "move",
+        "clc",
+        "sc",
+        "spps",
+        "format",
+    }
+)
+
+#: PowerShell cmdlets that delete, overwrite, move or kill. Their names are distinctive,
+#: so they count anywhere in the line (a nested ``pwsh -Command "Remove-Item ..."`` too).
+_DESTRUCTIVE_CMDLETS = re.compile(
+    r"(?<![\w-])(?:remove-(?:item|itemproperty)|clear-(?:content|item|disk|recyclebin)"
+    r"|set-content|out-file|move-item|stop-process|format-volume|initialize-disk)(?![\w-])",
+    re.I,
+)
+
+#: Arguments or .NET calls that delete or overwrite whatever command carries them.
+_DESTRUCTIVE_PATTERNS = re.compile(
+    r"(?<![\w-])(?:-delete|--delete|--force|-rf|-fr)(?![\w-])"
+    r"|(?<![\w-])(?:-X|--method|-Method)\s*['\"]?delete\b"
+    r"|(?<![\w-])sed\s+(?:-\w*i|--in-place)"
+    r"|(?<![\w-])git\s+(?:reset\s+--hard|clean|checkout\s+--|restore|push\s+(?:-f|--force))"
+    r"|::\s*(?:delete|move|replace|writeall\w*)\s*\(",
+    re.I,
+)
+
+_REDIRECT = re.compile(r">")
+
+
+def _command_words(command: str) -> tuple[list[str], str]:
+    """The first word of each segment, and the line with quoted text removed."""
+
+    words: list[str] = []
+    unquoted: list[str] = []
+    current: list[str] = []
+    quote = ""
+    for ch in command:
+        if quote:
+            if ch == quote:
+                quote = ""
+            current.append(" ")
+            continue
+        if ch in "\"'":
+            quote = ch
+            current.append(" ")
+            continue
+        unquoted.append(ch)
+        if ch in "|;&\n\r({":
+            words.extend(("".join(current).split() or [""])[:1])
+            current = []
+            unquoted.append(" ")
+            continue
+        current.append(ch)
+    words.extend(("".join(current).split() or [""])[:1])
+    return [w.lower() for w in words if w], "".join(unquoted)
+
+
+def command_is_destructive(command: str) -> bool:
+    """Whether ``command`` visibly deletes, overwrites, moves or kills something.
+
+    This names a call for the person approving it; it never decides whether the call
+    asks. Anything this cannot read (an over-long line, a non-string) counts as
+    destructive. A command that only runs a program or script is not destructive by
+    this test, although the program may still write inside the fence.
+    """
+
+    if not isinstance(command, str) or len(command) > _MAX_COMMAND_CHARS:
+        return True
+    if _DESTRUCTIVE_CMDLETS.search(command) or _DESTRUCTIVE_PATTERNS.search(command):
+        return True
+    words, unquoted = _command_words(_HARMLESS_REDIRECT.sub(" ", command))
+    if any(word.rsplit("/", 1)[-1] in _DESTRUCTIVE_COMMANDS for word in words):
+        return True
+    return bool(_REDIRECT.search(unquoted))
+
+
+def shell_call_subject(args: Mapping[str, Any] | None) -> str:
+    """The gate's noun for a shell call that is not a read.
+
+    ``shell command`` for one that runs a program or script, ``destructive tool`` for
+    one that visibly deletes, overwrites, moves or kills, or that runs outside the
+    sandbox, or whose command cannot be read.
+    """
+
+    if not isinstance(args, Mapping) or args.get("outside_sandbox"):
+        return "destructive tool"
+    command = args.get("command")
+    if not isinstance(command, str) or not command.strip() or command_is_destructive(command):
+        return "destructive tool"
+    return "shell command"

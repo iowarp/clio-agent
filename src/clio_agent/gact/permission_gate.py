@@ -648,7 +648,7 @@ def _make_permission_gate(app: "FastAPI"):
 
         folders = requested_folders(name, args)
         external = _is_external_mcp_permission_context(context)
-        subject = "external MCP tool" if external else action_subject(name)
+        subject = "external MCP tool" if external else action_subject(name, args)
         # Prefer the session currently driving the turn. Recency is
         # only a fallback for truly out-of-band tool calls.
         sid, current = _resolve_tool_session(app)
