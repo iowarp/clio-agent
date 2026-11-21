@@ -1,4 +1,4 @@
-"""Refuse a daemon spawn whose IPC socket path cannot be bound (owner module).
+"""Refuse a daemon spawn whose IPC sockets cannot be bound (owner module).
 
 clio-core keeps its IPC socket, segment links and pid record in a per-user directory:
 ``$CLIO_MEMFD_DIR`` when set, else ``/tmp/clio_$USER`` (``%TEMP%\\clio_%USERNAME%``
@@ -19,6 +19,7 @@ instead of surfacing as a crash with an empty log tail.
 from __future__ import annotations
 
 import os
+import stat
 import sys
 import tempfile
 from collections.abc import Mapping
@@ -26,6 +27,7 @@ from collections.abc import Mapping
 from clio_agent.arc.runtime_crash import DaemonSpawnFailed
 
 CLIO_CORE_IPC_PATH_TOO_LONG = "clio_core_ipc_path_too_long"
+CLIO_CORE_MEMFD_DIR_UNSAFE = "clio_core_memfd_dir_unsafe"
 
 #: ``sizeof(sockaddr_un::sun_path)`` per platform; the path must be strictly shorter.
 _SUN_PATH_LINUX_WINDOWS = 108
@@ -44,6 +46,10 @@ def memfd_dir(env: Mapping[str, str], platform: str | None = None) -> str:
     """The per-user directory clio-core will use for ``env`` (mirrors ``GetMemfdDir``)."""
     override = env.get("CLIO_MEMFD_DIR", "")
     if override:
+        # NormalizePath: a Windows verbatim prefix is stripped (\\?\C:\dir -> C:\dir).
+        for prefix in ("\\\\?\\", "//?/"):
+            if override.startswith(prefix):
+                return override[len(prefix) :]
         return override
     name = platform or sys.platform
     if name.startswith("win"):
@@ -56,6 +62,27 @@ def memfd_dir(env: Mapping[str, str], platform: str | None = None) -> str:
 def ipc_socket_path(env: Mapping[str, str], port: int, platform: str | None = None) -> str:
     """``<memfd dir>/clio_<port>.ipc``, the socket the daemon listens on."""
     return f"{memfd_dir(env, platform)}/clio_{port}.ipc"
+
+
+def _uses_local_zmq_ipc(env: Mapping[str, str], platform: str) -> bool:
+    """``UseLocalZmqIpc``: on by default on macOS, ``CLIO_ZMQ_LOCAL_IPC`` overrides."""
+    stated = env.get("CLIO_ZMQ_LOCAL_IPC")
+    if stated is not None:
+        return stated not in ("", "0")
+    return platform == "darwin"
+
+
+def ipc_socket_paths(env: Mapping[str, str], port: int, platform: str | None = None) -> list[str]:
+    """Every Unix socket the daemon must listen on; it exits when any one fails.
+
+    On macOS the local client ROUTER also runs over ``clio_zmq_<port+3>.ipc``
+    (clio-core ``LocalZmqIpcPath``), four bytes longer than the main socket.
+    """
+    name = platform or sys.platform
+    paths = [ipc_socket_path(env, port, name)]
+    if _uses_local_zmq_ipc(env, name):
+        paths.append(f"{memfd_dir(env, name)}/clio_zmq_{port + 3}.ipc")
+    return paths
 
 
 class ClioCoreIpcPathTooLong(DaemonSpawnFailed):
@@ -76,9 +103,58 @@ class ClioCoreIpcPathTooLong(DaemonSpawnFailed):
         )
 
 
+class ClioCoreMemfdDirUnsafe(DaemonSpawnFailed):
+    """The per-user directory is not this user's private directory; the daemon exits 1."""
+
+    degradation_reason = CLIO_CORE_MEMFD_DIR_UNSAFE
+
+    def __init__(self, path: str, why: str) -> None:
+        self.path = path
+        super().__init__(
+            f"clio-core cannot start (reason={CLIO_CORE_MEMFD_DIR_UNSAFE}): {path!r} {why}. "
+            "clio-core keeps its IPC socket and shared-memory links there and, from "
+            "iowarp-core 2.5, uses it only when it is a real directory owned by this user "
+            "that no one else can write. Remove it, fix its owner or mode (0700), or point "
+            "CLIO_MEMFD_DIR at a private directory."
+        )
+
+
+def _memfd_dir_problem(path: str) -> str | None:
+    """Why clio-core's ``CheckMemfdDir`` would call ``path`` unsafe (POSIX), or None."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return None  # the daemon creates it (mode 0700)
+    except OSError as exc:
+        return f"cannot be inspected ({exc.strerror})"
+    if stat.S_ISLNK(st.st_mode):
+        return "is a symbolic link"
+    if not stat.S_ISDIR(st.st_mode):
+        return "is not a directory"
+    if st.st_uid != os.geteuid():  # type: ignore[attr-defined]  # POSIX only
+        return f"belongs to uid {st.st_uid}, not this user"
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        return f"is writable by group or others (mode {stat.S_IMODE(st.st_mode):o})"
+    return None
+
+
 def require_ipc_path_fits(env: Mapping[str, str], port: int, platform: str | None = None) -> None:
-    """Raise :class:`ClioCoreIpcPathTooLong` when the daemon could not bind its socket."""
-    path = ipc_socket_path(env, port, platform)
+    """Raise a typed spawn failure when the daemon could not bind its sockets.
+
+    :class:`ClioCoreIpcPathTooLong` for a socket path over ``sun_path``, and on
+    POSIX :class:`ClioCoreMemfdDirUnsafe` for a directory clio-core would refuse.
+    """
     capacity = sun_path_capacity(platform)
-    if len(path.encode("utf-8")) >= capacity:
-        raise ClioCoreIpcPathTooLong(path, capacity)
+    for path in ipc_socket_paths(env, port, platform):
+        if len(path.encode("utf-8")) >= capacity:
+            raise ClioCoreIpcPathTooLong(path, capacity)
+    if platform is None and not sys.platform.startswith("win"):
+        require_private_memfd_dir(env)
+
+
+def require_private_memfd_dir(env: Mapping[str, str]) -> None:
+    """Raise :class:`ClioCoreMemfdDirUnsafe` when clio-core would refuse the dir (POSIX)."""
+    directory = memfd_dir(env)
+    problem = _memfd_dir_problem(directory)
+    if problem is not None:
+        raise ClioCoreMemfdDirUnsafe(directory, problem)

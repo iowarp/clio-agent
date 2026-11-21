@@ -53,10 +53,15 @@ class Native:
         return Future(SimpleNamespace(remaining_space=self.free))
 
     def AsyncRegisterTarget(
-        self, path: str, media: Any, size: int, query: Any, pool: Any
+        self, path: str, media: Any, size: int, query: Any, pool: Any, *, persistence_level: int
     ) -> Future:  # noqa: N802
         tiers = yaml.safe_load(self.config.read_text())["compose"][1]["storage"]
         assert str(tiers[-1]["path"]) + "_node0" == path
+        # iowarp-core 2.5 refuses an unlabelled late target on a persistent core (rc 16).
+        assert (
+            persistence_level
+            == {"volatile": 0, "temporary": 1, "long_term": 2}[tiers[-1]["persistence_level"]]
+        )
         self.registered.append((path, size, pool))
         if self.register_code == 0:
             self.free = size

@@ -95,3 +95,27 @@ def test_adopting_a_volatile_daemon_cannot_report_a_durable_attach(
         assert state.config_path == str(effective)
     finally:
         clio_core_attach.reset_attach_state()
+
+
+def _core(tiers: str, durability: str = "") -> str:
+    stated = f"    durability: {durability}\n" if durability else ""
+    return "compose:\n  - mod_name: clio_cte_core\n" + stated + "    storage:\n" + tiers
+
+
+_FILE_TEMPORARY = (
+    '      - path: "s.bin"\n        bdev_type: "file"\n        persistence_level: "temporary"\n'
+)
+_RAM_VOLATILE = '      - path: "cte_ram_tier"\n        bdev_type: "ram"\n'
+
+
+def test_one_volatile_tier_makes_the_whole_core_volatile() -> None:
+    """iowarp-core 2.5 (Config::ResolveDurability): unstated durability is persistent
+    only when every device is durable, so a RAM data tier beside the file tier keeps no
+    WAL and the file tier's records are lost on restart."""
+    assert config_is_durable(_core(_FILE_TEMPORARY))
+    assert not config_is_durable(_core(_FILE_TEMPORARY + _RAM_VOLATILE))
+
+
+def test_an_explicit_durability_wins() -> None:
+    assert config_is_durable(_core(_FILE_TEMPORARY + _RAM_VOLATILE, "persistent"))
+    assert not config_is_durable(_core(_FILE_TEMPORARY, "volatile"))

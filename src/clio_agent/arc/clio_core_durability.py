@@ -50,14 +50,36 @@ def _tiers(config: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _core_persistent(config: dict[str, Any], tiers: list[dict[str, Any]]) -> bool:
+    """clio-core 2.5's own rule (``Config::ResolveDurability``): an explicit
+    ``durability`` wins; unstated, the core keeps a WAL only when it has devices and
+    every one is labelled durable. One volatile tier makes the whole core volatile."""
+    stated = {
+        str(module.get("durability", "")).lower()
+        for module in config.get("compose") or []
+        if isinstance(module, dict) and module.get("mod_name") == "clio_cte_core"
+    } - {""}
+    if stated:
+        return stated == {"persistent"}
+    return bool(tiers) and all(
+        str(tier.get("persistence_level", "volatile")).lower() in DURABLE_LEVELS for tier in tiers
+    )
+
+
 def config_is_durable(text: str) -> bool:
-    """Whether a clio-core config text has a non-RAM tier at a durable persistence level."""
+    """Whether a clio-core config keeps records across a restart.
+
+    It needs a non-RAM tier at a durable persistence level, and the core itself must be
+    persistent under clio-core's rule (:func:`_core_persistent`).
+    """
     config = yaml.safe_load(text) or {}
-    return any(
+    tiers = _tiers(config)
+    has_durable_file_tier = any(
         str(tier.get("bdev_type", "")).lower() != "ram"
         and str(tier.get("persistence_level", "volatile")).lower() in DURABLE_LEVELS
-        for tier in _tiers(config)
+        for tier in tiers
     )
+    return has_durable_file_tier and _core_persistent(config, tiers)
 
 
 def ensure_seeded_config_durable(path: Path) -> None:

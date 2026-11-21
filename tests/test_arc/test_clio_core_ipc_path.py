@@ -20,9 +20,13 @@ import pytest
 
 from clio_agent.arc.clio_core_ipc_path import (
     CLIO_CORE_IPC_PATH_TOO_LONG,
+    CLIO_CORE_MEMFD_DIR_UNSAFE,
     ClioCoreIpcPathTooLong,
+    ClioCoreMemfdDirUnsafe,
     ipc_socket_path,
+    ipc_socket_paths,
     require_ipc_path_fits,
+    require_private_memfd_dir,
     sun_path_capacity,
 )
 from clio_agent.arc.init_degradation import ArcStoreUnavailableError
@@ -38,6 +42,49 @@ def test_socket_path_follows_user_then_memfd_override() -> None:
     assert ipc_socket_path(env, 9413, "linux") == "/run/clio/clio_9413.ipc"
 
 
+def test_macos_also_binds_the_local_zmq_socket() -> None:
+    env = {"USER": "ana"}
+    assert ipc_socket_paths(env, 9413, "darwin") == [
+        "/tmp/clio_ana/clio_9413.ipc",
+        "/tmp/clio_ana/clio_zmq_9416.ipc",
+    ]
+    assert ipc_socket_paths({**env, "CLIO_ZMQ_LOCAL_IPC": "0"}, 9413, "darwin") == [
+        "/tmp/clio_ana/clio_9413.ipc"
+    ]
+    assert len(ipc_socket_paths({**env, "CLIO_ZMQ_LOCAL_IPC": "1"}, 9413, "linux")) == 2
+
+
+def test_windows_verbatim_memfd_dir_is_normalized() -> None:
+    env = {"CLIO_MEMFD_DIR": "\\\\?\\C:\\clio"}
+    assert ipc_socket_path(env, 9413, "win32") == "C:\\clio/clio_9413.ipc"
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX ownership check")
+@pytest.mark.parametrize("kind", ["group_writable", "symlink", "file"])
+def test_an_unsafe_memfd_dir_is_refused_typed(tmp_path: Path, kind: str) -> None:
+    target = tmp_path / "memfd"
+    if kind == "group_writable":
+        target.mkdir()
+        target.chmod(0o770)
+    elif kind == "symlink":
+        (tmp_path / "real").mkdir(mode=0o700)
+        target.symlink_to(tmp_path / "real")
+    else:
+        target.write_text("", encoding="utf-8")
+    with pytest.raises(ClioCoreMemfdDirUnsafe) as caught:
+        require_private_memfd_dir({"CLIO_MEMFD_DIR": str(target)})
+    assert caught.value.degradation_reason == CLIO_CORE_MEMFD_DIR_UNSAFE
+    unavailable = ArcStoreUnavailableError(error=caught.value, config_path="cte.yaml")
+    assert unavailable.reason == CLIO_CORE_MEMFD_DIR_UNSAFE
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX ownership check")
+def test_a_private_or_missing_memfd_dir_passes(tmp_path: Path) -> None:
+    require_private_memfd_dir({"CLIO_MEMFD_DIR": str(tmp_path / "absent")})
+    (tmp_path / "private").mkdir(mode=0o700)
+    require_private_memfd_dir({"CLIO_MEMFD_DIR": str(tmp_path / "private")})
+
+
 def test_capacity_is_platform_specific() -> None:
     assert sun_path_capacity("linux") == 108
     assert sun_path_capacity("win32") == 108
@@ -48,11 +95,12 @@ def test_capacity_is_platform_specific() -> None:
     ("user_len", "platform", "fits"),
     [
         # /tmp/clio_ (10) + USER + /clio_22483.ipc (15) must stay under sun_path;
-        # 82 starts and 83 exits 1 on Linux against the real 2.5.0 daemon.
+        # 82 starts and 83 exits 1 on Linux against the real 2.5.0 daemon. macOS also
+        # binds /clio_zmq_22486.ipc (19) and has a 104-byte sun_path.
         (82, "linux", True),
         (83, "linux", False),
-        (78, "darwin", True),
-        (79, "darwin", False),
+        (74, "darwin", True),
+        (75, "darwin", False),
     ],
 )
 def test_boundary_matches_the_daemon(user_len: int, platform: str, fits: bool) -> None:

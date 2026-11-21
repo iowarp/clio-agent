@@ -37,6 +37,10 @@ _MAX_TARGETS = 8
 _MAX_TOTAL = 500 * _GIB
 
 
+#: clio-core's ``persistence_level`` labels and their native values (core_bindings.cc).
+_PERSISTENCE_LEVELS = {"volatile": 0, "temporary": 1, "long_term": 2}
+
+
 def _digest(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
@@ -110,6 +114,20 @@ def _additional_bytes(store: Any, tag_id: Any, name: str, payload_bytes: int) ->
     return max(0, payload_bytes - int(future.result(0)))
 
 
+def _planned_persistence(plan: dict[str, Any]) -> int:
+    """Native persistence level of the planned tier (a copy of the config's first tier).
+
+    iowarp-core 2.5 resolves an unlabelled target only against the devices in the
+    config the daemon loaded at start, so a target added later counts as volatile and
+    a persistent core refuses it (rc 16). The level is passed explicitly instead.
+    """
+    tiers = yaml.safe_load(plan["config_text"])["compose"][1]["storage"]
+    label = str(tiers[int(plan["index"])].get("persistence_level", "temporary"))
+    if label not in _PERSISTENCE_LEVELS:
+        raise ValueError(f"unknown clio-core persistence_level {label!r} in the growth plan")
+    return _PERSISTENCE_LEVELS[label]
+
+
 def _register(store: Any, plan: dict[str, Any]) -> None:
     index = int(plan["index"])
     future = await_future(
@@ -119,6 +137,7 @@ def _register(store: Any, plan: dict[str, Any]) -> None:
             int(plan["capacity"]),
             store._cte.PoolQuery.Local(),
             store._cte.PoolId(512 + index, 1),
+            persistence_level=_planned_persistence(plan),
         ),
         op_name="capacity_register",
     )
