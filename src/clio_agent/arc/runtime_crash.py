@@ -36,6 +36,8 @@ CRASH_RECORD_NAME = "clio-runtime-crash.json"
 #: unbounded payloads in error details.
 _LOG_TAIL_LINES = 30
 _LOG_TAIL_MAX_BYTES = 64 * 1024
+#: How long the crash watcher waits for the log pump to write the daemon's last lines.
+_LOG_DRAIN_WAIT_S = 2.0
 
 # ``clio_run stop`` terminates the daemon with a non-zero platform status on
 # Windows (observed as 15).  The watcher cannot infer intent from that status
@@ -154,19 +156,26 @@ def watch_daemon_process(
     log_path: Path,
     state_dir: Path,
     log_offset: int = 0,
+    log_drained: threading.Event | None = None,
 ) -> threading.Thread:
     """Watch the spawned daemon; write a typed crash record on abnormal exit.
 
     Returns the (daemon) watcher thread so tests can join it. A clean exit
     (rc == 0) writes nothing — stopping the daemon is not a crash.
     ``log_offset`` is the log size at spawn, so the tail never shows an earlier
-    daemon's output as this one's last words (F019).
+    daemon's output as this one's last words (F019). ``log_drained`` is set by the
+    log pump's reaper once the pump has written everything the daemon said: the tail
+    is read after it (bounded), because a daemon that dies at once (iowarp-core 2.5's
+    refusal to start half-bound) otherwise leaves its one ERROR line still in the pipe
+    and the record says "no daemon log output". ``log_tail_settled`` records whether
+    the pump finished in time.
     """
 
     def _watch() -> None:
         exit_code = proc.wait()
         if exit_code == 0 or _consume_expected_exit(proc.pid):
             return
+        settled = log_drained.wait(_LOG_DRAIN_WAIT_S) if log_drained is not None else None
         record = {
             "pid": proc.pid,
             "exit_code": exit_code,
@@ -174,6 +183,7 @@ def watch_daemon_process(
             "crashed_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
             "log_tail": _log_tail(Path(log_path), log_offset),
             "log_path": str(log_path),
+            "log_tail_settled": settled,
         }
         try:
             atomic_write_text(crash_record_path(Path(state_dir)), json.dumps(record, indent=2))

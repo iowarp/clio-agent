@@ -129,6 +129,8 @@ class DaemonLogSink:
 
     target: Union[int, IO[bytes]]
     pump_pid: int | None = None
+    #: Set once the pump has exited, i.e. written the daemon's last line (None: no pump).
+    pump_exited: threading.Event | None = None
 
     def close(self) -> None:
         """Release the parent's handle once the daemon holds its own copy."""
@@ -202,8 +204,14 @@ def start_log_pump(
         os.close(read_fd)
     # Reap the pump when it exits at EOF, so a long-lived server (or the test suite)
     # does not keep one zombie per daemon spawn. Daemon thread: never blocks exit.
-    threading.Thread(target=proc.wait, name="clio-runtime-log-pump-reaper", daemon=True).start()
-    return DaemonLogSink(target=write_fd, pump_pid=proc.pid)
+    exited = threading.Event()
+
+    def _reap() -> None:
+        proc.wait()
+        exited.set()
+
+    threading.Thread(target=_reap, name="clio-runtime-log-pump-reaper", daemon=True).start()
+    return DaemonLogSink(target=write_fd, pump_pid=proc.pid, pump_exited=exited)
 
 
 def open_daemon_log_sink(log_path: Path, state_dir: Path, pidfile: Path) -> DaemonLogSink:

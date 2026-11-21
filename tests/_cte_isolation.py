@@ -63,6 +63,9 @@ PRIVATE_METADATA_SEGMENT = "32MB"
 PRIVATE_QUEUE_DEPTH = 256
 PRIVATE_RAM_BDEV = "64MB"
 
+#: The account name the per-run ``USER`` is derived from (kept across nested isolation).
+_USER_BASE_ENV = "CLIO_TEST_CTE_USER_BASE"
+
 _PRIVATE_CONFIG_TEMPLATE = """\
 networking:
   port: {port}
@@ -245,7 +248,14 @@ def isolate_cte_env(root: Path, environ: MutableMapping[str, str]) -> CteIsolati
     # daemon spawn and the in-process client attach (both expand the same
     # variable), gives this suite run its own segment namespace and keeps the
     # host daemon's namespace untouchable by tests.
-    user_base = environ.get("USERNAME") or environ.get("USER") or "clio"
+    # The base is the account's own name, recorded on first use: a child that
+    # isolates again (the restart-durability probes do) would otherwise append a
+    # second suffix to the first. clio-core 2.5 puts its IPC socket at
+    # /tmp/clio_$USER/clio_<port>.ipc and refuses to start when that path does not
+    # fit sun_path (108 bytes), which a doubled suffix (90 characters) overflowed.
+    user_base = environ.setdefault(
+        _USER_BASE_ENV, environ.get("USERNAME") or environ.get("USER") or "clio"
+    )
     # A free port may be selected again before either daemon starts. Its
     # number therefore cannot identify a run's shared-memory namespace.
     environ["USER"] = f"{user_base}-cte-{port}-{uuid.uuid4().hex}"

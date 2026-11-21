@@ -30,7 +30,6 @@ from clio_agent import paths
 from clio_agent.arc import (
     clio_core_attach,
     clio_core_wal_repair,
-    core_control_port,
     crashed_clients,
     home_runtime,
     runtime_log,
@@ -71,6 +70,7 @@ from clio_agent.arc.clio_core_indexer import (
     bind_client_to_indexer,
     indexer_pool,
 )
+from clio_agent.arc.clio_core_ipc_path import require_ipc_path_fits
 from clio_agent.arc.clio_core_liveness import (  # noqa: F401 - re-exported for callers/tests
     _DEFAULT_RUNTIME_PORT,
     ClioCoreRuntimeLostError,
@@ -181,6 +181,7 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
     if config_path:
         env["CLIO_SERVER_CONF"] = config_path
     pin_core_child_env(env)
+    require_ipc_path_fits(env, _resolve_runtime_port(config_path))
     state_dir = runtime_state_dir()
     log_path = state_dir / "clio-runtime.log"
     clear_crash_record(state_dir)  # fresh spawn, fresh slate (#1148)
@@ -222,7 +223,13 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
     # The daemon must die loudly in OUR channels (#1148): on abnormal exit the
     # watcher writes a typed crash record that the liveness gate folds into its
     # ClioCoreRuntimeLostError, so a crash is never misread as an env flake.
-    watch_daemon_process(proc, log_path=log_path, state_dir=state_dir, log_offset=log_offset)
+    watch_daemon_process(
+        proc,
+        log_path=log_path,
+        state_dir=state_dir,
+        log_offset=log_offset,
+        log_drained=log_sink.pump_exited,
+    )
     proc_pid = proc.pid
     ctime = _proc_create_time(proc_pid)
     _daemon_pidfile().write_text(
@@ -389,8 +396,6 @@ def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str
         starting = pidfile_live_pid(_daemon_pidfile())
 
         def spawn(at: int) -> None:
-            # Stopgap for clio-core#1355; removal tracked in iowarp/clio-agent#2038.
-            core_control_port.hold_control_port(at)
             _spawn_runtime_daemon(iowarp_core, config_path, log_level)
 
         with runtime_stop.kill_spawned_daemon_on_failure():

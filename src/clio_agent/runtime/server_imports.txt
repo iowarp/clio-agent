@@ -529,6 +529,7 @@ clio_agent/arc/clio_core_file_capacity.py
 clio_agent/arc/clio_core_growth.py
 clio_agent/arc/clio_core_host_migration.py
 clio_agent/arc/clio_core_indexer.py
+clio_agent/arc/clio_core_ipc_path.py
 clio_agent/arc/clio_core_liveness.py
 clio_agent/arc/clio_core_native_preflight.py
 clio_agent/arc/clio_core_relocate.py
@@ -541,7 +542,6 @@ clio_agent/arc/companion_write.py
 clio_agent/arc/context_restore.py
 clio_agent/arc/context_search.py
 clio_agent/arc/context_view.py
-clio_agent/arc/core_control_port.py
 clio_agent/arc/crashed_clients.py
 clio_agent/arc/daemon_progress.py
 clio_agent/arc/fold_sessions.py
