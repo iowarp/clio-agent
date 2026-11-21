@@ -589,7 +589,12 @@ async def execute_shell(
     if outside_sandbox and (refused := confinement.outside_refusal(command, call_id)):
         return refused
     try:
-        confined = confinement.confine(argv, safe_cwd, outside_sandbox=outside_sandbox)
+        confined = confinement.confine(
+            argv,
+            safe_cwd,
+            outside_sandbox=outside_sandbox,
+            temp={key: prepared[key] for key in ("TEMP", "TMP") if key in prepared},
+        )
     except Exception:
         _log_shell_phase(call_id, "confinement", phase_started, outcome="failed")
         raise

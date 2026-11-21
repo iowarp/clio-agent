@@ -471,6 +471,19 @@ to the same folder. Files and sockets still land in that folder, and deleting or
 sweeping a session removes its scratch alias. A name already there that is not the
 user's own link is never used.
 
+Windows' MXC AppContainer replaces a fenced child's `LOCALAPPDATA`, `TEMP` and `TMP`
+with a per-launch `Packages\sandbox.{GUID}\AC` profile that the fence does not grant and
+that is discarded on the next launch (uv failed there with *Access is denied*). Setting
+them before the container starts breaks MXC's own bootstrap, so the child runs under a
+small in-fence shim (`runtime/fence_container_env.py`) that sets them inside: to the
+child's cache folder under `CLIO_AGENT_HOME` (`cache/sandbox/<hash>`, `Temp` beneath it),
+which is granted and the same on every launch. A fenced shell keeps its session scratch
+`TEMP`. `APPDATA` stays the real roaming folder, which holds uv's tools, Pythons and
+credentials and other tools' settings: a fenced child reads it but does not write it, as
+`~/.config` elsewhere. Python's `platformdirs` asks Windows' Known Folder API rather than
+these variables, so inside MXC it still names the per-launch profile; tools built on it
+need their own override (`FASTMCP_HOME`, `CLIO_KIT_CACHE_DIR`).
+
 A fenced MCP server's loopback is its own network namespace's, so a port an MCP App
 declares for its live service (MA23) is not on the host's `127.0.0.1`. CLIO reaches it
 from inside instead: each Linux-fenced child carries `CLIO_FENCE_CHILD` (its egress

@@ -19,9 +19,11 @@ out-of-territory write as ``EROFS`` / ``EACCES`` / ``WinError 5``; the floor let
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
+import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -415,13 +417,11 @@ def _child_cache_env(
         return {}
     target = str(cache_dir)
     redirected = CHILD_CACHE_DIR_ENV_KEYS
-    if (
-        state.mechanism == MECHANISM_CODEX
-        and state.details.get("codex", {}).get("implementation") == "mxc"
-    ):
+    if _is_mxc(state):
         # MXC creates its own package profile and private TEMP. Repointing
         # LOCALAPPDATA before that bootstrap leaves Packages/.../AC/Temp absent,
-        # breaking nested uv workers with Windows errors 3 and 267.
+        # breaking nested uv workers with Windows errors 3 and 267. They are set
+        # inside the container instead (_mxc_container_env).
         redirected = tuple(
             key for key in redirected if key not in {"LOCALAPPDATA", "APPDATA", "TEMP", "TMP"}
         )
@@ -438,6 +438,92 @@ def _child_cache_env(
     # variable, read from the environment, puts the profile in this cache directory.
     overlay["UserInstallation"] = (cache_dir / "libreoffice").as_uri()
     return overlay
+
+
+#: The variables Codex's MXC container replaces with its per-launch ``AC`` profile, which the
+#: fence does not grant and which is discarded on the next launch. ``APPDATA`` is not among
+#: them: MXC keeps the real roaming folder (uv's tools, Pythons and credentials, npm, pip and
+#: gh settings), which a confined child reads but does not write, as ``~/.config`` elsewhere.
+MXC_CONTAINER_ENV_KEYS: tuple[str, ...] = ("LOCALAPPDATA", "TEMP", "TMP")
+_CONTAINER_ENV_SHIM = Path(__file__).with_name("fence_container_env.py")
+
+
+def _is_mxc(state: SandboxResult) -> bool:
+    return (
+        state.mechanism == MECHANISM_CODEX
+        and state.details.get("codex", {}).get("implementation") == "mxc"
+    )
+
+
+def _mxc_container_env(
+    write_roots: Sequence[Path] | Sequence[str],
+    *,
+    state: SandboxResult,
+    chosen: Optional[Mapping[str, str]] = None,
+) -> dict[str, str]:
+    """``LOCALAPPDATA``/``TEMP``/``TMP`` for inside the MXC container, else empty.
+
+    They point at the child's cache folder (``paths.workspace_cache_dir`` of its first root):
+    granted, under ``CLIO_AGENT_HOME`` and the same on every launch, so app data a tool keeps
+    there survives. ``chosen`` carries values the caller picked in granted territory (the
+    shell's session scratch ``TEMP``), which win. Empty when the cache folder is not inside
+    the child's write territory, which leaves MXC's own profile in place rather than
+    pointing a tool at a folder it cannot write.
+    """
+
+    if not write_roots or not _is_mxc(state):
+        return {}
+    cache_dir = paths.workspace_cache_dir(str(write_roots[0]))
+
+    def _key(path: Path | str) -> str:
+        return os.path.normcase(os.path.abspath(str(path)))
+
+    target = _key(cache_dir)
+    granted = any(
+        target == root or target.startswith(root.rstrip("\\/") + os.sep)
+        for root in (_key(item) for item in write_roots)
+    )
+    if not granted:
+        logger.warning(
+            "sandbox container env skipped reason=cache_dir_not_granted dir=%s", cache_dir
+        )
+        return {}
+    temp = cache_dir / "Temp"
+    try:
+        temp.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning(
+            "sandbox container env skipped reason=child_cache_dir_create_failed "
+            "dir=%s error=%s: %s",
+            temp,
+            type(exc).__name__,
+            exc,
+        )
+        return {}
+    environment = {"LOCALAPPDATA": str(cache_dir), "TEMP": str(temp), "TMP": str(temp)}
+    environment.update(
+        {key: value for key, value in (chosen or {}).items() if key in MXC_CONTAINER_ENV_KEYS}
+    )
+    return environment
+
+
+def _with_container_env(
+    command: str, args: Sequence[str], environment: Mapping[str, str]
+) -> tuple[str, list[str]]:
+    """``(command, args)`` run through :mod:`fence_container_env` with ``environment`` set.
+
+    The child gets the command line ``subprocess`` would give it unfenced.
+    """
+
+    line = subprocess.list2cmdline([command, *args])
+    return sys.executable, [
+        "-I",
+        "-S",
+        "-B",
+        str(_CONTAINER_ENV_SHIM),
+        json.dumps(dict(environment), separators=(",", ":")),
+        line,
+    ]
 
 
 class SandboxCompositionError(RuntimeError):
@@ -511,6 +597,7 @@ def wrap_confined(
     cwd: Path | str | None = None,
     office: bool = False,
     egress_root: Path | str | None = None,
+    container_env: Optional[Mapping[str, str]] = None,
 ) -> ConfinedSpawn:
     """Compose the confined spawn plan for a resolved ``(command, args)`` (#975/#976).
 
@@ -527,6 +614,9 @@ def wrap_confined(
     private short directory for LibreOffice's single-instance pipe that :meth:`release` removes).
     ``egress_root`` is the workspace the child's network egress belongs to (deny mode and
     approvals are per workspace); without it the first write root is used.
+    ``container_env`` names ``TEMP``/``TMP``/``LOCALAPPDATA`` values the caller chose in
+    granted territory; on Windows' MXC fence they are set inside the container, where MXC
+    would otherwise replace them (:func:`_mxc_container_env`). Elsewhere it is unused.
     """
     resolved_state = state or current_state()
     if resolved_state is None:
@@ -603,6 +693,9 @@ def wrap_confined(
         # from inside the sandbox through the relay, so the chokepoint records and asks.
         cmd, arg_list, forward_env = wrap_forwarding(cmd, arg_list, net_env)
         env_overlay.update(forward_env)
+        container_env = _mxc_container_env(write_roots, state=resolved_state, chosen=container_env)
+        if container_env:
+            cmd, arg_list = _with_container_env(cmd, arg_list, container_env)
         try:
             cmd, arg_list = _compose_fence_prefix(
                 resolved_state,
