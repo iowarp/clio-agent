@@ -50,9 +50,18 @@ def approved_source(
 
 
 def connection_approval(
-    service: StorageService, workspace_id: str, arguments: dict[str, Any]
+    service: StorageService,
+    workspace_id: str,
+    arguments: dict[str, Any],
+    *,
+    in_turn: bool = False,
 ) -> tuple[SourceRecord | None, dict[str, Any], str | None]:
-    """Validate an observed selection before approval, without attaching or indexing."""
+    """Validate an observed selection before approval, without attaching or indexing.
+
+    ``in_turn`` marks the agent's own call, made inside its turn before the approval
+    gate: the selected dataset's organization counts toward the organization-branches
+    note there. The connection itself runs later, after approval, outside the turn.
+    """
     if arguments["provider"] != "ndp":
         body = CreateSource.model_validate(
             {**arguments, "configuration": arguments.get("configuration") or {}}
@@ -65,6 +74,10 @@ def connection_approval(
         raise ValueError("NDP connections are read-only; download an editable local copy instead")
     choice = NDPConnectionSelection.model_validate(arguments.get("configuration") or {})
     dataset = service.ndp.selected(choice.endpoint_id, arguments["root"], choice.resource_ids)
+    if in_turn:
+        from clio_agent.gact.storage.organization_branches import note_organization
+
+        note_organization(dataset.organization)
     with service.ndp_selection_lock:
         existing = existing_selection(service, workspace_id, dataset)
     return (

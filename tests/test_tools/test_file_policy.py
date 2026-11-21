@@ -3,6 +3,7 @@
 from clio_agent import conf
 from clio_agent.tools import file_policy
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
+from tests._config_layer import set_config
 
 
 def test_validate_read_allows_file_under_allowed_root(tmp_path):
@@ -153,11 +154,17 @@ def test_policy_from_mapping_reports_effective_settings(tmp_path):
     assert "write_mode" in result
 
 
-def test_policy_from_env_prefers_workspace_config(tmp_path, monkeypatch):
+def test_policy_from_env_prefers_config(tmp_path, monkeypatch):
     config_root = tmp_path / "from-config"
     env_root = tmp_path / "from-env"
+    workspace_root = tmp_path / "from-workspace"
     config_root.mkdir()
     env_root.mkdir()
+    workspace_root.mkdir()
+    # Roots and symlinks are user-only (conf.WORKSPACE_PROTECTED_KEYS); the size limit
+    # may still come from the workspace.
+    set_config("tools.file_policy.allowed_roots", [config_root.as_posix()])
+    set_config("tools.file_policy.allow_symlinks", True)
     config_dir = tmp_path / ".clio"
     config_dir.mkdir()
     (config_dir / "config.yaml").write_text(
@@ -166,9 +173,9 @@ def test_policy_from_env_prefers_workspace_config(tmp_path, monkeypatch):
                 "tools:",
                 "  file_policy:",
                 "    allowed_roots:",
-                f"      - {config_root.as_posix()}",
+                f"      - {workspace_root.as_posix()}",
                 "    max_file_size_bytes: 10GB",
-                "    allow_symlinks: true",
+                "    allow_symlinks: false",
                 "",
             ]
         ),

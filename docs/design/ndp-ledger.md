@@ -1036,3 +1036,56 @@ Seen in this wave, and what became of it:
 - **My own parallel test run filled the disk** (four xdist workers each preallocating
   a clio-core store) while two live runs were going; clio-core refused writes and both
   turns ended in error. Reruns above. Tests are no longer run beside live runs.
+
+### Demo recordings (2026-11-19)
+
+Two fresh workspaces on Opus in `ai-review` approval mode, plain requests, recorded on the
+production web build with `.cloud-run/demo/rec.mjs` (one recorded browser driven step by step)
+and cut with `.cloud-run/demo/edit.py` (actions at 1x, agent working time sped up):
+
+- Tahoe cross-organization, `sess_85bfe6901b9a`, two turns (51 min + 12 min): 165 NDP
+  organizations listed, 1,083 datasets found, TRPA PACs with CAL FIRE FRAP and NIFC fires,
+  CFO canopy and fuels, OpenTopography lidar slope; follow-up added California Landscape
+  Metrics burn severity. The 0.5 m DTM's VRT could not resolve its tiles through a range
+  URL (relative paths answer 404 since range URLs serve only their own file); the agent
+  opened each tile's own handle instead. Open: let a VRT's relative tile paths resolve
+  within the same source without reopening GDAL's sidecar probing.
+- Snow depth, `sess_33692d7b38fd`, three turns (11, 7 and 2 min): snow-on minus snow-off
+  lidar; no second snow-on year in NDP after about 26 searches; NEON tiles streamed by byte
+  range on seeing 2.9 GB free; interactive layered map with depth, elevation, slope and
+  hillshade GeoTIFF layers.
+- In headless capture a grey band sometimes crosses a WebGL map until it redraws; it is
+  inside the canvas (no DOM element), so likely the software renderer. To be checked on a
+  real GPU.
+
+### Why the Tahoe correlation took an hour, and three runs to compare (2026-11-19)
+
+Same plain request, Opus, three runs:
+
+| Run | Session | Time | Lidar terrain | Owl / goshawk PACs burned | Subagents |
+| --- | --- | --- | --- | --- | --- |
+| 1 (demo) | `sess_85bfe6901b9a` | 51 min | 0.5 m tiles read per PAC, sequentially: one script took 38 min | 10% / 1.5% | none |
+| 2 (skill: parallel branches, concurrent reads) | `sess_85bbfd98ef53` | 11 min | 51 of 58 tiles refused (below); fell back to LANDFIRE 30 m | inconsistent (outlier) | none |
+| 3 (all fixes below) | `sess_7ae5906d10e5` | 22 min | geoservices reported ~38 GB for a whole-basin read of tiles without overviews; the agent chose NASA WERK 10 m (California side, 68%) and said so | 8.1% / 1.5% | none |
+
+Runs 1 and 3 agree (Lower Saxon Creek and Echo Lake mostly burned). Run 2's "seven PACs at 99%"
+is unexplained: burn shares do not depend on terrain, so its fire or PAC inputs need checking. In run 1 the hour was not search (78 queries ran in one batch in
+about 2 minutes) but one script reading 0.5 m windows one round trip at a time, again per PAC.
+
+Fixed (branch `claude/ndp-parallel-branches`; clio-kit `claude/geoservices-read-budget`):
+
+- The range route answered a plain GET over 8 MiB with 416. GDAL in geoservices
+  (`CPL_VSIL_CURL_USE_HEAD=NO`) sizes a file with such a GET, so the tiles read as an
+  unsupported format and GDAL cached that. It now streams the file in chunks.
+- Fixed caps removed in favour of the disk and the agent's informed decision: NDP's 8 GiB per
+  resource (it blocked even range reads), the 512 MB linked-read cap (now a free-disk check
+  with the numbers), and geoservices' ~1.5 GB refusal (now says the size and the
+  `max_read_bytes` that lets the read run, and to ask the person first when large).
+- A read-only download attached to the conversation was copied into resource custody; with the
+  workspace working copy a 295 MB raster was on disk three times. Custody now hard-links it.
+- NDP skill: organizations as parallel branches (names the spawn tool the agent can see,
+  instead of a `delegation` condition it could not), and range windows read at the same time.
+
+Open: no run spawned children for organizations even with the skill wording; the next lever is
+a reminder when the agent starts on several organizations. Uploading artifacts to NDP keeps a
+512 MiB limit (separate path).

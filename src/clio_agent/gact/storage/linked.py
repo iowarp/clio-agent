@@ -500,10 +500,16 @@ def _linked_file(service: StorageService, record: SourceRecord, relative: str) -
             raise ValueError("This linked file changed. Refresh the folder before opening it")
         if os.path.isfile(win_extended_path(destination)):
             return destination
-        if selected.size is not None and selected.size > 512 * 1024 * 1024:
-            raise ValueError("This file exceeds the 512 MB linked-read limit")
-        git_digest = hashlib.sha1(f"blob {selected.size}\0".encode())
         os.makedirs(win_extended_path(destination.parent), exist_ok=True)
+        free = shutil.disk_usage(destination.parent).free
+        if selected.size is not None and selected.size > free:
+            # The disk, not a fixed cap, decides: a read past this point could not finish.
+            raise ValueError(
+                f"Insufficient capacity: opening this file copies {selected.size:,} bytes and "
+                f"{free:,} are free; free space with connected_data_release, or read it by "
+                "range (connected_data_open with range=true)"
+            )
+        git_digest = hashlib.sha1(f"blob {selected.size}\0".encode())
         with staged_file(destination) as stage:
             total = 0
             with (
@@ -512,8 +518,6 @@ def _linked_file(service: StorageService, record: SourceRecord, relative: str) -
             ):
                 while chunk := reader.read(1024 * 1024):
                     total += len(chunk)
-                    if total > 512 * 1024 * 1024:
-                        raise ValueError("This file exceeds the linked-read limit")
                     writer.write(chunk)
                     git_digest.update(chunk)
             if selected.size and total != selected.size:

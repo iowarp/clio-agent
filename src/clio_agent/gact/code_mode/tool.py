@@ -23,6 +23,7 @@ and the next script starts a fresh one.
 from __future__ import annotations
 
 import contextvars
+import functools
 import queue
 import time
 from collections.abc import Callable, Mapping
@@ -371,17 +372,50 @@ def _boundary(kernel: Any, outcome: Mapping[str, Any]) -> dict[str, Any] | None:
     )
 
 
+def _first_line(code: str) -> str:
+    return next((ln.strip() for ln in code.splitlines() if ln.strip()), "")[:80]
+
+
 def run_script(
-    agent: Any, code: str, *, session_id: str, scope: str, read_only: bool = False
+    agent: Any,
+    code: str,
+    *,
+    session_id: str,
+    scope: str,
+    read_only: bool = False,
+    app: Any = None,
+    label: str = "",
 ) -> dict[str, Any]:
-    """Run ``code`` in the scope's kernel (a read-only one in plan mode); the outcome."""
+    """Run ``code`` in the scope's kernel (a read-only one in plan mode); the outcome.
+
+    The script runs on its own thread; past ``code.foreground_background_after_s``, or
+    when the person asks, it moves, still running, to a background task and the outcome
+    is that task's receipt (:mod:`clio_agent.gact.code_mode.foreground`)."""
     from clio_agent.agent import cancellation_requested  # noqa: PLC0415
-    from clio_agent.gact.code_mode import kernels  # noqa: PLC0415
+    from clio_agent.gact.code_mode import (
+        foreground,  # noqa: PLC0415
+        kernels,  # noqa: PLC0415
+    )
 
     prepared = prepare_script(agent, code)
     kernel = kernels.kernel_for(session_id, scope, _workspace(), read_only=read_only)
-    outcome = execute_script(prepared, kernel, cancellation_requested)
-    if outcome["status"] == "cancelled":
+    run = foreground.ForegroundRun(session_id, label or _first_line(code))
+    run.live["kernel"] = kernel  # a task that takes the script over stops it at the end
+    log = foreground.output_log(session_id)  # what it prints, readable if it moves
+    run.live["output_path"] = str(log or "")
+    run.start(functools.partial(execute_script, output_path=str(log or "")), prepared, kernel)
+    state = run.wait(cancellation_requested, poll_s(), foreground.background_after_s())
+    if state == "move":
+        kernels.detach(kernel, "replaced_backgrounded")
+        receipt = launch_background(
+            app, agent, code, label, session_id=session_id, read_only=read_only,
+            prepared=prepared, adopted=run,
+        )  # fmt: skip
+        return foreground.moved_outcome(run, receipt, code)
+    outcome = run.outcome()
+    if log is not None:
+        log.unlink(missing_ok=True)  # it ended here: its output is in the outcome
+    if state == "cancelled" or outcome["status"] == "cancelled":
         from clio_agent.gact.agents.clio_react import _turn_cancelled  # noqa: PLC0415
 
         raise _turn_cancelled()
@@ -389,19 +423,30 @@ def run_script(
 
 
 def launch_background(
-    app: Any, agent: Any, code: str, label: str, *, session_id: str, read_only: bool
+    app: Any,
+    agent: Any,
+    code: str,
+    label: str,
+    *,
+    session_id: str,
+    read_only: bool,
+    prepared: Any = None,
+    adopted: Any = None,
 ) -> dict[str, Any]:
-    """Hand an approved script to the code root; the task's acceptance receipt (CT2)."""
+    """Hand an approved script to the code root; the task's acceptance receipt (CT2).
+
+    ``adopted`` is a running foreground script (:class:`.foreground.ForegroundRun`) that
+    the task takes over as it is, with ``prepared`` its prepared script."""
     import asyncio  # noqa: PLC0415
 
     from clio_agent.gact.model_media import DETACHED, SCRIPT_MEDIA  # noqa: PLC0415
     from clio_agent.gact.native_code import CodeLaunch, stage_launch, take_launch  # noqa: PLC0415
 
-    prepared = prepare_script(agent, code)
+    prepared = prepared or prepare_script(agent, code)
     # It outlives this model step: an image it views has no result to ride (model_media).
     prepared.context.run(SCRIPT_MEDIA.set, DETACHED)
-    key = stage_launch(CodeLaunch(prepared, session_id, _workspace(), read_only))
-    name = label.strip() or next((ln.strip() for ln in code.splitlines() if ln.strip()), "")
+    key = stage_launch(CodeLaunch(prepared, session_id, _workspace(), read_only, adopted))
+    name = label.strip() or _first_line(code)
     arguments = {
         "code": code,
         "launch": key,
@@ -434,6 +479,7 @@ _NEW_KERNEL_WORDS = {
     "replaced_dead": "the previous one had stopped",
     "replaced_mode_changed": "Plan mode began or ended",
     "replaced_workspace_changed": "the workspace changed",
+    "replaced_backgrounded": "the previous one went with a script moved to the background",
 }
 
 
@@ -513,8 +559,17 @@ def build_run_code_tool() -> Any:
             return background_text(receipt, label)
         scope = _ctx.run_keyed_scope(_ctx.active_react_scope() or "")
         outcome = run_script(
-            loop.agent, code, session_id=session_id, scope=scope, read_only=read_only
+            loop.agent,
+            code,
+            session_id=session_id,
+            scope=scope,
+            read_only=read_only,
+            app=app,
+            label=label,
         )
+        if outcome["status"] == "backgrounded":
+            declare_structured_content(outcome)
+            return outcome["text"]
         if viewed := CALL_MEDIA.get():
             outcome["attached_media"] = [_attached_row(item) for item in viewed]
         declare_structured_content(outcome)

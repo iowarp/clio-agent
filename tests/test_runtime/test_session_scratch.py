@@ -198,7 +198,7 @@ def test_a_kernel_starts_with_its_own_session_environment(
 ) -> None:
     seen: list[tuple[Path, str]] = []
 
-    def environment(where: Path, session_id: str) -> Any:
+    def environment(where: Path, session_id: str, *, read_only: bool = False) -> Any:
         seen.append((where, session_id))
         raise RuntimeError("stop before spawning")
 
