@@ -176,7 +176,51 @@ staying bounded.
 
 ### 3.10 Sustained load (clio-agent#1846)
 
-SOAK_SECTION
+One daemon, four client processes, 30 minutes of the clio-agent#1846 mix (60% small
+appends of 256 B-8 KiB to new blobs, 20% growing transcript blobs rewritten in place up
+to 2 MiB, 20% reads), CLIO's own store path (`scripts/bench/soak.py`). 2.4.1 runs
+CLIO's develop code (what ships today), 2.5.0 the upgrade branch.
+
+| | 2.4.1 | 2.5.0 |
+|---|---|---|
+| Operations (small appends) | 554,029 (332,621) | 594,136 (356,653) |
+| Latency p50 / p99 / max | 8.7 / 69.7 / 945 ms | 7.8 / 74.5 / 1,308 ms |
+| p99, first minute -> last minute | 64 -> 113 ms | 59 -> 117 ms |
+| Ops per minute, first -> last | 16,825 -> 17,649 | 19,803 -> 19,663 |
+| Ops over 1 s / over 15 s | 0 / 0 | 8 / 0 |
+| Errors | 0 | 0 |
+| Daemon RSS at 30 min | 5,016 MiB (anon 2,813, shmem 2,186) | 5,264 MiB |
+
+Neither version stalled past CLIO's 15 s bound in 30 minutes on this machine, so the
+#1846 latency failure did not reproduce. **The memory growth did, on both versions, and
+2.5.0 does not change it.** The breakdown (`/proc/<pid>/status`, sampled every 10 s):
+
+- **Shared memory** rises to 4 x 544 MB and stops: each client process's 512 MB + 32 MB
+  data segment is mapped by the daemon, and the pages a client has used stay resident.
+  That is bounded per client and is what `client_data_segment_size` now sizes (3.8).
+- **Anonymous memory grows without bound, about 6 KiB per stored blob.** A probe
+  (`scripts/bench/daemon_growth_probe.py`, one client) separates the causes:
+
+  | Phase (10,000-40,000 ops) | 2.4.1 | 2.5.0 |
+  |---|---|---|
+  | Overwrites of 100 existing blobs | 0.07 KiB per op | 0.02 KiB per op |
+  | New 4 KiB blobs | 6.07 KiB per blob | 6.20 KiB per blob |
+  | New 256 B blobs / new 64 KiB blobs | | 6.21 / 6.21 KiB per blob |
+  | Gets | 0.01 KiB per op | 0.00 KiB per op |
+
+  The cost does not depend on the payload size, so it is per-blob metadata held in RAM
+  for the life of the daemon. CLIO stores about 330,000 small records in 30 minutes of
+  this load, about 2 GB of daemon memory; a person's daemon that runs for days reaches
+  the 2.7 GiB of #1846.
+
+**Request.** Bound the daemon's per-blob memory: a smaller resident record per blob,
+and/or keep cold blob metadata on disk (the WAL and snapshot already hold it) with a
+bounded in-memory cache. Report the resident metadata size (blobs, bytes) through a
+monitor query, so CLIO can show it.
+
+**Reproduction.** Start a daemon with a file tier, put 40,000 new 4 KiB blobs from one
+client and read `RssAnon` in `/proc/<daemon pid>/status` before and after: it grows by
+about 240 MB, and the same 40,000 puts rotating over 100 names grow it by under 1 MB.
 
 ## 4. Metadata log defects (the 16 Nov comment on #1335)
 
