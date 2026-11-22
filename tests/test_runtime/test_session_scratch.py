@@ -195,16 +195,29 @@ def test_tmpdir_points_at_the_session_folder_for_the_kernel(root: Path, workspac
 
 
 @pytest.mark.parametrize(
-    ("host", "socket_budget", "uv_cache_budget"),
-    [("linux", 64, 3884), ("darwin", 60, 812), ("windows", 64, 48), ("posix", 60, 812)],
+    ("host", "kernel", "socket_budget", "uv_cache_budget"),
+    [
+        ("linux", (5, 15), 64, 192),
+        ("linux", (4, 18), 64, 64),
+        ("darwin", (25, 0), 60, 448),
+        ("windows", (0, 0), 64, 48),
+        ("posix", (14, 1), 60, 192),
+    ],
 )
 def test_each_os_gets_its_own_short_root_budgets(
-    monkeypatch: pytest.MonkeyPatch, host: str, socket_budget: int, uv_cache_budget: int
+    monkeypatch: pytest.MonkeyPatch,
+    host: str,
+    kernel: tuple[int, int],
+    socket_budget: int,
+    uv_cache_budget: int,
 ) -> None:
-    """sun_path is 108 bytes on Linux and Windows, 104 on macOS; MAX_PATH/PATH_MAX differ."""
+    """sun_path is 108 bytes on Linux and Windows, 104 on macOS; MAX_PATH/PATH_MAX differ,
+    and a uv entry point's ``#!`` line must fit the kernel's buffer (128 before Linux 5.1)."""
 
     monkeypatch.setattr(session_scratch, "_host_os", lambda: host)
+    monkeypatch.setattr(session_scratch, "_kernel_release", lambda: kernel)
     assert session_scratch.short_root_budget(session_scratch.SOCKET_ROLE) == socket_budget
+    assert session_scratch.short_root_budget(session_scratch.UV_CACHE_ROLE) == uv_cache_budget
     assert session_scratch.short_root_budget(session_scratch.UV_CACHE_ROLE) == uv_cache_budget
 
 
@@ -303,6 +316,7 @@ def test_a_uv_cache_past_its_os_budget_gets_a_short_owned_stand_in(
     """uv imports ``--with`` packages from its cache; each OS bounds a library's path."""
 
     monkeypatch.setattr(session_scratch, "_host_os", lambda: host)
+    monkeypatch.setattr(session_scratch, "_kernel_release", lambda: (5, 15))
     budget = session_scratch.short_root_budget(session_scratch.UV_CACHE_ROLE)
     base = Path(tmp_path.anchor) / "v"  # a name only: a cache is keyed before it exists
     at_budget = base / ("d" * (budget - len(str(base)) - 1))

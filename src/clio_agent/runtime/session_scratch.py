@@ -175,16 +175,23 @@ def active_scratch_dir(*, create: bool = False) -> Path | None:
     return session_scratch_dir(sid, create=create) if sid else None
 
 
-#: Each OS's limits as ``(unix socket path bytes, longest path a native-library load accepts)``:
-#: ``sun_path`` is 108 bytes on Linux and Windows and 104 on macOS and the BSDs; a DLL load
-#: stops at MAX_PATH (260) on Windows without long-path support, and ``dlopen`` at PATH_MAX
-#: (1024 on macOS, 4096 on Linux).
-_OS_LIMITS: dict[str, tuple[int, int]] = {
-    "windows": (108, 260),
-    "darwin": (104, 1024),
-    "linux": (108, 4096),
-    "posix": (104, 1024),
+SOCKET_LIMIT = "socket"
+PATH_LIMIT = "path"
+SHEBANG_LIMIT = "shebang"
+#: Each OS's limits. ``socket``: ``sun_path`` is 108 bytes on Linux and Windows and 104 on
+#: macOS and the BSDs. ``path``: a DLL load stops at MAX_PATH (260) on Windows without
+#: long-path support, ``dlopen`` at PATH_MAX (1024 on macOS, 4096 on Linux). ``shebang``:
+#: the kernel reads a ``#!`` line into a fixed buffer (512 bytes on macOS, 256 on Linux 5.1+,
+#: 128 before it); a longer interpreter path makes execve fail with ENOEXEC, and glibc then
+#: runs the Python entry point with ``/bin/sh``. Windows has no shebang (uv writes .exe
+#: launchers).
+_OS_LIMITS: dict[str, dict[str, int]] = {
+    "windows": {SOCKET_LIMIT: 108, PATH_LIMIT: 260},
+    "darwin": {SOCKET_LIMIT: 104, PATH_LIMIT: 1024, SHEBANG_LIMIT: 512},
+    "linux": {SOCKET_LIMIT: 108, PATH_LIMIT: 4096, SHEBANG_LIMIT: 256},
+    "posix": {SOCKET_LIMIT: 104, PATH_LIMIT: 1024, SHEBANG_LIMIT: 256},
 }
+_LINUX_OLD_SHEBANG = 128
 #: A link: files and sockets made through it stay in the folder it leads to (a symlink on
 #: POSIX, a junction on Windows, which an AF_UNIX bind follows as well).
 LINK = "link"
@@ -200,12 +207,11 @@ SHORT_UV_CACHE_FAILED_REASON = "session_scratch_short_uv_cache_failed"
 
 @dataclass(frozen=True)
 class ShortRootRole:
-    """What a short root stands in for: its limit, the room needed below it, and how."""
+    """What a short root stands in for: the limits it must fit, the room below it, and how."""
 
     name: str
-    #: ``0`` for the unix socket limit, ``1`` for the native-library path limit.
-    limit: int
-    headroom: int
+    #: ``(limit name, headroom)`` pairs; the root must leave each headroom under its limit.
+    limits: tuple[tuple[str, int], ...]
     mechanism: str
     failed_reason: str
 
@@ -213,12 +219,20 @@ class ShortRootRole:
 #: ``TMPDIR``/``TEMP``/``TMP``: a ``mkdtemp`` folder and a socket name need about 44 bytes
 #: below it (ssh's ``ControlPath`` adds about 35), so ssh's ControlMaster socket, munge,
 #: ``multiprocessing`` and Chromium-style singletons fit.
-SOCKET_ROLE = ShortRootRole("socket", 0, 44, LINK, SOCKET_ALIAS_FAILED_REASON)
+SOCKET_ROLE = ShortRootRole("socket", ((SOCKET_LIMIT, 44),), LINK, SOCKET_ALIAS_FAILED_REASON)
 #: ``UV_CACHE_DIR``: ``uv run --with`` imports packages from the cache itself
 #: (``archive-v0/<id>/.../site-packages/...``); CadQuery's deepest native library sits 115
-#: characters below it, so 212 leaves room for deeper wheels. Windows fails first ("DLL load
-#: failed ... The filename or extension is too long"); the same root guards the others.
-UV_CACHE_ROLE = ShortRootRole("uv-cache", 1, 212, STAND_IN, SHORT_UV_CACHE_FAILED_REASON)
+#: characters below it (136 on Linux), so 212 leaves room for deeper wheels. Its entry
+#: points start ``#!<cache>/builds-v0/.tmpXXXXXX/bin/python`` (``uvx`` uses
+#: ``environments-v2/<name>-<hash>``), so 64 covers the ``#!`` line below the cache.
+#: Windows fails on the DLL load ("The filename or extension is too long"), Linux on the
+#: shebang (a ``black`` entry point under a 230-character cache), macOS on either.
+UV_CACHE_ROLE = ShortRootRole(
+    "uv-cache",
+    ((PATH_LIMIT, 212), (SHEBANG_LIMIT, 64)),
+    STAND_IN,
+    SHORT_UV_CACHE_FAILED_REASON,
+)
 
 
 def _host_os() -> str:
@@ -229,10 +243,27 @@ def _host_os() -> str:
     return "linux" if sys.platform.startswith("linux") else "posix"
 
 
-def short_root_budget(role: ShortRootRole) -> int:
-    """Longest folder ``role`` keeps in place on this OS (its limit less its headroom)."""
+def _kernel_release() -> tuple[int, int]:
+    try:
+        major, minor = os.uname().release.split(".")[:2]
+        return int(major), int("".join(ch for ch in minor if ch.isdigit()) or 0)
+    except (AttributeError, ValueError):
+        return (0, 0)
 
-    return _OS_LIMITS[_host_os()][role.limit] - role.headroom
+
+def _os_limits() -> dict[str, int]:
+    host = _host_os()
+    limits = dict(_OS_LIMITS[host])
+    if host == "linux" and _kernel_release() < (5, 1):
+        limits[SHEBANG_LIMIT] = _LINUX_OLD_SHEBANG
+    return limits
+
+
+def short_root_budget(role: ShortRootRole) -> int:
+    """Longest folder ``role`` keeps in place on this OS (each limit less its headroom)."""
+
+    limits = _os_limits()
+    return min(limits[name] - room for name, room in role.limits if name in limits)
 
 
 def _short_base(role: ShortRootRole) -> Path:
