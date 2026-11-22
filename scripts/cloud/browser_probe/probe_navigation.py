@@ -1,7 +1,7 @@
 """Phase 0 probe, part 2: redirect gating, abort codes, annotations, downloads, cdp.
 
 Run against the fixture site (``tests/browser/fixtures/site/server.py --port 8790``) with a
-Python that has ``playwright==1.64.1`` and its Chromium::
+Python that has ``playwright==1.65.2`` and its Chromium::
 
     python scripts/cloud/browser_probe/probe_navigation.py .cloud-run/probe_navigation.json
 

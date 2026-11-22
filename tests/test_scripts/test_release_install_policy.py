@@ -32,7 +32,7 @@ EXPECTED_DSPY = "dspy==3.4.0"
 EXPECTED_FASTMCP = "fastmcp==4.2.4"
 EXPECTED_FASTMCP_SLIM = "fastmcp-slim==4.2.4"
 EXPECTED_FASTMCP_TASKS = "fastmcp-tasks==4.2.4"
-EXPECTED_LITELLM = "litellm==1.102.2"
+EXPECTED_LITELLM = "litellm==1.110.2"
 #: The SDK roots of the published DOCUMENTED_VERSION. The install commands in the
 #: docs and the launcher's ``update`` (which installs the latest PyPI release) must
 #: name that release's own pins: a newer tree's roots cannot resolve against it. The
