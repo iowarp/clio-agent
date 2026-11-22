@@ -169,6 +169,9 @@ class TaskSnapshot(TaskRecord):
     resource_id: str | None = None
     #: The handle this task was forked from: whoever waits on that handle waits on this too.
     fork_of: str | None = None
+    #: The latest ``_meta`` an MCP server sent on this task's status or ``tasks/get``
+    #: reply, passed through for renderers of a server's typed data (e.g. a job card).
+    metadata: dict[str, Any] | None = None
 
     @classmethod
     def read_history(cls, record: dict[str, Any]) -> TaskSnapshot:

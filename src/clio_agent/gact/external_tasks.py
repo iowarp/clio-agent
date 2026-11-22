@@ -36,6 +36,9 @@ from clio_agent.gact import (
 )
 from clio_agent.gact import view_call_ledger as view_calls
 from clio_agent.gact.external_read_only import LazyAdmission, skips_write_ahead
+from clio_agent.gact.mcp_server_confirm import Flagged, FlaggedCalls
+from clio_agent.gact.mcp_server_confirm import flag as server_confirm_flag
+from clio_agent.gact.mcp_server_confirm import undeclared as server_confirm_undeclared
 from clio_agent.gact.native_work import now
 from clio_agent.gact.read_only_outcomes import ReadOnlyOutcomes
 from clio_agent.gact.spawn_invocation import spawn_invocation_id
@@ -43,10 +46,10 @@ from clio_agent.gact.task_access import TaskAccessDenied, TaskCaller
 from clio_agent.gact.task_history import RecordingUnconfirmed, content_reference
 from clio_agent.gact.task_index_records import minted_names
 from clio_agent.gact.task_publication import publish_task_notice
-from clio_agent.tools import recorded_results, view_only_results
+from clio_agent.tools import recorded_results, server_confirm, view_only_results
 from clio_agent.tools.caller_scope import caller_meta
 from clio_agent.tools.mcp_runtime import enter_connection
-from clio_agent.tools.task_call_context import permission_snapshot, safe_description
+from clio_agent.tools.task_call_context import TASK_CALL, permission_snapshot, safe_description
 from clio_agent.tools.task_client import (
     AcceptedNativeCall,
     TaskAwareClient,
@@ -106,6 +109,8 @@ class ExternalTasks:
         self._lazy: dict[str, LazyAdmission] = {}
         #: Tasks waiting on each open input question (one prompt per shared ask).
         self.question_waiters: dict[str, set[str]] = {}
+        #: Calls whose server confirms them itself, until each settles (mcp_server_confirm).
+        self.flagged = FlaggedCalls()
         self.outcomes = ReadOnlyOutcomes(self.history, self.recovery)
         self._unwatch_fleets: Callable[[], None] | None = None
         external_task_connections.watch_fleets(self)
@@ -327,6 +332,13 @@ class ExternalTasks:
         )
         if session is None or workspace is None:
             raise ValueError("MCP execution session or workspace is unavailable")
+        flagged = (
+            Flagged(sid, host.backend.server, name, dict(public))
+            if TASK_CALL.get().server_confirm
+            else None
+        )
+        if flagged is not None and not server_confirm.declares(component):
+            raise server_confirm_undeclared(self.app, flagged)  # nobody would ask: not sent
         handle, reference, stamp = "task_" + uuid4().hex, uuid4().hex, now()
         submission = SubmissionContext(
             reference=reference,
@@ -427,16 +439,19 @@ class ExternalTasks:
                 if client is None:
                     raise ValueError("External task transport is unavailable before submission")
                 with client.submission(binding):
+                    meta = caller_meta()  # the calling session, for per-branch state
                     return await client.call_tool(
                         name,
                         public,
                         raise_on_error=False,
                         progress_handler=report_progress,
-                        meta=caller_meta(),  # the calling session, for per-branch state
+                        meta=server_confirm_flag(meta) if flagged is not None else meta,
                     )
             finally:
                 host.inline.reset(token)
 
+        if flagged is not None:
+            self.flagged.track(handle, flagged)
         rpc = asyncio.create_task(submit())
         host.rpcs.add(rpc)
         rpc.add_done_callback(lambda finished: self._rpc_retired(host, finished))
@@ -548,6 +563,10 @@ class ExternalTasks:
         )
         if lazy is not None and (lazy.recorded or not accepted):
             self._lazy.pop(handle, None)  # admitted, or about to be with its result
+        if not accepted:  # a plain reply is its settlement; a task's is its terminal reply
+            self.flagged.settled(
+                self.app, handle, reply, failed=bool(getattr(reply, "is_error", False))
+            )
         if not accepted and lazy is not None and not lazy.recorded:
             # Nothing was recorded before the reply (and nothing can be now): its admission,
             # already settled, is its one record, written behind it (read_only_outcomes).

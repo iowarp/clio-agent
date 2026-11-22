@@ -491,6 +491,10 @@ def _ask_person(
     """Publish a pending permission and wait for the answer (or the AI reviewer's)."""
     if (refused := unattended.refuse_ask(app, sid, name, args, approval_mode)) is not None:
         return refused  # nobody to ask in an unattended run: denied, typed
+    from clio_agent.gact import mcp_server_confirm  # noqa: PLC0415
+
+    if mcp_server_confirm.may_defer(app, sid, context, approval_mode, policy_action):
+        return mcp_server_confirm.defer(app, sid, name, args, subject)  # one ask: its card
     running, holder = call_identity_claimed(), dict[str, Any]()
     decision = _ask_and_wait(
         app, sid, name, args, context, subject, approval_mode, policy_action, cancelled, holder
@@ -807,7 +811,7 @@ def _make_permission_gate(app: "FastAPI"):
             )
             return "allow"
         with script_grants.question():
-            if policy_action != "ask" and script_grants.covers(decision_posture):
+            if policy_action != "ask" and script_grants.covers(decision_posture, name):
                 _record_resolved_permission(
                     app,
                     session_id=sid,

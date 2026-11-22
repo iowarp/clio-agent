@@ -101,6 +101,37 @@ The gate decides in this order:
 > interactive approver) for such calls is the job of the approval-mode work
 > (#1034); until then, give such tools a `read` tag or `readOnlyHint`.
 
+### MCP servers that confirm calls themselves
+
+A person sees one ask per call. When a server also asks during a call, CLIO
+settles the two asks into one:
+
+- **Plain confirms are answered by the person's own permission.** A server's
+  confirm with nothing to choose (no fields, or one boolean) that is correlated
+  to a call a *person* allowed is answered from that permission and recorded as
+  `mcp_confirm_covered_by_host_permission` (`gact/mcp_confirm_coverage.py`).
+  The server's message shows as a note under that call. A confirm with fields,
+  choices or numbers, one carrying typed `_meta` (such as a job plan), or one
+  for a call only a policy allowed still asks.
+- **Server-confirmed tools get the server's card, not CLIO's yes/no.** A tool
+  whose `tools/list` entry declares `_meta["io.iowarp/confirm"] = {"version": 1}`
+  confirms itself. When CLIO would ask a person directly about such a call, it
+  records the call as `mcp_confirm_deferred_to_server` and sends it with
+  `params._meta["io.iowarp/confirm"] = "server"`. The server then asks exactly
+  once before any side effect, or refuses `needs_approval` when it cannot ask
+  (`gact/mcp_server_confirm.py`, `tools/server_confirm.py`). Unattended runs,
+  the ai-review reviewer, `always_ask` decisions and any rule or mode that
+  already decides keep CLIO's own path. A tool without the declaration, or
+  with another version, is never deferred to.
+- **A server that skips its card stops being trusted.** A flagged call that
+  completes without an ask, and without result `_meta["io.iowarp/confirm"] =
+  "not_needed"`, is recorded as `mcp_server_confirm_missing`. A deferred call
+  whose server stopped declaring the confirm is not sent and is recorded as
+  `mcp_server_confirm_undeclared`. Either way CLIO asks about that server's
+  calls itself for the rest of the session. Failed or refused calls report
+  their own error and are not counted. The check is held in memory, so a call
+  that settles after an agent restart is not checked.
+
 ## Scripts and per-tool settings
 
 **A script is approved before it runs.** `run_code` is one non-read call: it asks the
@@ -118,11 +149,13 @@ script was accepted with (a change of mode while it runs does not change it):
 | --- | --- |
 | `bypass` | Run |
 | `auto-edits`, `ai-review`, `spotter-ai`, `spotter-watcher` (`code.covering_postures`) | Covered by the script's approval, recorded with `run_code_script_grant` |
-| `ask` | Each asks, one question per script at a time, showing the script; denial raises in the script |
+| `ask` | A person's "Allow once" on the script covers the calls its code names (`tools.<group>.<tool>` or `tools.call("<name>")`), recorded with `run_code_script_grant`. Any other call asks, one question per script at a time, showing the script; denial raises in the script |
 
 In `ask` mode the question offers "Allow for the rest of this script"
-(`allow_script`), which covers that script's remaining calls; the next `run_code` asks
-again. A tool whose rule or default is `ask` asks even under a covering mode. A
+(`allow_script`), which covers that script's remaining calls, named or not; the next
+`run_code` asks again. A script approved by a rule or the reviewer rather than a person
+covers nothing in `ask` mode. A tool whose rule or default is `ask` asks even under a
+covering mode or a person's approval of the script. A
 background script's question belongs to its task: it is asked in the owner's
 conversation with the task's handle, and only an answer or cancelling the task ends
 the wait. In plan mode a script runs only where the sandbox enforces the write fence:

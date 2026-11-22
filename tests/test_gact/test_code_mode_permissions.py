@@ -134,7 +134,7 @@ def test_ask_mode_asks_with_the_script_and_allow_script_covers_the_rest(tmp_path
 
 def test_allow_script_on_the_scripts_own_question_covers_all_its_calls(tmp_path: Path) -> None:
     """Take 1r: one answer approves the script and its calls (an upload in chunks asks
-    once, not once per chunk); "Allow once" there approves only the script."""
+    once, not once per chunk), named in its code or not."""
     from fastapi.testclient import TestClient
 
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -168,18 +168,77 @@ def test_allow_script_on_the_scripts_own_question_covers_all_its_calls(tmp_path:
         asked = [r for r in app.state.permissions.values() if r.get("status") != "auto_approved"]
         assert len(asked) == 1  # only the script's own question
 
-        thread = threading.Thread(target=fire, args=("once",))
+
+def test_allow_once_on_the_script_covers_the_calls_its_code_names(tmp_path: Path) -> None:
+    """Take 1t: under ``ask``, "Allow once" on a script covers the nested calls its code
+    names; a call it does not name still asks.
+
+    SABOTAGE: drop ``grant.approved`` from ``covers()`` and the named call asks."""
+    from fastapi.testclient import TestClient
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        sid = _session(client, "ask")
+        gate = _make_permission_gate(app)
+        code = "for c in chunks:\n    await tools.lab.download(path=c)"
+        grant = grants.ScriptGrant("call_8", code, servers=("lab",))
+        result: dict[str, Any] = {}
+
+        def fire() -> None:
+            with _tool_session_context(sid):
+                with grants.approving(grant):
+                    result["script"] = gate("run_code", {"code": code})
+                token = grants.bind_grant(grant)
+                try:
+                    result["named"] = [gate("lab_download", {"path": c}) for c in "ab"]
+                    result["unnamed"] = gate("lab_delete", {"path": "a"})
+                finally:
+                    grants.reset_grant(token)
+
+        thread = threading.Thread(target=fire)
         thread.start()
         first = _pending(app)
         client.post(f"/v1/permissions/{first['id']}", json={"action": "allow"})
-        nested = _pending(app)  # "Allow once" approved only the script
-        assert (
-            nested["tool_call"]["tool_name"] == _NON_READ
-            and nested["actions"][-1] == grants.ALLOW_SCRIPT
-        )
-        client.post(f"/v1/permissions/{nested['id']}", json={"action": grants.ALLOW_SCRIPT})
+        unnamed = _pending(app)
+        assert unnamed["tool_call"]["tool_name"] == "lab_delete"
+        assert unnamed["actions"][-1] == grants.ALLOW_SCRIPT
+        client.post(f"/v1/permissions/{unnamed['id']}", json={"action": "deny"})
         thread.join(timeout=5)
-        assert result["once"] == ["allow"] * 4
+        assert result == {"script": "allow", "named": ["allow", "allow"], "unnamed": "deny"}
+        covered = [
+            r
+            for r in app.state.permissions.values()
+            if r.get("reason") == grants.REASON_SCRIPT_GRANT
+        ]
+        assert len(covered) == 2
+        assert grant.approved and not grant.covered
+
+
+def test_a_script_names_its_calls_by_attribute_or_by_name() -> None:
+    grant = grants.ScriptGrant(
+        "c",
+        "r = await tools.lab.download(path=p)\nawait tools.call('lab_status', id=1)\n"
+        "await tools.fs_read_file(path=p)",
+        servers=("lab",),
+    )
+    assert grant.names("lab_download") and grant.names("lab_status")
+    assert grant.names("fs_read_file")
+    assert not grant.names("lab_delete") and not grant.names("lab")
+
+
+def test_only_a_persons_allow_of_the_script_covers_its_named_calls() -> None:
+    from clio_agent.gact.runtime.grants import GRANTOR_REVIEWER, GRANTOR_USER
+
+    for grantor, approved in ((GRANTOR_USER, True), (GRANTOR_REVIEWER, False)):
+        grant = grants.ScriptGrant("c", "await tools.lab.download()", servers=("lab",))
+        with grants.approving(grant):
+            grants.answered({"action": "allow", "grantor": grantor})
+        assert grant.approved is approved
+        token = grants.bind_grant(grant)
+        try:
+            assert grants.covers("ask", "lab_download") is approved
+        finally:
+            grants.reset_grant(token)
 
 
 def test_allow_script_is_refused_on_a_question_that_does_not_offer_it(tmp_path: Path) -> None:

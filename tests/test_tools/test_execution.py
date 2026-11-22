@@ -658,6 +658,7 @@ def test_declared_mcp_permission_gate_receives_annotations_before_transport() ->
                     "destructiveHint": False,
                     "idempotentHint": False,
                 },
+                "server": "relay",
             },
         )
     ]
@@ -1470,4 +1471,6 @@ def test_declared_mcp_permission_gate_receives_the_tools_own_title() -> None:
     finally:
         executor.close()
 
-    assert observed == [{"kind": "external_mcp", "annotations": {}, "title": "Read PDF Bytes"}]
+    assert observed == [
+        {"kind": "external_mcp", "annotations": {}, "server": "viewer", "title": "Read PDF Bytes"}
+    ]

@@ -67,6 +67,7 @@ async def accepted(
     *,
     task_id: str = "job-a-b",
     keys: tuple[str, ...] = ("c-d",),
+    meta: dict[str, Any] | None = None,
 ) -> str:
     """Record a native acceptance and its actual SDK status reply without executing work."""
 
@@ -118,6 +119,7 @@ async def accepted(
                     }
                     for key in keys
                 },
+                **({"_meta": meta} if meta else {}),
             }
         )
         external._record_reply(host, call, reply)

@@ -243,6 +243,7 @@ def prepare_script(agent: Any, code: str, grant: Any = None) -> PreparedScript:
         reset_grant(grant_token)
     direct_only, code_only = _callers(agent)
     servers = tuple(getattr(agent, "_clio_tool_servers", ()) or ())
+    grant.servers = servers
     return PreparedScript(agent, code, context, servers, direct_only, code_only)
 
 
