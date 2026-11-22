@@ -195,6 +195,7 @@ def register_task_routes(app: FastAPI) -> None:
         message_after: str | None = None,
         message_before: str | None = None,
         relation: str = "tree",
+        order: Literal["oldest", "newest"] = "oldest",
     ) -> dict[str, Any]:
         try:
             return await run_off_loop(
@@ -215,6 +216,7 @@ def register_task_routes(app: FastAPI) -> None:
                 relation=relation,
                 # The runs list's "active" means queued, running or waiting, not merely open.
                 underway_only=active_only,
+                order=order,
             )
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
@@ -228,8 +230,13 @@ def register_task_routes(app: FastAPI) -> None:
         query: str | None = None,
         message_after: str | None = None,
         message_before: str | None = None,
+        order: Literal["oldest", "newest"] = "oldest",
     ) -> dict[str, Any]:
-        """Page the authenticated human's indexed work across sessions without joins."""
+        """Page the authenticated human's indexed work across sessions without joins.
+
+        ``order=newest`` lists the most recently created work first, so a fresh client
+        on a busy home reaches recent tasks (for example ended MCP tasks it never followed).
+        """
         return await tasks(
             "",
             kind=kind,
@@ -240,6 +247,7 @@ def register_task_routes(app: FastAPI) -> None:
             query=query,
             message_after=message_after,
             message_before=message_before,
+            order=order,
         )
 
     @app.post("/v1/sessions/{sid}/tasks/observe")
