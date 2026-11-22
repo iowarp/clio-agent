@@ -421,6 +421,9 @@ def default_cte_config_path() -> str:
         _seeded_capacity_fits(cfg, _default_cte_file_capacity(cte_dir))  # a pre-sizing seed
         ensure_seeded_threads(cfg)  # a seed from before arc.core_threads
         ensure_seeded_segments(cfg)  # a seed with clio-core's 1 GiB segments (#906)
+        from clio_agent.arc.clio_core_growth import adopt_or_warn_undersized  # noqa: PLC0415
+
+        adopt_or_warn_undersized(cfg)  # a stale small seed grows, or the fix is logged
     else:
         budget = _default_cte_ram_capacity()
         if parse_capacity_bytes(budget) <= 0:

@@ -146,13 +146,15 @@ def test_legacy_explicit_seed_without_journal_is_adopted(
     assert config.with_name("cte-capacity.json").is_file()
 
 
-def test_legacy_capacity_not_seeded_by_clio_is_not_adopted(
+def test_stale_small_seed_without_journal_is_adopted(
     store: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    Path(store._config_path).with_name("cte-capacity.json").unlink()
+    """W17: a journal-less 512 MB seed from an old explicit capacity hit code 13, unwarned."""
+    config = Path(store._config_path)
+    config.with_name("cte-capacity.json").unlink()
     monkeypatch.setenv("CLIO_ARC_CTE_FILE_CAPACITY", "16MB")
-    assert not growth.recover_capacity(store, "tag", "record", 1024)
-    assert not store._client.registered
+    assert growth.recover_capacity(store, "tag", "record", 1024)
+    assert config.with_name("cte-capacity.json").is_file()
 
 
 def test_manual_edit_disables_growth(store: Any) -> None:
@@ -163,8 +165,38 @@ def test_manual_edit_disables_growth(store: Any) -> None:
 
 
 def test_custom_config_is_not_enrolled(store: Any) -> None:
-    Path(store._config_path).with_name("cte-capacity.json").unlink()
+    config = Path(store._config_path)
+    config.with_name("cte-capacity.json").unlink()
+    config.write_text(config.read_text().replace("storage.bin", "elsewhere.bin"))
     assert not growth.recover_capacity(store, "tag", "record", 1024)
+
+
+def test_boot_adopts_journal_less_seed(store: Any, caplog: pytest.LogCaptureFixture) -> None:
+    config = Path(store._config_path)
+    journal = config.with_name("cte-capacity.json")
+    journal.unlink()
+    growth.adopt_or_warn_undersized(config)
+    assert journal.is_file()
+    assert "clio_core_store_adopted" in caplog.text
+    caplog.clear()
+    growth.adopt_or_warn_undersized(config)
+    assert not caplog.text
+
+
+def test_boot_names_the_fix_for_an_undersized_store_growth_cannot_reach(
+    store: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    config = Path(store._config_path)
+    config.with_name("cte-capacity.json").unlink()
+    monkeypatch.setenv("CLIO_ARC_CTE_AUTO_EXPAND", "false")
+    monkeypatch.setattr(growth, "_WARNED_UNDERSIZED", set())
+    before = config.read_bytes()
+    growth.adopt_or_warn_undersized(config)
+    growth.adopt_or_warn_undersized(config)
+    assert config.read_bytes() == before
+    assert not config.with_name("cte-capacity.json").exists()
+    assert caplog.text.count("clio_core_store_undersized") == 1
+    assert "capacity_limit" in caplog.text and "arc.cte.auto_expand: true" in caplog.text
 
 
 def test_old_unchanged_default_seed_can_recover(store: Any) -> None:
