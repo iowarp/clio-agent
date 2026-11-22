@@ -1402,6 +1402,10 @@ KEY_NOTES: dict[str, str] = {
         "successful calls to one tool (errors and calls that asked are recorded on their own). "
         "Default 60."
     ),
+    "code.foreground_background_after_s": (
+        "Seconds a foreground run_code script runs before it moves to a background task and "
+        "the call returns; the script keeps running. 0 never moves it. Default 180."
+    ),
     "code.idle_minutes": (
         "Minutes a run_code kernel keeps its variables without a script before it is stopped."
     ),

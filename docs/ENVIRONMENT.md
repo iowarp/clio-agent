@@ -113,6 +113,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_CODE_BACKGROUND_RECORD_WINDOW_S` | `code.background_record_window_s` | str | `60.0` | `src/clio_agent/gact/code_task_records.py` |
 | `CLIO_CODE_BACKGROUND_STATUS_S` | `code.background_status_s` | str | `5.0` | `src/clio_agent/gact/native_code.py` |
 | `CLIO_CODE_COVERING_POSTURES` | `code.covering_postures` | list | `auto-edits,ai-review,spotter-ai,spotter-watcher` | `src/clio_agent/gact/code_mode/grants.py` |
+| `CLIO_CODE_FOREGROUND_BACKGROUND_AFTER_S` | `code.foreground_background_after_s` | float | `180.0` | `src/clio_agent/gact/code_mode/foreground.py` |
 | `CLIO_CODE_IDLE_MINUTES` | `code.idle_minutes` | str | `30.0` | `src/clio_agent/gact/code_mode/kernels.py` |
 | `CLIO_CODE_INDEX_LINE_CHARS` | `code.index_line_chars` | int | `320` | `src/clio_agent/gact/code_mode/stubs.py` |
 | `CLIO_CODE_MAX_OUTPUT_BYTES` | `code.max_output_bytes` | int | `2000000` | `src/clio_agent/gact/code_mode/kernels.py` |
