@@ -639,7 +639,7 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
             await namespace_instances.claim(self, namespace, proxy)
             ctx = direct_client if direct_client is not None else self._client_factory(proxy)
             if spec is not None and uses_shared_launcher_cache(spec):
-                async with aacquire_launcher_cache_lock(namespace):
+                async with aacquire_launcher_cache_lock(namespace, spec=spec):
                     client = await enter_connection(ctx)
             else:
                 client = await enter_connection(ctx)

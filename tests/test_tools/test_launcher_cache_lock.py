@@ -418,3 +418,96 @@ def test_pid_alive_true_for_own_process() -> None:
 
 def test_pid_alive_false_for_implausible_pid() -> None:
     assert lcl._pid_alive(999_999_991) is False
+
+
+def _uv_spec(command: str, *args: str) -> SimpleNamespace:
+    return SimpleNamespace(command=command, args=list(args), env={}, transport="stdio")
+
+
+_RELAY = (
+    "--from",
+    "clio-relay[tapis] @ git+https://example.invalid/relay@abc",
+    "clio-relay",
+    "serve",
+)
+_SPACK = (
+    "--from",
+    "spack-mcp @ git+https://example.invalid/kit@def#subdirectory=spack",
+    "spack-mcp",
+)
+
+
+def test_independent_uv_environments_get_distinct_keys() -> None:
+    relay = lcl.launcher_environment_key(_uv_spec("uvx", *_RELAY))
+    spack = lcl.launcher_environment_key(_uv_spec("uvx", *_SPACK))
+    assert relay and spack and relay != spack
+
+
+def test_launches_of_one_environment_share_a_key() -> None:
+    """uv keys an ephemeral environment on its requirements, not on the command run in
+    it: ``uvx pkg``, ``uvx --from pkg pkg serve`` and ``uv tool run`` share one key, and
+    so do two ``uv run`` launches of one project whatever their other options.
+
+    **Sabotage:** key on the whole argv -> two spawns of one environment race again.
+    """
+    key = lcl.launcher_environment_key
+    bare = key(_uv_spec("uvx", "pkg"))
+    assert bare == key(_uv_spec("uvx", "--from", "pkg", "pkg", "serve"))
+    assert bare == key(_uv_spec("/usr/bin/uv", "tool", "run", "--from=pkg", "other"))
+    assert bare == key(_uv_spec("uvx", "--python", "3.12", "pkg"))
+    assert key(_uv_spec("uvx", "--with", "a", "pkg")) == key(
+        _uv_spec("uvx", "--with=a", "--from", "pkg", "pkg")
+    )
+    assert key(_uv_spec("uvx", "--with", "a", "pkg")) != bare
+    project = key(_uv_spec("uv.exe", "run", "--project", "/p", "srv"))
+    assert project == key(_uv_spec("uv", "run", "--no-sync", "--with", "x", "--directory=/p", "y"))
+    assert project != key(_uv_spec("uv", "run", "--project", "/q", "srv"))
+
+
+def test_unmodelled_launchers_fall_back_to_the_shared_lock() -> None:
+    key = lcl.launcher_environment_key
+    assert key(_uv_spec("uvx", "--some-new-flag", "pkg")) is None
+    assert key(_uv_spec("uv", "run", "srv")) is None  # no project: follows the cwd
+    assert key(_uv_spec("npx", "server")) is None
+    assert key(_uv_spec("uvx", "--from")) is None
+
+
+def test_independent_environments_hold_their_locks_at_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Relay's build never queues behind spack's: each holds its own environment's lock,
+    while a second spawn of spack's environment still waits for the first.
+
+    **Sabotage:** one lock file for every spec -> relay waits for spack to release.
+    """
+    from clio_agent.tools import mcp_config  # noqa: PLC0415
+
+    monkeypatch.setattr(mcp_config, "_mcp_uv_cache_dir", lambda: tmp_path)
+    held = threading.Event()
+    release = threading.Event()
+    second_spack = threading.Event()
+
+    def _spack() -> None:
+        with acquire_launcher_cache_lock("spack", spec=_uv_spec("uvx", *_SPACK), timeout_s=30.0):
+            held.set()
+            release.wait(10.0)
+
+    def _spack_again() -> None:
+        with acquire_launcher_cache_lock("spack2", spec=_uv_spec("uvx", *_SPACK), timeout_s=30.0):
+            second_spack.set()
+
+    holder = threading.Thread(target=_spack)
+    holder.start()
+    waiter = threading.Thread(target=_spack_again)
+    try:
+        assert held.wait(5.0)
+        waiter.start()
+        started = time.monotonic()
+        with acquire_launcher_cache_lock("relay", spec=_uv_spec("uvx", *_RELAY), timeout_s=30.0):
+            assert time.monotonic() - started < 2.0
+        assert not second_spack.wait(1.5), "a second spawn of one environment did not wait"
+    finally:
+        release.set()
+        holder.join(timeout=10.0)
+        waiter.join(timeout=10.0)
+    assert second_spack.is_set()
