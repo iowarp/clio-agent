@@ -19,7 +19,6 @@ from fastmcp_tasks.client_models import (
     ClientCreateTaskResult,
     ClientGetTaskResult,
     GetTaskRequest,
-    GetTaskRequestParams,
 )
 from mcp.client.session import ClientSession
 
@@ -41,7 +40,6 @@ from clio_agent.tools.task_receipt import (
     validate_terminal,
 )
 from clio_agent.tools.task_transport import (
-    NamedGetTaskRequest,
     TaskObservationTransport,
 )
 
@@ -244,14 +242,12 @@ def native_creation() -> ClientCreateTaskResult:
     )
 
 
-def test_task_routing_does_not_mutate_sdk_request_classes() -> None:
-    """Task name routing changes only the request passed to the native SDK."""
-    original = GetTaskRequest(params=GetTaskRequestParams(task_id="with-hyphens-123"))
-    routed = NamedGetTaskRequest.model_validate(original.model_dump())
-    # fastmcp-tasks 4.2 routes task requests by taskId itself.
-    assert original.name_param == "taskId"
-    assert routed.name_param == "taskId"
-    assert routed.model_dump(by_alias=True) == original.model_dump(by_alias=True)
+def test_sdk_task_requests_route_by_their_task_id() -> None:
+    """The SDK's own task requests carry Mcp-Name routing; CLIO adds no subclass."""
+    from fastmcp_tasks.client_models import CancelTaskRequest, UpdateTaskRequest
+
+    for request_class in (GetTaskRequest, UpdateTaskRequest, CancelTaskRequest):
+        assert request_class.name_param == "taskId"
 
 
 def test_task_observation_composes_over_the_sdk_default_session_only() -> None:

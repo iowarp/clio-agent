@@ -5,12 +5,11 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import replace
-from typing import Any, ClassVar, TypeVar
+from typing import Any, TypeVar
 
 from fastmcp.client.transports.base import ClientTransport, TransportOptions
 from fastmcp.client.transports.config import MCPConfigTransport
 from fastmcp_tasks.client_models import (
-    CancelTaskRequest,
     ClientGetTaskResult,
     GetTaskRequest,
     UpdateTaskRequest,
@@ -21,24 +20,6 @@ from pydantic import BaseModel, TypeAdapter
 ReplyT = TypeVar("ReplyT", bound=BaseModel)
 TaskReplyObserver = Callable[[ClientSession, str, ClientGetTaskResult], Awaitable[None]]
 TaskUpdateGuard = Callable[[ClientSession, str, dict[str, Any]], Awaitable[None]]
-
-
-class NamedGetTaskRequest(GetTaskRequest):
-    """Request-local Mcp-Name routing, without patching the SDK's request class."""
-
-    name_param: ClassVar[str | None] = "taskId"
-
-
-class NamedUpdateTaskRequest(UpdateTaskRequest):
-    """Preserve SDK update semantics while carrying its native task identity."""
-
-    name_param: ClassVar[str | None] = "taskId"
-
-
-class NamedCancelTaskRequest(CancelTaskRequest):
-    """Preserve SDK cancellation semantics while carrying its native task identity."""
-
-    name_param: ClassVar[str | None] = "taskId"
 
 
 class ObservedTaskSession(ClientSession):
@@ -64,15 +45,12 @@ class ObservedTaskSession(ClientSession):
         progress_callback: Any = None,
     ) -> ReplyT:
         task_id: str | None = None
+        # fastmcp-tasks routes these requests by taskId itself (name_param, 4.2+).
         if isinstance(request, GetTaskRequest):
             task_id = request.params.task_id
-            request = NamedGetTaskRequest.model_validate(request.model_dump())
         elif isinstance(request, UpdateTaskRequest):
             task_id = request.params.task_id
             await self._guard_task_update(self, task_id, request.params.input_responses)
-            request = NamedUpdateTaskRequest.model_validate(request.model_dump())
-        elif isinstance(request, CancelTaskRequest):
-            request = NamedCancelTaskRequest.model_validate(request.model_dump())
         result = await super().send_request(
             request, result_type, request_read_timeout_seconds, metadata, progress_callback
         )
