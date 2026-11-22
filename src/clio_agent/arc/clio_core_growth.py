@@ -94,7 +94,23 @@ def _managed_config(config: Path, text: str) -> dict[str, Any] | None:
         )
     except (KeyError, TypeError, ValueError):
         return None
-    return document if document == yaml.safe_load(expected) else None
+    same = _without_stated_durability(document) == _without_stated_durability(
+        yaml.safe_load(expected)
+    )
+    return document if same else None
+
+
+def _without_stated_durability(document: dict[str, Any]) -> dict[str, Any]:
+    """``document`` with the core's ``durability: persistent`` taken out.
+
+    The seed states it since iowarp-core 2.5 (a seed from before has the same, inferred,
+    durability), so both shapes are CLIO's unchanged seed.
+    """
+    compose = [dict(m) if isinstance(m, dict) else m for m in document.get("compose", [])]
+    for module in compose:
+        if isinstance(module, dict) and module.get("durability") == "persistent":
+            del module["durability"]
+    return {**document, "compose": compose}
 
 
 def _future_result(future: Any, operation: str) -> Any:

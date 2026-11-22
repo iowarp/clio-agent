@@ -116,8 +116,10 @@ def runtime_state_dir(*, create: bool = True) -> Path:
 
 # Default clio-core CTE config: a RAM working arena (the ``ram`` bdev, clio-core's
 # working memory, not a data tier) and ONE file data tier (score 1.0) on the OS data
-# dir, durable across daemon restarts (``restart``, the metadata log and
-# ``persistence_level``; see :mod:`clio_agent.arc.clio_core_durability`). A blob is in
+# dir, durable across daemon restarts (``durability: persistent``, ``restart``, the
+# metadata log and ``persistence_level``; see :mod:`clio_agent.arc.clio_core_durability`).
+# iowarp-core 2.5 infers a volatile core, with no WAL, from any one volatile device
+# unless ``durability`` is stated; stated, a volatile device is refused loudly (rc 16). A blob is in
 # memory by default; clio-core moves it to the file tier under memory pressure or when it
 # goes unused.
 #
@@ -154,6 +156,7 @@ compose:
     bdev_type: ram
     capacity: "{ram_budget}"
   - mod_name: clio_cte_core
+    durability: persistent
     pool_name: cte_main
     pool_query: local
     pool_id: "512.0"

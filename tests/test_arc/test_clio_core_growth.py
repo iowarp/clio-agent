@@ -156,6 +156,28 @@ def test_old_unchanged_default_seed_can_recover(store: Any) -> None:
     assert growth.recover_capacity(store, "tag", "record", 1024)
 
 
+def test_a_seed_from_before_the_stated_durability_can_recover(store: Any) -> None:
+    """A journal-less seed written before the template stated ``durability`` is CLIO's.
+
+    SABOTAGE: compare the raw documents in ``_managed_config`` and this seed is
+    treated as a person's config, so a full store never grows.
+    """
+    config = Path(store._config_path)
+    config.with_name("cte-capacity.json").unlink()
+    text = config.read_text().replace("8MB", "2GB")
+    assert "    durability: persistent\n" in text
+    config.write_text(text.replace("    durability: persistent\n", ""))
+    assert growth.recover_capacity(store, "tag", "record", 1024)
+
+
+def test_a_seed_stating_volatile_durability_is_not_enrolled(store: Any) -> None:
+    config = Path(store._config_path)
+    config.with_name("cte-capacity.json").unlink()
+    text = config.read_text().replace("8MB", "2GB")
+    config.write_text(text.replace("durability: persistent", "durability: volatile"))
+    assert not growth.recover_capacity(store, "tag", "record", 1024)
+
+
 def test_disk_reserve_is_preserved(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(growth.shutil, "disk_usage", lambda path: SimpleNamespace(free=1 << 30))
     before = Path(store._config_path).read_bytes()

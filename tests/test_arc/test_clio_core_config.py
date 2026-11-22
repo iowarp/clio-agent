@@ -8,6 +8,8 @@ existing user config file. Assertions read the real generated ``cte.yaml``.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import yaml
 
@@ -139,6 +141,18 @@ def test_generator_writes_bounded_ram_cap(monkeypatch, tmp_path):
     assert "cte_ram_tier" not in text
     assert 'capacity: "1GB"' in text.split("clio_bdev")[1].split("clio_cte_core")[0]
     assert '"0g"' not in text
+
+
+def test_a_fresh_seed_states_a_persistent_core(monkeypatch, tmp_path):
+    """iowarp-core 2.5 infers a volatile core (no WAL) from one volatile device unless
+    ``durability`` is stated; the fresh seed states it, so such a device is refused."""
+    monkeypatch.setattr(conf, "_STORE", _store(env={}, tmp_path=tmp_path))
+    monkeypatch.setattr(clio_core_config, "_default_cte_dir", lambda: tmp_path / "cte")
+
+    text = Path(clio_core_config.default_cte_config_path()).read_text(encoding="utf-8")
+    core = next(m for m in yaml.safe_load(text)["compose"] if m["mod_name"] == "clio_cte_core")
+    assert core["durability"] == "persistent"
+    assert "  - mod_name: clio_cte_core\n    durability: persistent\n" in text
 
 
 def test_generator_respects_env_ram_cap(monkeypatch, tmp_path):
