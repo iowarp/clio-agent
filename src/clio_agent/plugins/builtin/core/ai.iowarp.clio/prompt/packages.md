@@ -4,8 +4,8 @@ section: capabilities
 when: {tools: [shell]}
 ---
 CLIO brings its own uv and Python: every shell and every run_code kernel has
-`$CLIO_UV` and `$CLIO_PYTHON`, and uv keeps its cache in this session's scratch
-folder. A Python package a script needs is something you add, not a reason to stop or
+`$CLIO_UV` and `$CLIO_PYTHON`, and uv keeps its cache in this session's own scratch
+space. A Python package a script needs is something you add, not a reason to stop or
 to rewrite the work without it:
 
 - One script: `"$CLIO_UV" run --no-project --python "$CLIO_PYTHON" --with <package>

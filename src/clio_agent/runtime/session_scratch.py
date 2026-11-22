@@ -252,6 +252,74 @@ def _remove_socket_alias(folder: Path) -> None:
             pass
 
 
+#: Longest uv cache a Windows shell uses in place. ``uv run --with`` imports packages from
+#: the cache itself (``archive-v0\<id>\Lib\site-packages\...``), and the Windows DLL loader
+#: refuses a path past MAX_PATH unless long paths are enabled, which they are not by default
+#: ("DLL load failed ... The filename or extension is too long"). CadQuery's deepest DLL sits
+#: 115 characters below the cache, so a cache in a deep scratch folder or workspace fails.
+#: A link does not help: the loader finds a DLL's dependencies by its real path.
+WINDOWS_UV_CACHE_MAX = 48
+_WINDOWS_UV_CACHE_DIR = "clio-u"
+#: Typed reason: the short stand-in for a deep uv cache could not be made; the cache stays.
+SHORT_UV_CACHE_FAILED_REASON = "session_scratch_short_uv_cache_failed"
+_OWNER_FILE = "owner.txt"
+
+
+def _windows() -> bool:
+    return os.name == "nt"
+
+
+def _short_uv_cache_path(cache: Path) -> Path:
+    import hashlib  # noqa: PLC0415
+
+    digest = hashlib.sha256(os.path.normcase(str(cache)).encode("utf-8")).hexdigest()[:10]
+    return Path(tempfile.gettempdir()) / _WINDOWS_UV_CACHE_DIR / digest
+
+
+def _owns_short_uv_cache(short: Path, cache: Path) -> bool:
+    try:
+        owner = (short / _OWNER_FILE).read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    return os.path.normcase(owner) == os.path.normcase(str(cache))
+
+
+def short_uv_cache(cache: Path) -> Path:
+    """``cache``, or on Windows a short stand-in for it when it is too deep for uv's packages.
+
+    The stand-in is ``<system temp>\\clio-u\\<hash of cache>``, one per cache, so each
+    session keeps its own; the system temp is in every shell's write roots. Its
+    ``owner.txt`` names the cache it stands in for, and it is removed with the session's
+    scratch folder. Without the system temp (``paths.allow_system_temp`` off) the cache
+    stays where it is.
+    """
+
+    if not _windows() or len(str(cache)) <= WINDOWS_UV_CACHE_MAX or not allow_system_temp():
+        return cache
+    short = _short_uv_cache_path(cache)
+    if len(str(short)) >= len(str(cache)):
+        return cache
+    if _owns_short_uv_cache(short, cache):
+        return short
+    try:
+        short.mkdir(parents=True, exist_ok=True)
+        if any(entry.name != _OWNER_FILE for entry in short.iterdir()):
+            raise FileExistsError(f"{short} holds another cache")
+        (short / _OWNER_FILE).write_text(f"{cache}\n", encoding="utf-8")
+    except OSError as exc:
+        trace.event("SCRATCH", "%s path=%s error=%r", SHORT_UV_CACHE_FAILED_REASON, cache, exc)
+        return cache
+    return short
+
+
+def _remove_short_uv_cache(cache: Path) -> None:
+    if not _windows():
+        return
+    short = _short_uv_cache_path(cache)
+    if _owns_short_uv_cache(short, cache):
+        shutil.rmtree(win_extended_path(short), ignore_errors=True)
+
+
 def remove_session_scratch(session_id: str, *, why: str) -> bool:
     """Remove one session's scratch folder on this machine; return whether one was removed."""
 
@@ -259,6 +327,7 @@ def remove_session_scratch(session_id: str, *, why: str) -> bool:
     if folder is None or not folder.is_dir():
         return False
     _remove_socket_alias(folder)
+    _remove_short_uv_cache(folder / "uv-cache")
     try:
         shutil.rmtree(win_extended_path(folder))
     except OSError as exc:
@@ -326,6 +395,7 @@ __all__ = [
     "retention_days",
     "scratch_root",
     "session_scratch_dir",
+    "short_uv_cache",
     "sweep",
     "system_temp_roots",
 ]

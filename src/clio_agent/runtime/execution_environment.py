@@ -107,15 +107,20 @@ def shell_environment(workspace: Path, *, session_id: str | None = None) -> dict
     ``TMPDIR``/``TEMP``/``TMP`` point at the session's own scratch folder (TD56) when a
     session owns the call (``session_id``, else the active one), through a short ``/tmp``
     alias when that folder is too deep for a unix socket; ``UV_CACHE_DIR`` and
-    ``CLIO_DOCUMENT_SCRATCH`` stay on the workspace scratch.
+    ``CLIO_DOCUMENT_SCRATCH`` stay on the workspace scratch. On Windows a uv cache too
+    deep for its packages' DLLs moves to a short stand-in (``short_uv_cache``).
     """
     with _LOCK:
         environment = dict(_ENVIRONMENTS.get(workspace.resolve(), {}))
     environment.update(_session_temp(session_id))
-    from clio_agent.runtime.session_scratch import socket_safe_temp  # noqa: PLC0415
+    from clio_agent.runtime import session_scratch  # noqa: PLC0415
 
-    environment.update(socket_safe_temp(environment))
+    environment.update(session_scratch.socket_safe_temp(environment))
     environment.update(_clio_tools(environment))
+    if cache := environment.get("UV_CACHE_DIR"):
+        short = session_scratch.short_uv_cache(Path(cache))
+        if short != Path(cache):
+            environment["UV_CACHE_DIR"] = str(short)
     _bundled_git(environment)
     environment.update(_without_command_line_tools_stubs(environment))
     from clio_agent.runtime.fence_ssh import fence_ssh_environment  # noqa: PLC0415
