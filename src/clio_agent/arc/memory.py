@@ -35,6 +35,7 @@ from clio_agent.arc.live import (
 from clio_agent.arc.lsm import LSMTree
 from clio_agent.arc.memory_segments import SearchUnavailableError as SearchUnavailableError
 from clio_agent.arc.memory_segments import SegmentPlane
+from clio_agent.arc.record_budget import Externalizer, bound_record, record_size
 from clio_agent.arc.response_feedback import ResponseFeedbackLedger
 from clio_agent.arc.schema import (
     Conversation,
@@ -48,6 +49,7 @@ from clio_agent.arc.schema import (
     encode_invocation,
     encode_variant_record,
 )
+from clio_agent.arc.segment_errors import ArcPersistError
 from clio_agent.arc.storage import ARCStore, make_arc_store
 from clio_agent.arc.working_set_fold import make_segment_store
 from clio_agent.runtime import trace
@@ -68,6 +70,49 @@ from clio_agent.runtime import trace
 _EVENT_LOG_SKIP: frozenset[str] = frozenset({"lm.token.delta", "variant.try.delta"})
 
 logger = logging.getLogger(__name__)
+
+#: Typed reason of the stand-in recorded when clio-core refuses to place an event.
+EVENT_RECORD_REFUSED_REASON = "arc_event_record_refused"
+
+
+def _refused_by_store(exc: BaseException) -> bool:
+    """Whether clio-core answered the put with a refusal code (not an outage)."""
+    from clio_agent.arc.clio_core_async_ops import ClioCorePutRefused  # noqa: PLC0415
+
+    seen: set[int] = set()
+    cause: BaseException | None = exc
+    while cause is not None and id(cause) not in seen:
+        if isinstance(cause, ClioCorePutRefused):
+            return cause.native_code is not None
+        seen.add(id(cause))
+        cause = cause.__cause__ or cause.__context__
+    return False
+
+
+def _refused_stand_in(content: dict[str, Any], exc: BaseException) -> dict[str, Any]:
+    """The event's identity and a typed refusal in place of its body."""
+    payload = content.get("payload") if isinstance(content.get("payload"), dict) else {}
+    keep = {
+        key: payload[key]
+        for key in ("call_id", "tool", "parent_call_id", "ok", "message_id")
+        if key in payload and isinstance(payload[key], (str, int, float, bool))
+    }
+    return {
+        **{key: content.get(key, "") for key in ("event_type", "status", "occurred_at")},
+        "summary": str(content.get("summary") or "")[:500],
+        "trace_id": content.get("trace_id", ""),
+        "actor": {},
+        "subject": content.get("subject") if record_size(content.get("subject")) < 2048 else {},
+        "provider": {},
+        "payload": {
+            **keep,
+            "record_refused": {
+                "reason": EVENT_RECORD_REFUSED_REASON,
+                "bytes": record_size(content),
+                "error": str(exc)[:500],
+            },
+        },
+    }
 
 
 class ARCMemory(SegmentPlane):
@@ -155,6 +200,7 @@ class ARCMemory(SegmentPlane):
         # callable so ``arc/`` never imports ``gact/``. ``None`` until wired (tests /
         # memory-only deployments) -> ``record_semantic_event`` returns ``{}``.
         self._highway_sink: Optional[Callable[[Any], Any]] = None
+        self._record_externalizer: Externalizer | None = None
 
         # Cache layer (hot data). A hot LRU — a miss re-reads from the store, so a size
         # bound loses NO data — but it must be configurable (conf, file→env→default) so
@@ -741,7 +787,7 @@ class ARCMemory(SegmentPlane):
         ONE skip decision (:meth:`_event_skip_reason`) gates the persist; every
         persist/skip is logged via ``runtime.trace`` (HF_ON-guarded ``ARC-EVENTS`` hot
         tag) so a dropped event is one ``CLIO_DEBUG=high`` line. Builds a lean content
-        dict from the SemanticEvent's fields (stored verbatim, no caps), correlated by the
+        dict from the SemanticEvent's fields (oversized leaves bounded), correlated by the
         event's trajectory span ids, and appends ONE segment under the reserved
         ``_events`` scope. Never rendered into a prompt (own scope + non-working-set
         kind)."""
@@ -774,6 +820,28 @@ class ARCMemory(SegmentPlane):
         content = build_event_content(event)
         if content is None:
             return
+        content = bound_record(
+            content, session_id=sid, externalize=self._record_externalizer, label=etype
+        )
+        try:
+            self._append_event_content(event, sid, content)
+        except ArcPersistError as exc:
+            if not _refused_by_store(exc):
+                raise
+            # clio-core refused to place this record (a capacity/placement refusal, not
+            # an outage). Record a small typed stand-in in a fresh chunk so the log and
+            # every caller waiting on this event go on; a refusal of that is real.
+            logger.error(
+                "reason=%s session=%s event=%s bytes=%d error=%s",
+                EVENT_RECORD_REFUSED_REASON,
+                sid,
+                etype,
+                record_size(content),
+                exc,
+            )
+            self._append_event_content(event, sid, _refused_stand_in(content, exc))
+
+    def _append_event_content(self, event: Any, sid: str, content: dict[str, Any]) -> None:
         scope = chunk_for_append(
             self._segments, sid, EVENTS_SCOPE, capacity=self._events_chunk_segments
         )
@@ -786,6 +854,12 @@ class ARCMemory(SegmentPlane):
             turn_id=str(getattr(event, "turn_id", "") or ""),
             expert_span_id=str(getattr(event, "expert_span_id", "") or ""),
         )
+
+    def set_record_externalizer(self, externalize: "Externalizer | None") -> None:
+        """Wire where an oversized leaf of an ARC record is saved whole (gact's session
+        spill folder); without one a bounded leaf keeps only its head and digest
+        (:mod:`clio_agent.arc.record_budget`). Injected so ``arc/`` never imports ``gact/``."""
+        self._record_externalizer = externalize
 
     def on_semantic_event(self, event: Any) -> None:
         """Persist one RAW semantic event as the single ``_events`` log record.
