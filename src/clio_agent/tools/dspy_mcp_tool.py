@@ -9,6 +9,8 @@ from typing import Any
 import dspy
 from pydantic import PrivateAttr
 
+from clio_agent.tools.typed_text_arguments import decode_typed_text_arguments
+
 
 class MCPBoundTool(dspy.Tool):
     """A bridged tool whose optional backend and CLIO metadata remain optional."""
@@ -28,6 +30,8 @@ class MCPBoundTool(dspy.Tool):
         the root, so ``{"$ref": "#/$defs/ExperimentCircuit"}`` pointed at nothing and
         every call of a tool with ``$defs`` failed before reaching its server (AQ32).
         """
+        # Invoke markup carries every value as text: "15" for an integer is that number.
+        kwargs = decode_typed_text_arguments(self.name, kwargs, dict(self.args or {}))
         defs = {
             key: self._input_contract[key]
             for key in ("$defs", "definitions")

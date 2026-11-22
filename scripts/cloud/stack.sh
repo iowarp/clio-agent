@@ -57,9 +57,11 @@ if [ "${CLIO_CLOUD_ISOLATE:-0}" = "1" ]; then
     mkdir -p "$dir"
     export "XDG_${role}_HOME=$dir"
   done
-  # Several stacks share one cloud disk: keep each clio-core store small (it
-  # preallocates about 1 GB otherwise).
-  export CLIO_ARC_CTE_FILE_CAPACITY="${CLIO_ARC_CTE_FILE_CAPACITY:-128MB}"
+  # Several stacks share one cloud disk, and the store preallocates its capacity, so
+  # it is capped. 128 MB was too small: one deep-research run whose researchers ran
+  # scripts filled it, and clio-core refused writes for the rest of the run
+  # (2026-11-19). 1 GB holds several such runs.
+  export CLIO_ARC_CTE_FILE_CAPACITY="${CLIO_ARC_CTE_FILE_CAPACITY:-1GB}"
 fi
 # The cloud stack runs as root, where Chromium's sandbox cannot start (browser ledger BR11).
 export CLIO_BROWSER_ALLOW_UNSANDBOXED="${CLIO_BROWSER_ALLOW_UNSANDBOXED:-1}"
@@ -162,13 +164,24 @@ status() {
   done
 }
 
+stop_agent() {
+  stop_one agent
+  # A server that ran past its shutdown budget (a turn held by refused writes) ends
+  # without stopping its clio-core daemon, which runs in its own session; installed
+  # CLIO cleans that up at its next start, but this stack's state is deleted instead.
+  # The same owner-safe cleanup stops only a daemon this state started, and only when
+  # no live client remains (seen 2026-11-19: clio_run and its log pump outlived stop).
+  (cd "$ROOT" && uv run --no-sync python -c 'from clio_agent.arc.storage import cleanup_runtime_after_client_crash as c; print("clio-core: stopped" if c(wait_timeout_seconds=10.0) else "clio-core: nothing of ours running")') 2>/dev/null \
+    || echo "clio-core: cleanup did not run; check for a leftover clio_run"
+}
+
 case "${1:-status}" in
   start) start_fixture && start_agent && start_ui ;;
-  stop) stop_one ui; stop_one agent; stop_one fixture ;;
-  restart) stop_one ui; stop_one agent; stop_one fixture; start_fixture && start_agent && start_ui ;;
+  stop) stop_one ui; stop_agent; stop_one fixture ;;
+  restart) stop_one ui; stop_agent; stop_one fixture; start_fixture && start_agent && start_ui ;;
   status) status ;;
   agent-start) start_agent ;;
-  agent-stop) stop_one agent ;;
+  agent-stop) stop_agent ;;
   ui-start) start_ui ;;
   ui-stop) stop_one ui ;;
   logs) tail -n 40 "$STATE/agent.log" "$STATE/ui.log" "$STATE/fixture.log" 2>/dev/null ;;

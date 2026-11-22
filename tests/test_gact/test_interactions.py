@@ -328,6 +328,60 @@ def test_invalid_answer_retains_the_question_and_prefill(
     assert not any(item.handle == task.handle for item in app.state.task_history.pending_mail(sid))
 
 
+def test_an_elicitation_names_the_call_that_waits_on_it(
+    world: tuple[Any, TestClient, str],
+) -> None:
+    """Live 2026-11-19: "Search web" spun for 24 minutes on a source consent the
+    transcript could not tie to it, because the call id was only in the payload."""
+    app, client, sid = world
+    task = app.state.questions.create(
+        app.state.task_history.latest_assignment(sid).owner,
+        QuestionDefinition(
+            prompt="Allow searches through Keenable?",
+            kind="choice",
+            options=({"label": "Allow", "value": "approve"},),
+            allow_freeform=False,
+            source="mcp_elicitation",
+            metadata={"elicitation": {"mode": "form", "invocation_id": "call_search_1"}},
+        ),
+        invocation_id="inline-elicitation",
+    )
+    response = client.get(f"/v1/sessions/{sid}/interactions", headers=HEADERS)
+    assert response.status_code == 200, response.text
+    (row,) = [i for i in response.json()["interactions"] if i["task_id"] == task.handle]
+    assert row["source"]["invocation_id"] == "call_search_1"
+
+
+def test_a_conversation_says_when_refused_writes_hold_its_work(
+    world: tuple[Any, TestClient, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live 2026-11-19: a full store refused a deep-research flow's writes; the flow's
+    task stayed active and its conversation read "running" for good, with no message.
+    While the task history holds recordings after a refused write, the conversation's
+    interactions carry the store-full sentence; once the hold clears, they do not."""
+    from clio_agent.arc import clio_core_retry
+    from clio_agent.gact import core_write_refusal
+
+    app, client, sid = world
+    refusal = RuntimeError("clio-core AsyncPutBlob('x') returned code 12")
+    refusal.native_code = 12  # type: ignore[attr-defined]
+    clio_core_retry._record_lost_write(name="segments/x", payload=b"x", exc=refusal)
+    try:
+        monkeypatch.setattr(app.state.task_history, "_requires_recovery", True)
+        held = client.get(f"/v1/sessions/{sid}/interactions", headers=HEADERS).json()
+        assert {
+            "reason": "clio_core_writes_refused",
+            "owner_session_id": sid,
+            "detail": core_write_refusal.MESSAGE_NO_ROOM,
+        } in held["degradations"]
+
+        monkeypatch.setattr(app.state.task_history, "_requires_recovery", False)
+        clear = client.get(f"/v1/sessions/{sid}/interactions", headers=HEADERS).json()
+        assert all(row["reason"] != "clio_core_writes_refused" for row in clear["degradations"])
+    finally:
+        clio_core_retry._reset_put_write_health_for_tests()
+
+
 def test_capabilities_advertise_normalized_interactions(world: tuple[Any, TestClient, str]) -> None:
     _app, client, _sid = world
     response = client.get("/v1/capabilities")

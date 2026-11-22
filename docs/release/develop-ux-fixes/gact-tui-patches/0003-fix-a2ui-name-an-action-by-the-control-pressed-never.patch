@@ -1,0 +1,453 @@
+From 89b5371311e3924c84de0fc85e0a50bb14231c45 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 19 Nov 2026 15:31:59 +0000
+Subject: [PATCH 3/7] fix(a2ui): name an action by the control pressed, never
+ its producer id
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+After a person used an agent's surface, the lifecycle line read
+"earthscope.stations.selected recorded" (live 2026-11-18): only the two built-in
+actions had words, and any other action printed its producer identifier, which
+the repository's rules keep out of primary copy. The line now names the control
+the person pressed, from the lifecycle's source_component_id and that control's
+literal label (or its child's), as "“Analyse selected station” recorded", and
+falls back to "Your choice". A bound label is not read. The line also loses its
+extra divider.
+
+The existing lifecycle tests pinned the raw action name in the visible text;
+they now assert it is never shown. The component-map reader moves to
+lib/a2ui/surface-components.ts, which question-navigation now shares.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BHQAws7LSR8fWEJvjbJM4q
+---
+ .../clio/a2ui-action-lifecycle.test.tsx       | 63 ++++++++++++++++---
+ .../components/clio/a2ui-action-lifecycle.tsx | 25 ++++++--
+ web/src/components/clio/a2ui-surface.tsx      |  2 +-
+ .../clio/pending-interactions-a2ui.test.tsx   |  4 +-
+ web/src/lib/a2ui/question-navigation.ts       | 15 +----
+ web/src/lib/a2ui/surface-components.ts        | 48 ++++++++++++++
+ web/src/locales/el/messages.po                |  9 +++
+ web/src/locales/en/messages.po                |  9 +++
+ web/src/locales/es/messages.po                |  9 +++
+ web/src/locales/ja/messages.po                |  9 +++
+ web/src/locales/pseudo/messages.po            |  9 +++
+ 11 files changed, 173 insertions(+), 29 deletions(-)
+ create mode 100644 web/src/lib/a2ui/surface-components.ts
+
+diff --git a/web/src/components/clio/a2ui-action-lifecycle.test.tsx b/web/src/components/clio/a2ui-action-lifecycle.test.tsx
+index 37c8a931b..a7845097b 100644
+--- a/web/src/components/clio/a2ui-action-lifecycle.test.tsx
++++ b/web/src/components/clio/a2ui-action-lifecycle.test.tsx
+@@ -1,6 +1,7 @@
+-import type { A2UIActionLifecycle } from '@clio/core/v3';
++import type { A2UIActionLifecycle, A2UISurface } from '@clio/core/v3';
+ import { cleanup, render, screen } from '@testing-library/react';
+ import { afterEach, describe, expect, it } from 'vitest';
++import { actionControlLabel } from '@/lib/a2ui/surface-components';
+ import { ClioA2UIActionLifecycle } from './a2ui-action-lifecycle';
+ 
+ afterEach(cleanup);
+@@ -8,7 +9,7 @@ afterEach(cleanup);
+ function lifecycle(overrides: Partial<A2UIActionLifecycle> = {}): A2UIActionLifecycle {
+   return {
+     surface_id: 'surface_1',
+-    action_name: 'form.submit',
++    action_name: 'earthscope.stations.selected',
+     status: 'received',
+     occurred_at: '2026-09-17T00:00:00Z',
+     ...overrides,
+@@ -21,14 +22,27 @@ describe('ClioA2UIActionLifecycle', () => {
+     expect(container).toBeEmptyDOMElement();
+   });
+ 
++  // The action name is the producer's identifier: it is never shown (it was, as
++  // "earthscope.stations.selected recorded", live 2026-11-18).
+   it.each([
+-    ['received', 'form.submit received by the agent'],
+-    ['delivered', "form.submit delivered to the agent's turn"],
+-    ['consumed', 'form.submit recorded'],
+-    ['duplicate', 'form.submit ignored as a duplicate'],
++    ['received', 'Your choice received by the agent'],
++    ['delivered', "Your choice delivered to the agent's turn"],
++    ['consumed', 'Your choice recorded'],
++    ['duplicate', 'Your choice ignored as a duplicate'],
+   ] as const)('renders words for the %s state', (status, expectedText) => {
+     render(<ClioA2UIActionLifecycle lifecycle={lifecycle({ status })} />);
+     expect(screen.getByText(expectedText)).toBeVisible();
++    expect(screen.queryByText(/earthscope\.stations/u)).toBeNull();
++  });
++
++  it('names the control the person pressed', () => {
++    render(
++      <ClioA2UIActionLifecycle
++        lifecycle={lifecycle({ status: 'consumed', source_component_id: 'analyse' })}
++        surface={surface}
++      />,
++    );
++    expect(screen.getByText('“Analyse selected station” recorded')).toBeVisible();
+   });
+ 
+   it('includes the reason on a failed action', () => {
+@@ -37,12 +51,12 @@ describe('ClioA2UIActionLifecycle', () => {
+         lifecycle={lifecycle({ status: 'failed', reason: 'busy turn' })}
+       />,
+     );
+-    expect(screen.getByText('form.submit failed: busy turn')).toBeVisible();
++    expect(screen.getByText('Your choice failed: busy turn')).toBeVisible();
+   });
+ 
+   it('never encodes status as a dot or colour alone', () => {
+     render(<ClioA2UIActionLifecycle lifecycle={lifecycle({ status: 'failed' })} />);
+-    expect(screen.getByText(/form\.submit failed/u)).toBeVisible();
++    expect(screen.getByText(/Your choice failed/u)).toBeVisible();
+   });
+ 
+   it('names approval and selection actions for a human reader', () => {
+@@ -52,3 +66,36 @@ describe('ClioA2UIActionLifecycle', () => {
+     expect(screen.getByText('Selection recorded')).toBeVisible();
+   });
+ });
++
++const surface = {
++  id: 'surface_1',
++  session_id: 's',
++  catalog_id: 'c',
++  protocol_version: 'v0.9',
++  revision: 1,
++  state: 'active',
++  messages: [
++    {
++      updateComponents: {
++        surfaceId: 'surface_1',
++        components: [
++          { id: 'analyse', component: 'Button', child: 'analyse_text' },
++          { id: 'analyse_text', component: 'Text', text: 'Analyse selected station' },
++          { id: 'bound', component: 'Button', child: 'bound_text' },
++          { id: 'bound_text', component: 'Text', text: { path: '/label' } },
++          { id: 'own', component: 'Button', label: { literalString: 'Go' } },
++        ],
++      },
++    },
++  ],
++} as unknown as A2UISurface;
++
++describe('actionControlLabel', () => {
++  it('reads a literal label on the control or its child, never a bound one', () => {
++    expect(actionControlLabel(surface, 'analyse')).toBe('Analyse selected station');
++    expect(actionControlLabel(surface, 'own')).toBe('Go');
++    expect(actionControlLabel(surface, 'bound')).toBe('');
++    expect(actionControlLabel(surface, 'missing')).toBe('');
++    expect(actionControlLabel(surface, undefined)).toBe('');
++  });
++});
+diff --git a/web/src/components/clio/a2ui-action-lifecycle.tsx b/web/src/components/clio/a2ui-action-lifecycle.tsx
+index 7dbaddd0b..962939fcc 100644
+--- a/web/src/components/clio/a2ui-action-lifecycle.tsx
++++ b/web/src/components/clio/a2ui-action-lifecycle.tsx
+@@ -1,5 +1,6 @@
+ import { t } from '@lingui/core/macro';
+-import type { A2UIActionLifecycle } from '@clio/core/v3';
++import type { A2UIActionLifecycle, A2UISurface } from '@clio/core/v3';
++import { actionControlLabel } from '@/lib/a2ui/surface-components';
+ import { ClioStatus, type ClioStatusValue } from './status';
+ 
+ /**
+@@ -31,13 +32,18 @@ function lifecycleStatusValue(status: A2UIActionLifecycle['status']): ClioStatus
+   }
+ }
+ 
+-function lifecycleLabel(lifecycle: A2UIActionLifecycle): string {
++function lifecycleLabel(lifecycle: A2UIActionLifecycle, surface?: A2UISurface): string {
++  // The action's name is the producer's identifier, not copy: the person reads the
++  // control they pressed, or plain words when it has no readable label.
++  const control = actionControlLabel(surface, lifecycle.source_component_id);
+   const name =
+     lifecycle.action_name === 'approval.respond'
+       ? t`Decision`
+       : lifecycle.action_name === 'agent.submit'
+         ? t`Selection`
+-        : lifecycle.action_name;
++        : control
++          ? t({ message: `“${control}”`, comment: 'The label of the control the person pressed, quoted' })
++          : t`Your choice`;
+   switch (lifecycle.status) {
+     case 'received':
+       return t`${name} received by the agent`;
+@@ -61,12 +67,19 @@ function lifecycleLabel(lifecycle: A2UIActionLifecycle): string {
+   }
+ }
+ 
+-export function ClioA2UIActionLifecycle({ lifecycle }: { lifecycle?: A2UIActionLifecycle }) {
++export function ClioA2UIActionLifecycle({
++  lifecycle,
++  surface,
++}: {
++  lifecycle?: A2UIActionLifecycle;
++  /** The surface the action came from, to name the control that sent it. */
++  surface?: A2UISurface;
++}) {
+   if (!lifecycle || lifecycle.action_name === 'VALIDATION_FAILED') return null;
+   return (
+-    <div aria-live="polite" className="border-t px-4 py-2 text-xs">
++    <div aria-live="polite" className="pt-2 text-xs" data-slot="a2ui-action-lifecycle">
+       <ClioStatus
+-        label={lifecycleLabel(lifecycle)}
++        label={lifecycleLabel(lifecycle, surface)}
+         value={lifecycleStatusValue(lifecycle.status)}
+       />
+     </div>
+diff --git a/web/src/components/clio/a2ui-surface.tsx b/web/src/components/clio/a2ui-surface.tsx
+index 598744206..9642dee29 100644
+--- a/web/src/components/clio/a2ui-surface.tsx
++++ b/web/src/components/clio/a2ui-surface.tsx
+@@ -407,7 +407,7 @@ function ClioA2UISurfaceContent({
+   );
+   const surfaceFeedback = (
+     <>
+-      <ClioA2UIActionLifecycle lifecycle={actionLifecycle} />
++      <ClioA2UIActionLifecycle lifecycle={actionLifecycle} surface={surface} />
+       {localActionPending || localActionStatus ? (
+         <div aria-live="polite" className="py-2 text-xs">
+           <ClioStatus
+diff --git a/web/src/components/clio/pending-interactions-a2ui.test.tsx b/web/src/components/clio/pending-interactions-a2ui.test.tsx
+index 7c365102c..08f0a7877 100644
+--- a/web/src/components/clio/pending-interactions-a2ui.test.tsx
++++ b/web/src/components/clio/pending-interactions-a2ui.test.tsx
+@@ -199,7 +199,9 @@ describe('ClioPendingInteractions explicitly inline A2UI kind', () => {
+       },
+     );
+ 
+-    expect(await screen.findByText("form.submit delivered to the agent's turn")).toBeVisible();
++    // The producer's action name is never the copy (it was, live 2026-11-18).
++    expect(await screen.findByText("Your choice delivered to the agent's turn")).toBeVisible();
++    expect(screen.queryByText(/form\.submit/u)).toBeNull();
+   });
+ 
+   it('routes a child A2UI action through the normalized interaction response', async () => {
+diff --git a/web/src/lib/a2ui/question-navigation.ts b/web/src/lib/a2ui/question-navigation.ts
+index adcf72d34..ab2832fef 100644
+--- a/web/src/lib/a2ui/question-navigation.ts
++++ b/web/src/lib/a2ui/question-navigation.ts
+@@ -1,5 +1,6 @@
+ import type { A2UISurface, PendingInteraction } from '@clio/core/v3';
+ import { createContext } from 'react';
++import { surfaceComponents } from './surface-components';
+ 
+ export interface SurfaceQuestionTarget {
+   sessionId: string;
+@@ -30,19 +31,7 @@ export function questionTabPath(
+   surface: A2UISurface,
+   answerAction: string,
+ ): ReadonlyMap<string, string> {
+-  const components = new Map<string, Record<string, unknown>>();
+-  for (const envelope of surface.messages) {
+-    if (!envelope || typeof envelope !== 'object') continue;
+-    const update = (envelope as Record<string, unknown>)['updateComponents'] as
+-      | { components?: unknown }
+-      | undefined;
+-    if (!Array.isArray(update?.components)) continue;
+-    for (const value of update.components) {
+-      if (!value || typeof value !== 'object') continue;
+-      const component = value as Record<string, unknown>;
+-      if (typeof component['id'] === 'string') components.set(component['id'], component);
+-    }
+-  }
++  const components = surfaceComponents(surface);
+   const hasAnswer = (value: unknown): boolean => {
+     if (Array.isArray(value)) return value.some(hasAnswer);
+     if (!value || typeof value !== 'object') return false;
+diff --git a/web/src/lib/a2ui/surface-components.ts b/web/src/lib/a2ui/surface-components.ts
+new file mode 100644
+index 000000000..f3eddae82
+--- /dev/null
++++ b/web/src/lib/a2ui/surface-components.ts
+@@ -0,0 +1,48 @@
++import type { A2UISurface } from '@clio/core/v3';
++
++/** A surface's components by id, from its `updateComponents` messages. */
++export function surfaceComponents(
++  surface: A2UISurface | undefined,
++): Map<string, Record<string, unknown>> {
++  const components = new Map<string, Record<string, unknown>>();
++  for (const envelope of surface?.messages ?? []) {
++    if (!envelope || typeof envelope !== 'object') continue;
++    const update = (envelope as Record<string, unknown>)['updateComponents'] as
++      | { components?: unknown }
++      | undefined;
++    if (!Array.isArray(update?.components)) continue;
++    for (const value of update.components) {
++      if (!value || typeof value !== 'object') continue;
++      const component = value as Record<string, unknown>;
++      if (typeof component['id'] === 'string') components.set(component['id'], component);
++    }
++  }
++  return components;
++}
++
++function literalText(value: unknown): string {
++  if (typeof value === 'string') return value.trim();
++  const literal =
++    value && typeof value === 'object'
++      ? (value as { literalString?: unknown }).literalString
++      : undefined;
++  return typeof literal === 'string' ? literal.trim() : '';
++}
++
++/**
++ * The words the person read on the control that sent an action: a literal
++ * `label`/`text` on it or on its `child`. A bound or missing label gives none.
++ */
++export function actionControlLabel(
++  surface: A2UISurface | undefined,
++  componentId: string | undefined,
++): string {
++  if (!componentId) return '';
++  const components = surfaceComponents(surface);
++  const own = components.get(componentId);
++  if (!own) return '';
++  const direct = literalText(own['label']) || literalText(own['text']);
++  if (direct) return direct;
++  const child = typeof own['child'] === 'string' ? components.get(own['child']) : undefined;
++  return child ? literalText(child['text']) || literalText(child['label']) : '';
++}
+diff --git a/web/src/locales/el/messages.po b/web/src/locales/el/messages.po
+index 15abdbbd4..164792d10 100644
+--- a/web/src/locales/el/messages.po
++++ b/web/src/locales/el/messages.po
+@@ -49,6 +49,11 @@ msgstr ", η απάντησή σας"
+ msgid "; dashed: {overlay}"
+ msgstr "; διακεκομμένη: {overlay}"
+ 
++#. The label of the control the person pressed, quoted
++#: src/components/clio/a2ui-action-lifecycle.tsx
++msgid "“{control}”"
++msgstr "«{control}»"
++
+ #: src/components/clio/a2ui-mesh-viewport.tsx
+ msgid "“{label}” is per-node; a threshold needs per-element values, so the threshold is off."
+ msgstr "Το «{label}» ορίζεται ανά κόμβο· ένα κατώφλι χρειάζεται τιμές ανά στοιχείο, οπότε το κατώφλι είναι απενεργοποιημένο."
+@@ -42501,6 +42506,10 @@ msgstr "Οι απαντήσεις σας"
+ msgid "Your change could not be saved."
+ msgstr "Δεν ήταν δυνατή η αποθήκευση της αλλαγής σας."
+ 
++#: src/components/clio/a2ui-action-lifecycle.tsx
++msgid "Your choice"
++msgstr "Η επιλογή σας"
++
+ #. placeholder {0}: tab.comment
+ #: src/components/clio/workbench-variant-try-tab.tsx
+ msgid "Your comment: <0>{0}</0>"
+diff --git a/web/src/locales/en/messages.po b/web/src/locales/en/messages.po
+index 1aabb2cbb..d95777257 100644
+--- a/web/src/locales/en/messages.po
++++ b/web/src/locales/en/messages.po
+@@ -48,6 +48,11 @@ msgstr ", your answer"
+ msgid "; dashed: {overlay}"
+ msgstr "; dashed: {overlay}"
+ 
++#. The label of the control the person pressed, quoted
++#: src/components/clio/a2ui-action-lifecycle.tsx
++msgid "“{control}”"
++msgstr "“{control}”"
++
+ #: src/components/clio/a2ui-mesh-viewport.tsx
+ msgid "“{label}” is per-node; a threshold needs per-element values, so the threshold is off."
+ msgstr "“{label}” is per-node; a threshold needs per-element values, so the threshold is off."
+@@ -42500,6 +42505,10 @@ msgstr "Your answers"
+ msgid "Your change could not be saved."
+ msgstr "Your change could not be saved."
+ 
++#: src/components/clio/a2ui-action-lifecycle.tsx
++msgid "Your choice"
++msgstr "Your choice"
++
+ #. placeholder {0}: tab.comment
+ #: src/components/clio/workbench-variant-try-tab.tsx
+ msgid "Your comment: <0>{0}</0>"
+diff --git a/web/src/locales/es/messages.po b/web/src/locales/es/messages.po
+index ebae45870..2dc773691 100644
+--- a/web/src/locales/es/messages.po
++++ b/web/src/locales/es/messages.po
+@@ -49,6 +49,11 @@ msgstr ", tu respuesta"
+ msgid "; dashed: {overlay}"
+ msgstr "; discontinua: {overlay}"
+ 
++#. The label of the control the person pressed, quoted
++#: src/components/clio/a2ui-action-lifecycle.tsx
++msgid "“{control}”"
++msgstr "«{control}»"
++
+ #: src/components/clio/a2ui-mesh-viewport.tsx
+ msgid "“{label}” is per-node; a threshold needs per-element values, so the threshold is off."
+ msgstr "“{label}” es por nodo; un umbral necesita valores por elemento, así que el umbral está desactivado."
+@@ -42501,6 +42506,10 @@ msgstr "Tus respuestas"
+ msgid "Your change could not be saved."
+ msgstr "No se pudo guardar tu cambio."
+ 
++#: src/components/clio/a2ui-action-lifecycle.tsx
++msgid "Your choice"
++msgstr "Tu elección"
++
+ #. placeholder {0}: tab.comment
+ #: src/components/clio/workbench-variant-try-tab.tsx
+ msgid "Your comment: <0>{0}</0>"
+diff --git a/web/src/locales/ja/messages.po b/web/src/locales/ja/messages.po
+index 3f5155e5d..446d25893 100644
+--- a/web/src/locales/ja/messages.po
++++ b/web/src/locales/ja/messages.po
+@@ -49,6 +49,11 @@ msgstr "、あなたの回答"
+ msgid "; dashed: {overlay}"
+ msgstr "、破線: {overlay}"
+ 
++#. The label of the control the person pressed, quoted
++#: src/components/clio/a2ui-action-lifecycle.tsx
++msgid "“{control}”"
++msgstr "「{control}」"
++
+ #: src/components/clio/a2ui-mesh-viewport.tsx
+ msgid "“{label}” is per-node; a threshold needs per-element values, so the threshold is off."
+ msgstr "「{label}」はノードごとの値です。しきい値には要素ごとの値が必要なため、しきい値はオフになっています。"
+@@ -42501,6 +42506,10 @@ msgstr "あなたの回答"
+ msgid "Your change could not be saved."
+ msgstr "変更を保存できませんでした。"
+ 
++#: src/components/clio/a2ui-action-lifecycle.tsx
++msgid "Your choice"
++msgstr "あなたの選択"
++
+ #. placeholder {0}: tab.comment
+ #: src/components/clio/workbench-variant-try-tab.tsx
+ msgid "Your comment: <0>{0}</0>"
+diff --git a/web/src/locales/pseudo/messages.po b/web/src/locales/pseudo/messages.po
+index 4732e8e93..ac8d0bff1 100644
+--- a/web/src/locales/pseudo/messages.po
++++ b/web/src/locales/pseudo/messages.po
+@@ -48,6 +48,11 @@ msgstr ""
+ msgid "; dashed: {overlay}"
+ msgstr ""
+ 
++#. The label of the control the person pressed, quoted
++#: src/components/clio/a2ui-action-lifecycle.tsx
++msgid "“{control}”"
++msgstr ""
++
+ #: src/components/clio/a2ui-mesh-viewport.tsx
+ msgid "“{label}” is per-node; a threshold needs per-element values, so the threshold is off."
+ msgstr ""
+@@ -42482,6 +42487,10 @@ msgstr ""
+ msgid "Your change could not be saved."
+ msgstr ""
+ 
++#: src/components/clio/a2ui-action-lifecycle.tsx
++msgid "Your choice"
++msgstr ""
++
+ #. placeholder {0}: tab.comment
+ #: src/components/clio/workbench-variant-try-tab.tsx
+ msgid "Your comment: <0>{0}</0>"
+-- 
+2.43.0
+

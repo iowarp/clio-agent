@@ -79,3 +79,25 @@ def test_a_text_argument_is_never_decoded() -> None:
         return text
 
     assert ClioNativeTool(note)(text='{"a": 1}') == '{"a": 1}'
+
+
+def search(query: str, limit: int = 10, min_score: float = 0.0, exact: bool = False) -> str:
+    """Search with a result limit."""
+    return f"{query} {limit!r} {min_score!r} {exact!r}"
+
+
+def test_a_number_or_boolean_sent_as_its_text_is_decoded() -> None:
+    """Live 2026-11-17: every researcher's ``literature_search(limit="15")`` was refused with
+    "Arg limit is invalid: '15' is not of type 'integer'", so no search ran."""
+    tool = ClioNativeTool(search)
+    assert tool(query="q", limit="15", min_score="0.5", exact="true") == "q 15 0.5 True"
+
+
+def test_scalar_text_of_another_type_is_still_refused() -> None:
+    tool = ClioNativeTool(search)
+    for argument, wrong in (("limit", "1.5"), ("limit", "true"), ("limit", "ten"), ("exact", "1")):
+        try:
+            tool(query="q", **{argument: wrong})
+        except ToolArgumentError:
+            continue
+        raise AssertionError(f"{argument}={wrong!r} was taken")

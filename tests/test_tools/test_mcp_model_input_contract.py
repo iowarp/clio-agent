@@ -78,3 +78,34 @@ def test_an_argument_typed_through_the_contracts_defs_reaches_the_server() -> No
         assert "path" in str(exc)
     else:  # pragma: no cover - the validation must refuse it
         raise AssertionError("an invalid circuit reached the server")
+
+
+def test_a_number_sent_as_its_text_reaches_an_mcp_server_as_the_number(tmp_path: Path) -> None:
+    """Live 2026-11-17: every researcher's ``literature_search(limit="15")`` was refused
+    with "Arg limit is invalid: '15' is not of type 'integer'". A call written as invoke
+    markup carries every value as text, and literature and web search are MCP tools, which
+    did not decode it (only CLIO's native tools did). SABOTAGE: drop the decode in
+    ``MCPBoundTool._validate_and_parse_args`` and this call is refused."""
+    server = FastMCP("typed-text-contract")
+    seen: list[tuple[int, bool]] = []
+
+    @server.tool
+    def search(query: str, limit: int = 10, exact: bool = False) -> dict[str, Any]:
+        """Search with a result limit."""
+        seen.append((limit, exact))
+        return {"query": query, "limit": limit}
+
+    executor = create_sync_tool_executor(server)
+    try:
+        tool = next(t for t in executor.to_dspy_tools() if t.name == "search")
+        result = json.loads(tool(query="microplastics", limit="15", exact="true"))
+        assert result["limit"] == 15
+        assert seen == [(15, True)]
+        for wrong in ("1.5", "ten"):
+            try:
+                tool(query="microplastics", limit=wrong)
+            except Exception:  # noqa: BLE001 - the refusal type is DSPy's own
+                continue
+            raise AssertionError(f"limit={wrong!r} was taken")
+    finally:
+        executor.close()

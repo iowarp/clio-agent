@@ -80,10 +80,14 @@ PLAN_ACL_PLAN_TOOLS: tuple[str, ...] = (
 #: The registered-publication tool Architect mode ALLOWS despite the @40 deny-everything default.
 #: ``create_artifact`` remains subject to workspace containment, overwrite, custody, and registry
 #: checks; this does not grant direct file/edit/shell tools. An explicit user deny still wins.
+#: ``run_code`` runs here as in plan mode: only behind an enforced fence, read-only but for its
+#: scratch, its nested calls meeting this ACL one by one (Deep research's researchers batch
+#: their searches in scripts; live 2026-11-17 every researcher's script was denied).
 PLAN_ACL_ARCHITECT_TOOLS: tuple[str, ...] = (
     "create_artifact",
     "ask_user",
     *_EXTERNAL_CONTEXT,
+    "run_code",
     *_TASK_CONTROLS,
 )
 

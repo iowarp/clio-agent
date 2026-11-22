@@ -159,6 +159,33 @@ class Kernel:
         self.process: subprocess.Popen[bytes] | None = None
         self.tree: Any = None
         self.python = ""
+        #: Start runs once, outside the registry lock; a script arriving meanwhile waits on
+        #: it rather than taking the starting kernel for a dead one and replacing it.
+        self._start_lock = threading.Lock()
+        self._start_state = "pending"  # "pending", "started" or the KernelError text
+
+    @property
+    def starting(self) -> bool:
+        """Registered, but its first start has not finished yet."""
+        return self._start_state == "pending"
+
+    def ensure_started(self) -> None:
+        """Start the kernel once; a concurrent caller waits for that start and shares its
+        outcome (a failed start raises for every caller, and the next script replaces it)."""
+        with self._start_lock:
+            if self._start_state == "started":
+                return
+            if self._start_state != "pending":
+                raise KernelError(self._start_state)
+            try:
+                self.start()
+            except KernelError as error:
+                self._start_state = str(error) or "the Python kernel did not start"
+                raise
+            except BaseException:
+                self._start_state = "the Python kernel did not start"
+                raise
+            self._start_state = "started"
 
     def start(self) -> None:
         from clio_agent.runtime import sandbox  # noqa: PLC0415
@@ -334,22 +361,22 @@ def kernel_for(session_id: str, scope: str, workspace: Path, *, read_only: bool 
         kernel = _KERNELS.get(key)
         if (
             kernel is not None
-            and kernel.alive()
+            and (kernel.alive() or kernel.starting)
             and kernel.workspace == workspace
             and kernel.read_only == read_only
         ):
             kernel.last_used = time.monotonic()
-            return kernel
-        replaced = _DETACHED.pop(key, "")
-        if kernel is not None:
-            why = _replaced_because(kernel, workspace, read_only)
-            kernel.stop(why)
-            replaced = why.split(" ", 1)[0]
-        kernel = Kernel(key, workspace, read_only=read_only)
-        kernel.replaced = replaced
-        _KERNELS[key] = kernel
-        _start_reaper()
-    kernel.start()
+        else:
+            replaced = _DETACHED.pop(key, "")
+            if kernel is not None:
+                why = _replaced_because(kernel, workspace, read_only)
+                kernel.stop(why)
+                replaced = why.split(" ", 1)[0]
+            kernel = Kernel(key, workspace, read_only=read_only)
+            kernel.replaced = replaced
+            _KERNELS[key] = kernel
+            _start_reaper()
+    kernel.ensure_started()
     return kernel
 
 
