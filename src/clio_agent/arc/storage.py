@@ -686,7 +686,7 @@ class ClioCoreStore(ClioCoreWrites):
                 if not name_re and not limit:
                     return list(self._cte.Tag(tag).GetContainedBlobs())
                 pool = self._cte.PoolQuery.Dynamic()
-                rows = self._client.BlobQuery(re.escape(tag), name_re or ".*", limit, pool)
+                rows = self._client.BlobQuery(f"^{re.escape(tag)}$", name_re or ".*", limit, pool)
                 return [blob for _tag, blob in rows]
             except UnicodeDecodeError as exc:
                 raise BlobNameDecodeError(tag, exc) from exc
