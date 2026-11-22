@@ -58,11 +58,25 @@ def test_standalone_resolution_entry_point_needs_no_site_packages() -> None:
 
 @pytest.mark.parametrize("python_version", ["3.12.12", "3.13.9", "3.14.8", "3.15.0"])
 @pytest.mark.parametrize("platform", ["linux", "win32", "darwin"])
-def test_real_lock_selects_the_runtime_python_fork(python_version: str, platform: str) -> None:
-    """Python 3.14 must not be compared with the Python 3.15 beartype fork."""
+def test_lock_selects_the_runtime_python_fork(
+    tmp_path: Path, python_version: str, platform: str
+) -> None:
+    """Python 3.14 must not be compared with a Python 3.15 fork of the same package.
+
+    The lock is synthetic: whether the real lock forks a package by interpreter
+    changes with every dependency upgrade, and the selection rule must hold either way.
+    """
+    lock = tmp_path / "uv.lock"
+    lock.write_text(
+        '[[package]]\nname = "beartype"\nversion = "0.22.5"\n'
+        "resolution-markers = [\"python_full_version < '3.15'\"]\n"
+        '[[package]]\nname = "beartype"\nversion = "0.23.1"\n'
+        "resolution-markers = [\"python_full_version >= '3.15'\"]\n",
+        encoding="utf-8",
+    )
     environment = dict(default_environment())
     environment.update(python_full_version=python_version, sys_platform=platform)
-    locked = cbl.load_lock_versions(REPO_ROOT / "uv.lock", environment)
+    locked = cbl.load_lock_versions(lock, environment)
     expected = "0.23.1" if python_version.startswith("3.15.") else "0.22.5"
     assert locked["beartype"] == expected
     wrong = "0.22.5" if expected == "0.23.1" else "0.23.1"
