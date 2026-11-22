@@ -34,6 +34,7 @@ __all__ = [
     "check_url_trust",
     "classify_url_trust",
     "default_answer_metadata",
+    "namespaced_meta",
     "punycode_warning",
     "translate_form_schema",
     "validate_elicitation_answer",
@@ -294,6 +295,22 @@ def default_answer_metadata(fields: Sequence[Mapping[str, Any]]) -> dict[str, An
     return prefill
 
 
+def namespaced_meta(own: Any, carried: Any = None) -> dict[str, Any] | None:
+    """The namespaced ``_meta`` keys (``vendor/name``) of a request, else ``None``.
+
+    An elicitation's own ``params._meta`` wins key by key. A task's input request can
+    carry none (2026-07-28 embedded requests have no ``_meta``), so ``carried`` is the
+    carrying result's ``_meta``. Only ``prefix/name`` keys pass, so transport fields
+    such as ``progressToken`` stay out.
+    """
+
+    kept: dict[str, Any] = {}
+    for source in (carried, own):
+        if isinstance(source, Mapping):
+            kept.update({str(k): v for k, v in source.items() if "/" in str(k)})
+    return kept or None
+
+
 def build_form_metadata(
     translation: FormTranslation,
     *,
@@ -304,16 +321,20 @@ def build_form_metadata(
     forwarded_from_session: str,
     task_id: str | None = None,
     input_key: str | None = None,
+    meta: Mapping[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Assemble the form-mode ``metadata.elicitation`` block for a new question.
 
     ``task_id`` / ``input_key`` carry the MCP-task correlation for an
     elicitation raised inside a task-shaped invocation, so the interactions
-    projection can route the response back to the parked task input.
+    projection can route the response back to the parked task input. ``meta`` is
+    the request's namespaced ``_meta`` (see :func:`namespaced_meta`), passed
+    through unchanged for renderers that understand a server's typed data.
     """
 
     return {
         "elicitation": {
+            **({"meta": dict(meta)} if meta else {}),
             "mode": "form",
             "fields": translation.fields,
             "additional_properties": translation.additional_properties,

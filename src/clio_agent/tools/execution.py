@@ -24,7 +24,13 @@ from clio_agent.runtime import commitment_activity
 from clio_agent.runtime.cancellation import with_scope_stop
 from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools import foreground_cancellation as foreground_cancel
-from clio_agent.tools import harness_notes, mcp_result_media, task_descriptions, tool_presentation
+from clio_agent.tools import (
+    harness_notes,
+    mcp_result_media,
+    server_confirm,
+    task_descriptions,
+    tool_presentation,
+)
 from clio_agent.tools import task_call_context as task_calls
 from clio_agent.tools import tool_path_contract as tool_paths
 from clio_agent.tools.mcp_a2ui_result import model_result
@@ -368,7 +374,13 @@ def _declared_mcp_permission_context(
     if not separator or namespace not in namespace_servers:
         return None
     title = tool.get("title") if isinstance(tool, Mapping) else getattr(tool, "title", None)
-    context = {"kind": "external_mcp", "annotations": dict(_tool_annotations(tool))}
+    context: dict[str, Any] = {
+        "kind": "external_mcp",
+        "annotations": dict(_tool_annotations(tool)),
+        "server": namespace,
+    }
+    if server_confirm.declares(tool):  # its server asks the person itself (one card)
+        context["server_confirm"] = True
     return {**context, "title": title} if title else context  # a view-only tool's own title
 
 
@@ -623,6 +635,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             raise notify_refused_call(tool_observer, name, effective_args, refusal)
 
         approval = task_calls.capture_approval(name, effective_args) if permission_gate else None
+        decision_seen: Any = None
         if permission_gate is not None:
             permission_context = _declared_mcp_permission_context(
                 name,
@@ -644,6 +657,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
                 deny_message = getattr(decision, "deny_message", "")
                 message = deny_message or f"tool call {name!r} denied by permission gate"
                 raise notify_refused_call(tool_observer, name, effective_args, message, decision)
+            decision_seen = decision
 
         raise_if_cancelled("tool_call_before")
 
@@ -690,7 +704,9 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
 
         app_loop = task_calls.application_loop()
         timeout = foreground_cancel.inline_timeout(self._async_executor, name, effective_args)
-        task_call_token = task_calls.begin_invocation(approval=approval)
+        task_call_token = task_calls.begin_invocation(
+            approval=approval, server_confirm=bool(getattr(decision_seen, "server_confirm", False))
+        )
         try:
             with commitment_activity.track(timeout is None):
                 outcome = foreground_cancel._run_foreground_coroutine(

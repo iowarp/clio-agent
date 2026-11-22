@@ -132,6 +132,8 @@ def _record_reply(
             if key in requests and requests[key] != value:
                 raise ValueError("Server reused an input key with changed content")
             requests[key] = value
+        if requests:
+            self.flagged.asked(current.handle)
         detail_ref = (
             self.history.write_content(current.owner.session_id, details)
             if reply.input_requests
@@ -147,6 +149,8 @@ def _record_reply(
             "status": "input_required" if reply.status == "input_required" else "running",
             "activity": "waiting_for_input" if reply.status == "input_required" else "executing",
         }
+        if reply.meta:  # the latest status/tasks-get _meta a server sent, kept as sent
+            updates["metadata"] = reply.model_dump(mode="json", by_alias=True)["_meta"]
         if reply.status in {"completed", "failed", "cancelled"}:
             result = self.history.write_content(
                 current.owner.session_id, reply.model_dump(mode="json")
@@ -177,6 +181,14 @@ def _record_reply(
         self.history.record_snapshot(observed, observation_id=uuid4().hex)
         if observed.terminal_at is not None:
             finish_terminal(self, observed.handle)
+    if observed.terminal_at is not None:
+        self.flagged.settled(
+            self.app,
+            observed.handle,
+            reply.result,
+            reply,
+            failed=observed.status != "completed",
+        )
     if observed.terminal_at is not None and reply.status == "completed" and reply.result:
         from clio_agent.gact.server_surfaces import apply_task_result  # noqa: PLC0415
 
@@ -188,6 +200,20 @@ def _record_reply(
             observed.handle,
             reply.result,
         )
+
+
+def _request_meta(task: TaskSnapshot, key: str, raw: dict[str, Any]) -> dict[str, Any] | None:
+    """An input request's namespaced ``_meta``: its own, over its task reply's.
+
+    A 2026-07-28 embedded request has no ``_meta``; a server carries typed data for it
+    on the ``tasks/get`` / status reply instead, kept on the task as ``metadata``.
+    """
+
+    from clio_agent.gact.elicitation_schema import namespaced_meta  # noqa: PLC0415
+
+    own = (raw.get("params") or {}).get("_meta") if isinstance(raw, dict) else None
+    carried = None if key.startswith("inline:") else task.metadata
+    return namespaced_meta(own, carried)
 
 
 async def _answered_or_left(
@@ -256,6 +282,60 @@ def _withdraw(
         last,
     )
     return mcp_types.ElicitResult(action="cancel")
+
+
+def _covered_confirm(
+    self: ExternalTasks,
+    task: TaskSnapshot,
+    current: TaskSnapshot,
+    details: dict[str, Any],
+    key: str,
+    qid: str,
+    params: Any,
+    meta: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Answer a plain confirm of a call a person already allowed; ``None`` to ask.
+
+    Runs under the history lock, right after the Question was posted: it stays under
+    the call, answered, with the server's message and the typed reason.
+    """
+    from clio_agent.gact import mcp_confirm_coverage as coverage  # noqa: PLC0415
+
+    content = coverage.plain_confirm(params, meta)
+    if content is None:
+        return None
+    permission = coverage.person_allowed(self.app, task.owner.session_id, task.invocation_id)
+    if not permission:
+        return None
+    self.app.state.questions.answer(
+        qid,
+        QuestionReply(
+            answer=coverage.COVERED_ANSWER,
+            selected_options=("yes",) if content else (),
+            metadata=content,
+            action="accept",
+        ),
+    )
+    decision = {"reason": coverage.REASON_COVERED, "permission_id": permission}
+    self.app.state.questions.freeze_resolution(qid, decision)
+    value = mcp_types.ElicitResult(action="accept", content=content).model_dump(
+        mode="json", by_alias=True, exclude_none=True
+    )
+    details.setdefault("answers", {})[key] = value
+    details.setdefault("covered_inputs", {})[key] = decision
+    reference = self.history.write_content(task.owner.session_id, details)
+    self.history.record_snapshot(
+        current.model_copy(update={"details": reference, "updated_at": now()}),
+        observation_id=uuid4().hex,
+    )
+    logger.info(
+        "Task input reason=%s task=%s key=%s permission=%s",
+        coverage.REASON_COVERED,
+        task.handle,
+        key,
+        permission,
+    )
+    return value
 
 
 async def _input(self: ExternalTasks, host: ExternalConnection, params: Any, request: Any) -> Any:
@@ -328,6 +408,7 @@ async def _input(self: ExternalTasks, host: ExternalConnection, params: Any, req
             return resolve_locked()
 
     task, key, raw = await self.history.io.run(resolve)
+    self.flagged.asked(task.handle)  # a server-confirmed call's card reached the person
     url_scope = None
     if getattr(params, "mode", "form") == "url":
         from clio_agent.gact.off_loop import run_off_loop
@@ -419,7 +500,9 @@ async def _input(self: ExternalTasks, host: ExternalConnection, params: Any, req
                 else:
                     translated = translate_form_schema(params.requested_schema)
                     problem = translated.degrade
-                    metadata = build_form_metadata(translated, **correlation)
+                    metadata = build_form_metadata(
+                        translated, **correlation, meta=_request_meta(current, key, raw)
+                    )
                     definition = QuestionDefinition.model_validate(
                         {
                             "prompt": params.message,
@@ -444,12 +527,25 @@ async def _input(self: ExternalTasks, host: ExternalConnection, params: Any, req
                         observation_id=uuid4().hex,
                     )
                     return "", value, False
-                self.app.state.questions.create(
+                created = self.app.state.questions.create(
                     task.owner.model_copy(update={"parent_handle": task.handle}),
                     definition,
                     invocation_id=task.invocation_id,
                     handle=qid,
                 )
+                if created.raw_status == "pending" and mode == "form":
+                    covered = _covered_confirm(
+                        self,
+                        task,
+                        current,
+                        details,
+                        key,
+                        qid,
+                        params,
+                        metadata["elicitation"].get("meta"),
+                    )
+                    if covered is not None:
+                        return "", covered, False
             return qid, None, False
 
     qid, previous, shared = await self.history.io.run(question)

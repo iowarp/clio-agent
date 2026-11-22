@@ -127,7 +127,7 @@ def process_view(app: Any, task: dict[str, Any]) -> dict[str, Any]:
         "parent_turn_id": task["invocation_id"],
         "cancel_requested": task["cancellation_requested_at"] is not None,
         "placement": backend.get("placement", "local"),
-        "metadata": {},
+        "metadata": task.get("metadata") or {},
         "result_reference": task.get("result"),
         "result": None,
         "error_reason": task.get("progress", {}).get("message", "")

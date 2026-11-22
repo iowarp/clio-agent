@@ -78,6 +78,9 @@ class TaskCall:
     session_id: str = ""
     submission_handle: str = ""
     approval: InvocationApproval | None = None
+    # The host skipped its own ask: the tool's server confirms this call itself
+    # (tools/server_confirm.py), so its tools/call carries the request flag.
+    server_confirm: bool = False
 
 
 _EMPTY_CALL = TaskCall()
@@ -130,6 +133,7 @@ def begin_backend_call(
             owner_agent=inherited.owner_agent,
             session_id=inherited.session_id or active_session_id(),
             approval=inherited.approval,
+            server_confirm=inherited.server_confirm,
         )
     )
     return forwarded, token
@@ -162,7 +166,9 @@ def capture_approval(tool: str, arguments: dict[str, Any]) -> InvocationApproval
     return None
 
 
-def begin_invocation(*, approval: InvocationApproval | None = None) -> Token[TaskCall]:
+def begin_invocation(
+    *, approval: InvocationApproval | None = None, server_confirm: bool = False
+) -> Token[TaskCall]:
     """Bind an optional resolved approval to the actual observer invocation once."""
     from clio_agent.gact import context
     from clio_agent.gact.artifacts.observer_bridge import observer_call_id
@@ -175,6 +181,7 @@ def begin_invocation(*, approval: InvocationApproval | None = None) -> Token[Tas
             owner_agent=context.active_react_scope(),
             session_id=context.active_session_id(),
             approval=bound,
+            server_confirm=server_confirm,
         )
     )
 

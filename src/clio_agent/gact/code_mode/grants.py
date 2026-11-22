@@ -8,13 +8,17 @@ would ask, the approval mode decides (the plan's table):
 - ``bypass``: the call runs (the gate already allows it);
 - ``auto-edits``, ``ai-review``, ``spotter-ai``, ``spotter-watcher`` (the default
   ``code.covering_postures``): the script's approval covers it;
-- ``ask``: it asks, one question per script at a time, showing the script; the answer
-  "Allow for the rest of this script" (``allow_script``) covers the rest of that call.
+- ``ask``: a person who approved the script approved the calls it names: a nested call
+  to a tool the script's code names (``tools.<group>.<tool>`` or ``tools.call("<name>")``)
+  is covered. A call the code does not name (one found with ``tools.search`` and called
+  through a variable) asks, one question per script at a time, showing the script; the
+  answer "Allow for the rest of this script" (``allow_script``) covers the rest of that
+  call.
 
 The question that approves the script itself offers ``allow_script`` too: choosing it
-there covers the script's nested calls from the start, so one answer approves the script
-and its calls (an upload in chunks asks once, not once per chunk). "Allow once" there
-approves only the script, and its calls ask as above.
+there covers all the script's nested calls from the start, named or not. "Allow once"
+there covers the calls the script names, as above. An approval that came from a rule or
+the reviewer rather than a person covers nothing under ``ask``.
 
 The grant lives in a ``ContextVar`` that ``run_code`` binds for its nested calls, so
 the gate (which runs in the nested call's thread) sees it, and nothing outside the
@@ -25,6 +29,7 @@ but the wait.
 from __future__ import annotations
 
 import contextlib
+import re
 import threading
 from collections.abc import Iterator, Mapping, Sequence
 from contextvars import ContextVar
@@ -91,12 +96,33 @@ class ScriptGrant:
     code: str
     #: "Allow for the rest of this script" was chosen.
     covered: bool = False
+    #: A person answered the script's own question with an allow: the calls its code
+    #: names are covered under ``ask``.
+    approved: bool = False
+    #: The agent's MCP server names, which split a tool name into ``<group>.<tool>``.
+    servers: tuple[str, ...] = ()
     #: One open question per script: other calls that need an answer wait behind it.
     asking: threading.Lock = field(default_factory=threading.Lock)
     #: The session's approval mode when the script was approved: its nested calls keep
     #: it, so changing the mode while a background script runs does not change what the
     #: script may do (CK10). Empty: the session's current mode applies.
     approval_mode: str = ""
+
+    def names(self, tool: str) -> bool:
+        """Whether the script's code names ``tool`` as one of its calls."""
+        from clio_agent.gact.code_mode.stubs import tool_group  # noqa: PLC0415
+
+        if tool in {m.group(2) for m in _CALL_BY_NAME.finditer(self.code)}:
+            return True
+        group, function = tool_group(tool, self.servers)
+        wanted = (group, function) if group else (function, "")
+        return wanted in {(m.group(1), m.group(2) or "") for m in _ATTRIBUTE.finditer(self.code)}
+
+
+#: ``tools.<group>.<tool>`` or ``tools.<tool>`` in a script's code.
+_ATTRIBUTE = re.compile(r"\btools\s*\.\s*([A-Za-z_]\w*)(?:\s*\.\s*([A-Za-z_]\w*))?")
+#: ``tools.call("<name>"`` in a script's code.
+_CALL_BY_NAME = re.compile(r"\btools\s*\.\s*call\s*\(\s*(['\"])([^'\"\n]+)\1")
 
 
 _ACTIVE: ContextVar[ScriptGrant | None] = ContextVar("clio_run_code_grant", default=None)
@@ -139,10 +165,14 @@ def reset_grant(token: Any) -> None:
     _ACTIVE.reset(token)
 
 
-def covers(posture: str) -> bool:
-    """Whether a nested call that would ask runs under the script's approval."""
+def covers(posture: str, tool: str = "") -> bool:
+    """Whether a nested call to ``tool`` that would ask runs under the script's approval."""
     grant = _ACTIVE.get()
-    return grant is not None and (grant.covered or posture in covering_postures())
+    if grant is None:
+        return False
+    if grant.covered or posture in covering_postures():
+        return True
+    return grant.approved and bool(tool) and grant.names(tool)
 
 
 def row_fields(actions: list[str]) -> dict[str, Any]:
@@ -169,7 +199,16 @@ def question() -> Iterator[None]:
 
 def answered(row: Mapping[str, Any]) -> None:
     """An ``allow_script`` answer covers the rest of the script (all of it, when the
-    answer approved the script itself)."""
-    grant = _ACTIVE.get() or _APPROVING.get()
-    if grant is not None and row.get("action") == ALLOW_SCRIPT:
+    answer approved the script itself); a person's other allow of the script itself
+    covers the calls its code names."""
+    from clio_agent.gact.runtime.grants import GRANTOR_USER  # noqa: PLC0415
+    from clio_agent.gact.runtime.permission_actions import allows  # noqa: PLC0415
+
+    active = _ACTIVE.get()
+    grant = active or _APPROVING.get()
+    if grant is None:
+        return
+    if row.get("action") == ALLOW_SCRIPT:
         grant.covered = True
+    elif active is None and row.get("grantor") == GRANTOR_USER and allows(row.get("action")):
+        grant.approved = True
