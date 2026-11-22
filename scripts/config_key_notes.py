@@ -365,8 +365,9 @@ KEY_NOTES: dict[str, str] = {
     ),
     "arc.cte.file_capacity": (
         'Capacity (e.g. "20GB") of clio-core\'s disk file tier; unset, a fresh install sizes it '
-        "to 10% of the disk's free space (2-50 GB). Windows allocates it up front. A full tier "
-        "grows unless arc.cte.auto_expand is off."
+        "to 10% of the disk's free space (2-50 GB). The file grows in 1 GiB chunks up to that "
+        "limit on every OS. A full tier grows unless arc.cte.auto_expand is off; a store CLIO "
+        "cannot grow that is under 2 GB is warned at boot with the fix."
     ),
     "arc.cte.ram_capacity": (
         'Hard byte ceiling (e.g. "1GB") for clio-core\'s RAM working arena; raise for more '
