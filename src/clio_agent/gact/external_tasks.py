@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import logging
@@ -103,6 +104,8 @@ class ExternalTasks:
         # Read-only calls sent before their admission is written (external_read_only),
         # and their records, written behind their replies (read_only_outcomes).
         self._lazy: dict[str, LazyAdmission] = {}
+        #: Tasks waiting on each open input question (one prompt per shared ask).
+        self.question_waiters: dict[str, set[str]] = {}
         self.outcomes = ReadOnlyOutcomes(self.history, self.recovery)
         self._unwatch_fleets: Callable[[], None] | None = None
         external_task_connections.watch_fleets(self)
@@ -739,7 +742,8 @@ class ExternalTasks:
         return current
 
     def _details(self, task: TaskSnapshot) -> dict[str, Any]:
-        return dict(self.history.read_content(task.details)) if task.details is not None else {}
+        # A deep copy: callers edit nested maps, and the stored record must not change.
+        return copy.deepcopy(self.history.read_content(task.details)) if task.details else {}
 
     def _attention(
         self, handle: str, message: str, *, lost: bool = True, episode: str = ""

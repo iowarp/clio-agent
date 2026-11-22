@@ -15,6 +15,7 @@ from fastmcp_tasks.client_models import ClientGetTaskResult
 
 from clio_agent.arc.task_types import BackendReference
 from clio_agent.gact import view_call_cancel, view_call_ledger
+from clio_agent.gact.native_work import now
 from clio_agent.tools import fleet_close_listeners, namespace_instances
 from clio_agent.tools.mcp_runtime import enter_connection
 from clio_agent.tools.task_client import AcceptedNativeCall, TaskAwareClient
@@ -106,19 +107,36 @@ async def connection(
             async def observe(session: Any, task_id: str, reply: ClientGetTaskResult) -> None:
                 await self._observe(host, task_id, reply)
 
-            async def guard(session: Any, task_id: str, answers: dict[str, Any]) -> None:
-                def validate() -> None:
-                    current = self._task(host, task_id)
-                    details = self._details(current)
-                    if any(
-                        details.get("answers", {}).get(key) != value
-                        for key, value in answers.items()
-                    ):
-                        raise ValueError(
-                            "Task update differs from confirmed canonical input responses"
+            async def guard(
+                session: Any, task_id: str, answers: dict[str, Any]
+            ) -> dict[str, Any] | None:
+                def validate() -> dict[str, Any] | None:
+                    with self.history.serialized():
+                        current = self._task(host, task_id)
+                        details = self._details(current)
+                        withdrawing = details.get("withdrawing") or {}
+                        kept = {k: v for k, v in answers.items() if k not in withdrawing}
+                        if any(
+                            details.get("answers", {}).get(key) != value
+                            for key, value in kept.items()
+                        ):
+                            raise ValueError(
+                                "Task update differs from confirmed canonical input responses"
+                            )
+                        if not withdrawing:
+                            return None
+                        # A withdrawn input is never delivered: the task stopped asking.
+                        for key in answers:
+                            withdrawing.pop(key, None)
+                        details["withdrawing"] = withdrawing
+                        reference = self.history.write_content(current.owner.session_id, details)
+                        self.history.record_snapshot(
+                            current.model_copy(update={"details": reference, "updated_at": now()}),
+                            observation_id=uuid4().hex,
                         )
+                        return kept
 
-                await self.history.io.run(validate)
+                return await self.history.io.run(validate)
 
             async def accepted(call: AcceptedNativeCall) -> Any:
                 previous = host.calls.get(call.task.task_id)
@@ -150,7 +168,17 @@ async def connection(
                 return receipt
 
             async def elicit(message: str, response_type: Any, params: Any, request: Any) -> Any:
-                return await self._input(host, params, request)
+                try:
+                    return await self._input(host, params, request)
+                except Exception:
+                    # The SDK reduces this to an error message; keep where it failed.
+                    logger.warning(
+                        "Task input reason=external_input_failed server=%s request=%s",
+                        host.backend.server,
+                        getattr(request, "request_id", ""),
+                        exc_info=True,
+                    )
+                    raise
 
             transport = TaskObservationTransport(configured.transport, observe, guard)
             client = TaskAwareClient.from_configured(

@@ -20,7 +20,9 @@ from pydantic import BaseModel, TypeAdapter
 
 ReplyT = TypeVar("ReplyT", bound=BaseModel)
 TaskReplyObserver = Callable[[ClientSession, str, ClientGetTaskResult], Awaitable[None]]
-TaskUpdateGuard = Callable[[ClientSession, str, dict[str, Any]], Awaitable[None]]
+#: Validates a ``tasks/update`` before it is sent. ``None`` sends it as built; a dict
+#: replaces its input responses (withdrawn inputs removed); an empty dict skips the send.
+TaskUpdateGuard = Callable[[ClientSession, str, dict[str, Any]], Awaitable[dict[str, Any] | None]]
 
 
 class NamedGetTaskRequest(GetTaskRequest):
@@ -69,7 +71,19 @@ class ObservedTaskSession(ClientSession):
             request = NamedGetTaskRequest.model_validate(request.model_dump())
         elif isinstance(request, UpdateTaskRequest):
             task_id = request.params.task_id
-            await self._guard_task_update(self, task_id, request.params.input_responses)
+            kept = await self._guard_task_update(self, task_id, request.params.input_responses)
+            if kept is not None and not kept:
+                # Every input was withdrawn (the task no longer asks): nothing to deliver.
+                adapter = (
+                    result_type
+                    if isinstance(result_type, TypeAdapter)
+                    else TypeAdapter(result_type)
+                )
+                return adapter.validate_python({})
+            if kept is not None:
+                request = request.model_copy(
+                    update={"params": request.params.model_copy(update={"input_responses": kept})}
+                )
             request = NamedUpdateTaskRequest.model_validate(request.model_dump())
         elif isinstance(request, CancelTaskRequest):
             request = NamedCancelTaskRequest.model_validate(request.model_dump())
