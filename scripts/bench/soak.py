@@ -107,6 +107,7 @@ def main() -> int:
         lat = [x for _c, mins, _a in results for x in mins.get(m, ([], 0))[0]]
         err = sum(mins.get(m, ([], 0))[1] for _c, mins, _a in results)
         rss_at = [v for t, v in rss.samples if m * 60 <= t < (m + 1) * 60]
+        parts = [b for t, b in rss.breakdown if m * 60 <= t < (m + 1) * 60 and b]
         per_minute.append(
             {
                 "minute": m,
@@ -115,6 +116,7 @@ def main() -> int:
                 "over_15s": sum(1 for x in lat if x > _BOUND_S),
                 "errors": err,
                 "daemon_rss_mib": max(rss_at) if rss_at else None,
+                "daemon_rss_parts_mib": parts[-1] if parts else None,
             }
         )
         print(per_minute[-1], file=sys.stderr)
@@ -133,6 +135,7 @@ def main() -> int:
             "daemon_rss": rss.summary(),
             "per_minute": per_minute,
             "rss_series": rss.samples,
+            "rss_breakdown_series": rss.breakdown,
         },
     )
     print(bc.stop_daemon(store), file=sys.stderr)

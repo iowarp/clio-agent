@@ -78,6 +78,20 @@ def percentiles(samples: list[float]) -> dict[str, float]:
     }
 
 
+def _rss_breakdown(pid: int | None) -> dict[str, float]:
+    """``RssAnon``/``RssFile``/``RssShmem`` of ``pid`` in MiB (Linux ``/proc``; else ``{}``)."""
+    try:
+        text = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    out = {}
+    for line in text.splitlines():
+        key, _, value = line.partition(":")
+        if key in ("RssAnon", "RssFile", "RssShmem"):
+            out[key] = round(int(value.split()[0]) / 1024, 1)
+    return out
+
+
 class RssSampler:
     """Samples a process's RSS (MiB) every ``interval`` seconds in a thread."""
 
@@ -85,6 +99,8 @@ class RssSampler:
         self.pid = pid
         self.interval = interval
         self.samples: list[tuple[float, float]] = []
+        #: Linux only: RssAnon / RssFile / RssShmem (MiB) per sample, else empty dicts.
+        self.breakdown: list[tuple[float, dict[str, float]]] = []
         self._stop = threading.Event()
         self._start = time.monotonic()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -103,7 +119,9 @@ class RssSampler:
                 rss = proc.memory_info().rss / 2**20
             except psutil.Error:
                 return
-            self.samples.append((round(time.monotonic() - self._start, 1), round(rss, 1)))
+            at = round(time.monotonic() - self._start, 1)
+            self.samples.append((at, round(rss, 1)))
+            self.breakdown.append((at, _rss_breakdown(self.pid)))
             self._stop.wait(self.interval)
 
     def __enter__(self) -> RssSampler:
