@@ -948,6 +948,13 @@ transcript.file: true
 # a low-RAM host, lower to shrink resident memory.
 arc.cache_capacity: 1000
 
+# CLIO_ARC_CLIO_CORE_BLOB_CALLS  (str)  <- src/clio_agent/arc/clio_core_sync_calls.py
+# async (default) or sync: sync uses iowarp-core 2.5's synchronous
+# PutBlob/GetBlob/GetBlobSize for one-blob ops (the only calls that use a
+# shm cache); they carry no stall bound, so a stuck daemon holds the caller.
+# Applies on restart.
+arc.clio_core.blob_calls: "async"
+
 # CLIO_ARC_CLIO_CORE_DAEMON_RECYCLE  (bool)  <- src/clio_agent/arc/clio_core_daemon.py
 # Opt-in: auto-stops the shared clio-core daemon when RSS-critical with zero
 # live clients; enable on long-lived hosts to reclaim leaked memory.
@@ -1052,6 +1059,13 @@ arc.cte.metadata_disk_reserve: "256MB"
 # Hard byte ceiling (e.g. "1GB") for clio-core's RAM working arena; raise
 # for more headroom -- a deliberate desktop cap on DRAM growth.
 arc.cte.ram_capacity: "1GB"
+
+# CLIO_ARC_CTE_SHM_CACHE  (str)  <- src/clio_agent/arc/clio_core_shm_cache.py
+# off (default) or md_only: composes iowarp-core 2.5's shared-memory cache
+# in metadata-only mode between the indexer and the core in CLIO's seed
+# (puts are still acknowledged by the persistent core). Used only with
+# arc.clio_core.blob_calls=sync; applies from the daemon's next start.
+arc.cte.shm_cache: "off"
 
 # CLIO_ARC_EVENTS_CHUNK_SEGMENTS  (int)  <- src/clio_agent/arc/memory.py
 # Semantic-event segments held per on-disk chunk of a session's event log
@@ -1466,6 +1480,11 @@ code.background_status_s: "5.0"
 # Approval modes in which approving a run_code script also covers the non-
 # read tool calls it makes; in other modes each such call asks.
 code.covering_postures: ["auto-edits", "ai-review", "spotter-ai", "spotter-watcher"]
+
+# CLIO_CODE_FOREGROUND_BACKGROUND_AFTER_S  (float)  <- src/clio_agent/gact/code_mode/foreground.py
+# Seconds a foreground run_code script runs before it moves, still running,
+# to a background task; 0 never moves it.
+code.foreground_background_after_s: 180.0
 
 # CLIO_CODE_IDLE_MINUTES  (str)  <- src/clio_agent/gact/code_mode/kernels.py
 # Minutes a run_code kernel keeps its variables without a script before it

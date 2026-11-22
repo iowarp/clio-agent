@@ -19,6 +19,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ALLOW_SYSTEM_TEMP` | `paths.allow_system_temp` | bool | `true` | `src/clio_agent/runtime/session_scratch.py` |
 | `CLIO_API_BASE` | `runtime.api_base` | str | _(unset)_ | `src/clio_agent/runtime/status.py` |
 | `CLIO_ARC_CACHE_CAPACITY` | `arc.cache_capacity` | int | `1000` | `src/clio_agent/arc/memory.py` |
+| `CLIO_ARC_CLIO_CORE_BLOB_CALLS` | `arc.clio_core.blob_calls` | str | `async` | `src/clio_agent/arc/clio_core_sync_calls.py` |
 | `CLIO_ARC_CLIO_CORE_DAEMON_RECYCLE` | `arc.clio_core.daemon_recycle_enabled` | bool | `false` | `src/clio_agent/arc/clio_core_daemon.py` |
 | `CLIO_ARC_CLIO_CORE_DAEMON_RSS_CRITICAL` | `arc.clio_core.daemon_rss_critical_bytes` | int | `4294967296` | `src/clio_agent/arc/clio_core_daemon.py` |
 | `CLIO_ARC_CLIO_CORE_DAEMON_RSS_WARN` | `arc.clio_core.daemon_rss_warn_bytes` | int | `1073741824` | `src/clio_agent/arc/clio_core_daemon.py` |
@@ -38,6 +39,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARC_CTE_HOME_SEGMENT_SIZE` | `arc.cte.home_segment_size` | str | `64MB` | `src/clio_agent/arc/home_runtime.py` |
 | `CLIO_ARC_CTE_METADATA_DISK_RESERVE` | `arc.cte.metadata_disk_reserve` | str | `256MB` | `src/clio_agent/arc/clio_core_disk_guard.py` |
 | `CLIO_ARC_CTE_RAM_CAPACITY` | `arc.cte.ram_capacity` | str | `1GB` | `src/clio_agent/arc/clio_core_config.py` |
+| `CLIO_ARC_CTE_SHM_CACHE` | `arc.cte.shm_cache` | str | `off` | `src/clio_agent/arc/clio_core_shm_cache.py` |
 | `CLIO_ARC_EVENTS_CHUNK_SEGMENTS` | `arc.events_chunk_segments` | int | `512` | `src/clio_agent/arc/memory.py` |
 | `CLIO_ARC_HIGHWAY_DEFERRED` | `arc.highway_deferred` | bool | `true` | `src/clio_agent/gact/highway_writer.py` |
 | `CLIO_ARC_LIVENESS_BACKOFF_INITIAL_S` | `arc.liveness.backoff_initial_s` | float | `2.0` | `src/clio_agent/arc/rpc_liveness.py` |
@@ -113,6 +115,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_CODE_BACKGROUND_RECORD_WINDOW_S` | `code.background_record_window_s` | str | `60.0` | `src/clio_agent/gact/code_task_records.py` |
 | `CLIO_CODE_BACKGROUND_STATUS_S` | `code.background_status_s` | str | `5.0` | `src/clio_agent/gact/native_code.py` |
 | `CLIO_CODE_COVERING_POSTURES` | `code.covering_postures` | list | `auto-edits,ai-review,spotter-ai,spotter-watcher` | `src/clio_agent/gact/code_mode/grants.py` |
+| `CLIO_CODE_FOREGROUND_BACKGROUND_AFTER_S` | `code.foreground_background_after_s` | float | `180.0` | `src/clio_agent/gact/code_mode/foreground.py` |
 | `CLIO_CODE_IDLE_MINUTES` | `code.idle_minutes` | str | `30.0` | `src/clio_agent/gact/code_mode/kernels.py` |
 | `CLIO_CODE_INDEX_LINE_CHARS` | `code.index_line_chars` | int | `320` | `src/clio_agent/gact/code_mode/stubs.py` |
 | `CLIO_CODE_MAX_OUTPUT_BYTES` | `code.max_output_bytes` | int | `2000000` | `src/clio_agent/gact/code_mode/kernels.py` |
