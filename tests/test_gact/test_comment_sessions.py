@@ -319,11 +319,9 @@ def test_a_steered_session_is_answered_by_the_turn_that_absorbed_it(tmp_path: Pa
         ).json()
         message_id = body["message_id"]
         history = SimpleNamespace(
-            committed_notification_input=lambda sid, identity: SimpleNamespace(
-                turn_id="turn_running"
+            committed_notification_input=lambda sid, identity: (
+                SimpleNamespace(turn_id="turn_running") if identity == message_id else None
             )
-            if identity == message_id
-            else None
         )
         app.state.task_history, real = history, app.state.task_history
         try:

@@ -360,6 +360,11 @@ timeout_method = "thread"
 line-length = 100
 target-version = "py312"
 
+[tool.ruff.format]
+# Ruff 0.17 also formats Python code blocks inside Markdown. Here Markdown is
+# prompt, skill and doc prose an agent reads, so keep the formatter on Python.
+exclude = ["*.md"]
+
 [tool.ruff.lint]
 select = [
     "E",   # pycodestyle errors

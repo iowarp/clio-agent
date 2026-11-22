@@ -137,8 +137,9 @@ def test_an_agent_forks_a_root_conversation_into_a_new_branch(flow_app: TestClie
     assert origin["author"]["kind"] == "agent" and origin["note"] == "Try the second idea"
     # The branch carries the conversation so far and runs the note as its next input.
     messages = wait_until(
-        lambda: len(assistant_messages(flow_app, branch.id))
-        and assistant_messages(flow_app, branch.id)
+        lambda: (
+            len(assistant_messages(flow_app, branch.id)) and assistant_messages(flow_app, branch.id)
+        )
     )
     assert messages
     stored = flow_app.app.state.messages.get(branch.id, [])

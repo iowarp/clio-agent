@@ -140,9 +140,9 @@ def test_a_rerun_version_says_how_the_files_earlier_version_was_made(tmp_path: P
     logical = SimpleNamespace(versions=[first, fifth])
     registry = SimpleNamespace(
         capture_released=None,
-        transforms_generating=lambda artifact_id: [register]
-        if artifact_id == "artifact_v1"
-        else [],
+        transforms_generating=lambda artifact_id: (
+            [register] if artifact_id == "artifact_v1" else []
+        ),
         transforms_for_session=lambda _session_id: [register],
         get_by_artifact_id=lambda artifact_id: (logical, fifth),
     )

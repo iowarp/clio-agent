@@ -345,9 +345,11 @@ def test_a_message_after_the_run_ended_does_not_run_the_flow_again(flow_app: Tes
     post(flow_app, plan_session, "one more thing")
     history = flow_app.app.state.task_history
     later = wait_until(
-        lambda: (latest := history.latest_assignment(plan_session)).handle != handle
-        and latest.terminal_at is not None
-        and latest
+        lambda: (
+            (latest := history.latest_assignment(plan_session)).handle != handle
+            and latest.terminal_at is not None
+            and latest
+        )
     )
     assert started["attempts"] == {"gather": 1, "measure": 1, "report": 1}
     result = history.read_content(later.result)
@@ -470,17 +472,21 @@ def test_restarting_a_flow_after_late_messages_resumes_its_last_run(
     history = flow_app.app.state.task_history
     post(flow_app, plan_session, "a late note")
     passed_on = wait_until(
-        lambda: (latest := history.latest_assignment(plan_session)).handle != handle
-        and latest.terminal_at is not None
-        and latest
+        lambda: (
+            (latest := history.latest_assignment(plan_session)).handle != handle
+            and latest.terminal_at is not None
+            and latest
+        )
     )
 
     response = flow_app.post(f"/v1/sessions/{sid}/agent-controls/{handle}/restart")
     assert response.status_code == 200, response.text
     restarted = wait_until(
-        lambda: (latest := history.latest_assignment(plan_session)).handle
-        not in {handle, passed_on.handle}
-        and latest
+        lambda: (
+            (latest := history.latest_assignment(plan_session)).handle
+            not in {handle, passed_on.handle}
+            and latest
+        )
     )
     wait_until(lambda: _snapshot(flow_app, restarted.handle).terminal_at is not None, timeout=60)
     assert _snapshot(flow_app, restarted.handle).status == "completed"
@@ -499,8 +505,9 @@ def test_each_restart_keeps_everything_finished_before_it(flow_app: TestClient) 
     seen = {handle}
     for _ in range(2):
         latest = wait_until(
-            lambda: (task := history.latest_assignment(plan_session)).terminal_at is not None
-            and task
+            lambda: (
+                (task := history.latest_assignment(plan_session)).terminal_at is not None and task
+            )
         )
         assert latest.status == "failed"
         response = flow_app.post(f"/v1/sessions/{sid}/agent-controls/{handle}/restart")

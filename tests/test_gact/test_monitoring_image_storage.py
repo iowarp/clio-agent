@@ -301,12 +301,14 @@ def test_pod_cleanup_refuses_unexpected_containers(
     monkeypatch.setattr(
         node_service_stack,
         "inspect",
-        lambda root, kind, name: {
-            "InfraContainerID": "infra",
-            "Containers": [{"Id": "other", "Name": "foreign"}],
-        }
-        if kind == "pod"
-        else None,
+        lambda root, kind, name: (
+            {
+                "InfraContainerID": "infra",
+                "Containers": [{"Id": "other", "Name": "foreign"}],
+            }
+            if kind == "pod"
+            else None
+        ),
     )
     with pytest.raises(ValueError, match="unexpected container"):
         node_service_stack.cleanup(tmp_path, config, remove=True)

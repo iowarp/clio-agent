@@ -324,7 +324,7 @@ def test_apply_root_grant_folds_deferred_restart_outcome(tmp_path, monkeypatch) 
 
     calls: list[str] = []
     app.state.agent = SimpleNamespace(
-        request_fleet_restart=lambda r: (calls.append(r) or "restart_deferred_busy")
+        request_fleet_restart=lambda r: calls.append(r) or "restart_deferred_busy"
     )
     res = grants.apply_root_grant(app, ws.id, str(outside), emit=False)
     assert res["reason"] == grants.REASON_GRANT_DEFERRED_BUSY
@@ -368,7 +368,7 @@ def test_apply_root_grant_idempotent_regrant_skips_restart(tmp_path, monkeypatch
 
     calls: list[str] = []
     app.state.agent = SimpleNamespace(
-        request_fleet_restart=lambda r: (calls.append(r) or "restarted_live")
+        request_fleet_restart=lambda r: calls.append(r) or "restarted_live"
     )
     grants.apply_root_grant(app, ws.id, str(outside), emit=False)
     # Second identical grant widens nothing → no restart, base per-fence reason stands.

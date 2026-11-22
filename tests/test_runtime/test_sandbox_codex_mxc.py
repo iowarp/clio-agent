@@ -239,10 +239,13 @@ def test_explicit_setup_reprobes_a_cached_failure_but_keeps_a_proof(isolated_mxc
     calls: list[bool] = []
 
     def probe(verified: bool) -> Any:
-        return lambda binary: calls.append(verified) or mxc.MxcProbe(
-            verified,
-            mxc.REASON_MXC_VERIFIED if verified else mxc.REASON_MXC_LAUNCH_FAILED,
-            "" if verified else "unresolvable mount",
+        return lambda binary: (
+            calls.append(verified)
+            or mxc.MxcProbe(
+                verified,
+                mxc.REASON_MXC_VERIFIED if verified else mxc.REASON_MXC_LAUNCH_FAILED,
+                "" if verified else "unresolvable mount",
+            )
         )
 
     failed = mxc.prepare_mxc("codex.exe", "0.167.0", probe=probe(False))

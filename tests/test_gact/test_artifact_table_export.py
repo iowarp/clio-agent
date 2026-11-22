@@ -277,7 +277,7 @@ def test_full_scope_export_too_large_also_refuses(
 ) -> None:
     """#1551 review item 2: `_full_scope_result` never checked `max_rows` at
     all -- "full" means "ignore the view's own filter," never "ignore the row
-    ceiling.\" """
+    ceiling.\""""
 
     from clio_agent.gact.routes import artifact_table_export as route
 

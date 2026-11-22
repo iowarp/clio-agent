@@ -293,8 +293,9 @@ def test_a_conversation_value_is_not_a_default_and_save_as_default_is(
     monkeypatch.setattr(
         connector_values,
         "move_session_fleet",
-        lambda _app, sid, found, move_turn: moved.append(sid)
-        or {"status": "ready", "tool_count": 3, "reason": None},
+        lambda _app, sid, found, move_turn: (
+            moved.append(sid) or {"status": "ready", "tool_count": 3, "reason": None}
+        ),
     )
 
     async def apply(_app: Any, found: Any) -> dict:

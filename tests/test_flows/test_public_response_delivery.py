@@ -100,9 +100,11 @@ def test_workflow_receives_the_packet_after_a_late_result_and_addendum(
     assert "private reasoning" not in reviewed[0]
     history = flow_app.app.state.task_history
     task = wait_until(
-        lambda: history.task_snapshot(started["handle"])
-        if history.task_snapshot(started["handle"]).status == "completed"
-        else None,
+        lambda: (
+            history.task_snapshot(started["handle"])
+            if history.task_snapshot(started["handle"]).status == "completed"
+            else None
+        ),
         timeout=90,
     )
     result = history.read_content(task.result)
