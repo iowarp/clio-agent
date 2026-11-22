@@ -386,3 +386,26 @@ Linux cloud container: no Windows, no macOS, no multi-node).
 | #658 clio-core behind the ARCStore seam | **Done before 2.5.0** | `ClioCoreStore` is CLIO's default store; nothing in 2.5.0 changes it | Yes (independent of 2.5.0) |
 | #1783 "clio-core failed to write to session" (beta) | **Improved, unverified** | The report fits a lost write; 2.5.0 + this branch type a full disk and grow a full store. No reproduction available | No |
 
+
+## 11. Test results
+
+- Full suite, `uv run --frozen --no-sync python -B scripts/run_tests.py tests/ -m "not
+  integration" -n logical` (4 workers):
+  - branch (final, 2.5.0): **39 failed, 17,272 passed, 133 skipped, 36 errors** (37:44);
+  - develop + 2.4.1, same command: 19 failed, 17,253 passed, 133 skipped, 36 errors.
+  - All 36 errors and 19 failures are on develop too (marketplace/plugin fixtures and
+    others). The branch fixes the 5 env-reference failures. Branch-only failures are
+    order-dependent and reproduce on develop: 7 memory-search tests fail when their
+    xdist worker's first attach bound a config without the indexer (develop hit the same
+    `clio_core_search_unavailable` on `test_context_api`; each passes alone), and the
+    code-mode kernel group (`test_code_mode`, `test_kernel_bindings`, ...) fails the same
+    way on develop + 2.4.1 when run as one batch (4 failed, 1 error on both).
+- Targeted: every test touched here passes (sync calls 6, shm cache 6, durability 8,
+  growth, config, IPC path 16, loopback/child env, write refusal 6, env reference 26).
+- `uv run src/clio_agent/ui/cli.py doctor`: rc 0 (clio-core "not running yet" until a
+  client attaches; no LM provider in the cloud container).
+- Live GACT stack (`scripts/cloud/stack.sh`, claude_code provider): three real turns
+  (the second recalled the first), a session reload, then a server restart that also
+  replaced the clio-core daemon: all 6 messages read back, and a fourth turn after the
+  restart quoted the first answer. The web UI build failed for an unrelated reason
+  (gact-tui's `@clio/hdf5-viewer` package is not built in this container).
