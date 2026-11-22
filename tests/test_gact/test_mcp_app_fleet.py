@@ -149,10 +149,16 @@ def test_an_open_view_keeps_its_server_from_a_route_heal() -> None:
     record = _open(registry)
     record.fleet = weakref.ref(fleet)
     before = set(map(id, namespace_instances._PROBES))
+    named_before = set(map(id, namespace_instances._NAMERS))
     mcp_app_fleet.watch_views(registry)
     (mine,) = (p for p in namespace_instances._PROBES if id(p) not in before)
+    (namer,) = (n for n in namespace_instances._NAMERS if id(n) not in named_before)
     try:
         assert namespace_instances.in_use(inner, "viz") == "open_views"
+        assert namer(inner, "viz") == [
+            f"{record.tool_name} view {record.app_instance_id} (conversation sess_a)"
+        ]
+        assert namer(inner, "notebook") == []
         assert namespace_instances.in_use(inner, "notebook") == ""
         assert namespace_instances.in_use(_Fleet(), "viz") == ""
         registry.remove(record.app_instance_id)
