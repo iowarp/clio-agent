@@ -27,7 +27,7 @@ from clio_agent.arc.clio_core_config import (
     _default_cte_dir,
     parse_capacity_bytes,
 )
-from clio_agent.arc.clio_core_durability import _PERSISTENCE_LINE
+from clio_agent.arc.clio_core_durability import _PERSISTENCE_LINE, DURABILITY_LINE
 from clio_agent.arc.clio_core_indexer import indexer_block
 
 logger = logging.getLogger(__name__)
@@ -311,18 +311,27 @@ def _growth_enabled(config: Path) -> bool:
 def _before_clio_upgrades(text: str) -> list[str]:
     """``text`` without each combination of CLIO's own in-place additions to its seed.
 
-    The durability line (``ensure_seeded_config_durable``) and the indexer entry
+    The durability lines (``ensure_seeded_config_durable``: the file tier's
+    ``persistence_level`` and, for a seed with a RAM data tier, the core's
+    ``durability: persistent``) and the indexer entry
     (``ensure_seeded_config_indexed``), each removed only when it is exactly what CLIO
     adds, so a person's edit is never mistaken for one.
     """
-    without_line = text.replace(_PERSISTENCE_LINE, "", 1)
-    variants = [without_line] if without_line != text else []
+
+    def without_durability(base: str) -> list[str]:
+        # Every combination of the two durability lines CLIO may have added.
+        out = []
+        for line in (_PERSISTENCE_LINE, DURABILITY_LINE):
+            out += [v.replace(line, "", 1) for v in [base, *out] if line in v]
+        return out
+
+    variants = without_durability(text)
     marker = "  - mod_name: clio_cte_indexer\n"
     if marker in text:
         start = text.index(marker)
         log = re.search(r'index_log_path: "([^"]*)"', text[start:])
         if log and text[start:] == indexer_block(log.group(1)):
-            variants += [text[:start], text[:start].replace(_PERSISTENCE_LINE, "", 1)]
+            variants += [text[:start], *without_durability(text[:start])]
     return variants
 
 

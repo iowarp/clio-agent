@@ -156,7 +156,7 @@ def test_generator_respects_env_ram_cap(monkeypatch, tmp_path):
 
 def test_generator_never_rewrites_existing_user_file(monkeypatch, tmp_path):
     """An existing cte.yaml keeps every user value (even a stale 0g cap); the only changes
-    are the durability line, without which clio-core keeps nothing across a restart,
+    are the durability lines, without which clio-core keeps nothing across a restart,
     and the indexer entry appended to compose, without which nothing can be searched."""
     monkeypatch.setattr(conf, "_STORE", _store(env={}, tmp_path=tmp_path))
     monkeypatch.setattr(clio_core_config, "_default_cte_dir", lambda: tmp_path / "cte")
@@ -170,7 +170,14 @@ def test_generator_never_rewrites_existing_user_file(monkeypatch, tmp_path):
     clio_core_config.default_cte_config_path()
     # Not regenerated: the user's explicit (even if unbounded) value survives.
     upgraded = (cte_dir / "cte.yaml").read_text(encoding="utf-8")
-    assert upgraded.replace('        persistence_level: "temporary"\n', "").startswith(stale)
+    # Its RAM data tier would make an iowarp-core 2.5 core volatile (no metadata log),
+    # so CLIO also states the core's durability.
+    assert "  - mod_name: clio_cte_core\n    durability: persistent\n" in upgraded
+    assert (
+        upgraded.replace('        persistence_level: "temporary"\n', "")
+        .replace("    durability: persistent\n", "")
+        .startswith(stale)
+    )
     assert upgraded.endswith(clio_core_indexer.indexer_block(str(cte_dir / "indexer_index.log")))
     assert _ram_tier_cap((cte_dir / "cte.yaml").read_text(encoding="utf-8")) == "0g"
 

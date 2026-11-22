@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
 CLIO_CORE_NOT_DURABLE = "clio_core_not_durable"
 DURABLE_LEVELS = frozenset({"temporary", "long_term"})
 _PERSISTENCE_LINE = '        persistence_level: "temporary"\n'
+#: CLIO's own addition for a seed that still carries a volatile (RAM) data tier.
+_CORE_MODULE = "  - mod_name: clio_cte_core\n"
+DURABILITY_LINE = "    durability: persistent\n"
 _REMEDY = (
     'mark the clio-core file tier durable: add `persistence_level: "temporary"` to its '
     "storage entry (a volatile tier keeps nothing across a daemon restart). From "
@@ -68,6 +71,14 @@ def _core_persistent(config: dict[str, Any], tiers: list[dict[str, Any]]) -> boo
     )
 
 
+def _file_tier_durable(config: dict[str, Any]) -> bool:
+    return any(
+        str(tier.get("bdev_type", "")).lower() != "ram"
+        and str(tier.get("persistence_level", "volatile")).lower() in DURABLE_LEVELS
+        for tier in _tiers(config)
+    )
+
+
 def config_is_durable(text: str) -> bool:
     """Whether a clio-core config keeps records across a restart.
 
@@ -75,13 +86,7 @@ def config_is_durable(text: str) -> bool:
     persistent under clio-core's rule (:func:`_core_persistent`).
     """
     config = yaml.safe_load(text) or {}
-    tiers = _tiers(config)
-    has_durable_file_tier = any(
-        str(tier.get("bdev_type", "")).lower() != "ram"
-        and str(tier.get("persistence_level", "volatile")).lower() in DURABLE_LEVELS
-        for tier in tiers
-    )
-    return has_durable_file_tier and _core_persistent(config, tiers)
+    return _file_tier_durable(config) and _core_persistent(config, _tiers(config))
 
 
 def ensure_seeded_config_durable(path: Path) -> None:
@@ -95,7 +100,14 @@ def ensure_seeded_config_durable(path: Path) -> None:
     start = text.index(anchor)
     score_at = text.index("        score:", start)
     line_end = text.index("\n", score_at) + 1
-    upgraded = text[:line_end] + _PERSISTENCE_LINE + text[line_end:]
+    upgraded = text
+    if not _file_tier_durable(yaml.safe_load(text) or {}):
+        upgraded = text[:line_end] + _PERSISTENCE_LINE + text[line_end:]
+    if not config_is_durable(upgraded) and upgraded.count(_CORE_MODULE) == 1:
+        # An older seed's RAM data tier: from iowarp-core 2.5 one volatile tier makes
+        # the whole core volatile (no metadata log) unless durability is stated.
+        at = upgraded.index(_CORE_MODULE) + len(_CORE_MODULE)
+        upgraded = upgraded[:at] + DURABILITY_LINE + upgraded[at:]
     if not config_is_durable(upgraded):
         raise ClioCoreNotDurableError(f"{path}: upgrade did not make it durable; {_REMEDY}")
     path.write_text(upgraded, encoding="utf-8")
@@ -105,8 +117,9 @@ def ensure_seeded_config_durable(path: Path) -> None:
     rekey_managed_capacity(path, text, upgraded)
     logger.warning(
         "clio-core config %s upgraded in place: its file tier is now durable "
-        '(persistence_level: "temporary"); before this, a daemon restart lost all ARC data',
+        '(persistence_level: "temporary"%s); before this, a daemon restart lost all ARC data',
         path,
+        ", durability: persistent" if DURABILITY_LINE in upgraded else "",
     )
 
 

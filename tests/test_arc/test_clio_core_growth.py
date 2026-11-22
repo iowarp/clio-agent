@@ -275,3 +275,15 @@ def test_an_edited_indexer_entry_still_opts_out(store: Any, tmp_path: Path) -> N
     block = indexer_block((tmp_path / "index.log").as_posix()).replace("local", "dynamic", 1)
     config.write_text(config.read_text() + block)
     assert not growth.recover_capacity(store, "tag", "record", 1024)
+
+
+def test_clios_durability_statement_on_a_ram_tier_seed_keeps_growth() -> None:
+    """CLIO's ``durability: persistent`` line (a seed with a RAM data tier) is its own
+    edit, like the persistence line: removing it recovers the seed."""
+    from clio_agent.arc.clio_core_durability import _PERSISTENCE_LINE, DURABILITY_LINE
+
+    seed = "compose:\n  - mod_name: clio_cte_core\n    storage:\n" + '        bdev_type: "file"\n'
+    edited = seed.replace("clio_cte_core\n", "clio_cte_core\n" + DURABILITY_LINE).replace(
+        'bdev_type: "file"\n', 'bdev_type: "file"\n' + _PERSISTENCE_LINE
+    )
+    assert seed in growth._before_clio_upgrades(edited)
