@@ -178,7 +178,10 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
         representation="chip",
         desc=(
             "Designate an output you decide is worth keeping (a report, a document you "
-            "wrote, a generated file) as an artifact. Register an existing workspace file "
+            "wrote, a generated file) as an artifact. A file you made for the person (the "
+            "model, image, document or dataset they asked for, whichever tool or script "
+            "wrote it) becomes an artifact they can open in its viewer only through this "
+            "call. Register an existing workspace file "
             "with path, or write content to name, which is the target path, not a label. "
             "Only purpose=deliverable outputs appear on the final response; every purpose "
             "stays in lineage. Accepted outputs appear as artifact cards: name them in your "
