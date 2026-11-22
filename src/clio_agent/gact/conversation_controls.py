@@ -327,7 +327,17 @@ async def restart(self: Conversations, caller: TaskCaller, handle: str) -> dict[
 
 
 def _member_settled(task: TaskSnapshot | None) -> bool:
-    """Accept owner-confirmed local retirement or a definitive external call outcome."""
+    """Accept owner-confirmed local retirement or a definitive external call outcome.
+
+    A plain MCP call a stop cut off (cancelled on the wire, nothing of CLIO's still
+    waits on it) is settled too: its own record keeps ``settlement: unknown`` for
+    what the server did, which no confirmation can resolve, so it must not hold the
+    parent's cancellation open forever (a deleted conversation's 409).
+    """
+    from clio_agent.gact.external_task_connections import (  # noqa: PLC0415 - fastmcp
+        TURN_CALL_CANCELLED,
+    )
+
     return (
         task is not None
         and task.terminal_at is not None
@@ -338,6 +348,9 @@ def _member_settled(task: TaskSnapshot | None) -> bool:
             and task.raw_status in {"completed", "failed", "cancelled", "inline"}
             and task.status in {"completed", "failed", "cancelled"}
             and task.result is not None
+            or task.kind == "MCP"
+            and task.raw_status == TURN_CALL_CANCELLED
+            and task.status == "cancelled"
         )
     )
 

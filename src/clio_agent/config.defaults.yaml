@@ -931,6 +931,11 @@ permissions.ai_review_timeout_s: "45.0"
 # clio-core when the list pages to them.
 sessions.cache_records: 1024
 
+# CLIO_SESSION_DELETE_SETTLE_S  (float)  <- src/clio_agent/gact/routes/session_delete.py
+# Seconds deleting a conversation waits for the turn and tasks it stopped to
+# settle before refusing with 409; raise for servers that take long to cancel.
+sessions.delete_settle_s: 60.0
+
 # CLIO_TRANSCRIPT_FILE  (bool)  <- src/clio_agent/gact/transcript_file.py
 # Keep the per-session messages/<sid>.json copy of every transcript next to
 # clio-core's atoms; set false to make clio-core the only transcript store

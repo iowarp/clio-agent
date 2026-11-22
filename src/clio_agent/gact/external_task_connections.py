@@ -214,28 +214,45 @@ def accepted_call(host: ExternalConnection, handle: str) -> bool:
 async def abandon_view_call(
     self: ExternalTasks, host: ExternalConnection, handle: str, rpc: Any, lazy: Any
 ) -> None:
-    """Cancel the RPC of a view's call outside a turn whose request went away.
+    """Cancel the RPC of a plain call nobody waits for any more.
 
+    That is a view's call outside a turn whose request went away, or a ``tools.*`` call
+    whose ``run_code`` script was stopped (:func:`_cut_off_text`).
     Only for a plain call (no task was accepted for it): nothing else waits for its
     reply, so the RPC is cancelled on the wire and its record ends cancelled with the
     typed reason and ``settlement: unknown``, opening no attention episode: the call is
     the view's, so no model is woken for it (:mod:`.view_call_ledger`). A turn's call
     and an accepted task keep their custody rules unchanged.
     """
-    if not view_call_cancel.requested() or accepted_call(host, handle):
+    text = _cut_off_text()
+    if not text or accepted_call(host, handle):
         return
     rpc.cancel()
     if lazy is None:  # written ahead: it ends cancelled, outcome unknown, no wake (MC-F2)
         await self._record_or_defer(
             "external-call:" + handle,
-            partial(
-                view_call_ledger.settle_cut_off,
-                self.history,
-                handle,
-                view_call_cancel.VIEW_CALL_CANCELLED_TEXT,
-            ),
+            partial(view_call_ledger.settle_cut_off, self.history, handle, text),
         )
     self._lazy.pop(handle, None)
+
+
+#: What a plain call's task record says when the ``run_code`` script that made it was
+#: stopped mid-call (a background script outlives its turn).
+TURN_CALL_CANCELLED = "mcp_call_cancelled_by_stop"
+SCRIPT_CALL_CANCELLED_TEXT = (
+    f"{TURN_CALL_CANCELLED}: the script was stopped before the service answered; "
+    "the call was cancelled and whether the service acted on it is not known."
+)
+
+
+def _cut_off_text() -> str:
+    """Why a plain call is cut off now: its view's request went, or the script that made
+    it was stopped; "" when it keeps waiting for its reply."""
+    if view_call_cancel.requested():
+        return view_call_cancel.VIEW_CALL_CANCELLED_TEXT
+    from clio_agent.runtime.cancellation import scope_stopped  # noqa: PLC0415
+
+    return SCRIPT_CALL_CANCELLED_TEXT if scope_stopped() else ""
 
 
 async def _retire_superseded(self: ExternalTasks, current: ExternalConnection) -> None:

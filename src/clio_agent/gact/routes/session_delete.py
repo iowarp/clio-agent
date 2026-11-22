@@ -3,8 +3,13 @@
 A conversation is deletable once no turn runs and no accepted work in its task tree is
 active. Before checking, an admission check in flight is settled and the assignment Stop
 held for it is cancelled (:mod:`clio_agent.gact.session_delete_settle`): neither is
-running work. Deleting then removes the conversation's record and everything the
-service holds for it.
+running work. Deleting is the person's decision to discard the conversation, so work
+that still runs is stopped (:func:`stop_for_delete`, as Stop with ``children: "stop"``)
+and no new turn is admitted for it, not even a wake on an obligation or an arriving
+task outcome. Only work that does not settle within ``sessions.delete_settle_s`` keeps
+the 409. Deleting then removes the conversation's record and everything the service
+holds for it, and the workspace's MCP servers stop once no conversation is left to use
+them (:func:`close_workspace_fleet`).
 
 Removing a workspace deletes its conversations the same way. It checks every one first
 and deletes nothing while any of them still has running work, so the person never ends
@@ -13,6 +18,7 @@ up with a removed workspace whose conversations survive without one.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
@@ -32,6 +38,12 @@ from clio_agent.lm.session_clients import close_session_model_clients
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
+
+logger = logging.getLogger(__name__)
+
+#: Typed reasons the workspace fleet closes for (logged with the outcome).
+REASON_FLEET_SESSION_DELETED = "session_deleted"
+REASON_FLEET_WORKSPACE_DELETED = "workspace_deleted"
 
 
 def _refusal(status_code: int, code: str, message: str, details: dict[str, Any]) -> HTTPException:
@@ -55,6 +67,59 @@ async def active_work(app: Any, sid: str) -> tuple[bool, list[str]]:
     return bool(active) or app.state.turn_runner.busy(sid), active
 
 
+def delete_settle_s() -> float:
+    """How long deleting waits for the work it stopped to settle before refusing (409)."""
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "sessions.delete_settle_s",
+        env="CLIO_SESSION_DELETE_SETTLE_S",
+        default=60.0,
+        cast=conf.as_float,
+    )
+
+
+async def stop_for_delete(app: Any, deps: "GactDeps", sid: str) -> tuple[bool, list[str]]:
+    """Stop everything the conversation runs so it can be deleted; what still blocks it.
+
+    Deleting is the person's decision to discard the conversation, so it stops the turn
+    and every task the conversation started, as Stop with ``children: "stop"`` does
+    (recorded ``conversation_stop``), and admits no new turn for it meanwhile: a wake
+    or a task outcome arriving now does not bring it back. It then waits for that work
+    to settle. Work that has not settled by :func:`delete_settle_s` keeps the 409, and
+    the conversation's admission reopens so it is usable again.
+    """
+    import asyncio  # noqa: PLC0415
+
+    from clio_agent.gact.routes.session_cancellation import (  # noqa: PLC0415
+        cancel_session_state_async,
+    )
+    from clio_agent.gact.task_access import TaskCaller  # noqa: PLC0415
+
+    runner = app.state.turn_runner
+    runner.retire_admission(sid)
+    logger.info("session_delete_stopping_work session=%s", sid)
+    await cancel_session_state_async(app, deps, sid, "stop")
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + delete_settle_s()
+    while True:
+        blocked, active = await active_work(app, sid)
+        remaining = deadline - loop.time()
+        if not blocked or remaining <= 0:
+            break
+        if active:
+            caller = TaskCaller("", app.state.human_principal, human_action=True)
+            await app.state.task_operations.wait(
+                caller, active, "all", timeout_s=min(remaining, 5.0)
+            )
+        else:
+            await asyncio.sleep(min(remaining, 0.2))  # the stopped turn retires
+    if blocked:
+        runner.reopen_admission(sid)
+        logger.warning("session_delete_work_unsettled session=%s handles=%s", sid, ",".join(active))
+    return blocked, active
+
+
 def session_has_active_work(sid: str, handles: list[str]) -> HTTPException:
     """The 409 for a conversation whose work still runs."""
     return _refusal(
@@ -63,6 +128,34 @@ def session_has_active_work(sid: str, handles: list[str]) -> HTTPException:
         "Cancel and settle active work before deleting this session.",
         {"session_id": sid, "handles": handles},
     )
+
+
+async def close_workspace_fleet(app: Any, workspace_id: str, reason: str) -> str:
+    """Stop the workspace's MCP servers once no conversation is left to use them.
+
+    Its fenced servers otherwise ran on until the idle reaper's TTL, holding the
+    workspace's folder (a connector's lock, a port). A conversation still in the
+    workspace keeps the shared fleet. Busy servers close at the reaper's next safe
+    boundary, never mid-call. Returns the restart outcome, or "" when nothing applied.
+    """
+    agent = getattr(app.state, "agent", None)
+    restart = getattr(agent, "request_fleet_restart", None)
+    workspace = app.state.workspaces.get(workspace_id) if workspace_id else None
+    root = str(getattr(workspace, "root_path", "") or "")
+    if not callable(restart) or not root:
+        return ""
+    if reason == REASON_FLEET_SESSION_DELETED:
+        query = PageQuery(workspace_id=workspace_id, archived=None)
+        if await run_off_loop(app.state.sessions.ids, query):
+            return ""
+    outcome = str(await run_off_loop(restart, root))
+    logger.info(
+        "workspace_fleet_close_requested workspace=%s reason=%s outcome=%s",
+        workspace_id,
+        reason,
+        outcome,
+    )
+    return outcome
 
 
 async def delete_session(app: Any, deps: "GactDeps", sid: str, workspace_id: str) -> bool:
@@ -108,11 +201,17 @@ async def delete_workspace_sessions(app: Any, deps: "GactDeps", wid: str) -> lis
     query = PageQuery(workspace_id=wid, archived=None)
     sids = await run_off_loop(app.state.sessions.ids, query)
     busy = {}
+    stopped = []
     for sid in sids:
         blocked, handles = await active_work(app, sid)
         if blocked:
+            stopped.append(sid)
+            blocked, handles = await stop_for_delete(app, deps, sid)
+        if blocked:
             busy[sid] = handles
     if busy:
+        for sid in stopped:  # nothing is deleted: every conversation stays usable
+            app.state.turn_runner.reopen_admission(sid)
         raise _refusal(
             409,
             "workspace_has_active_work",
@@ -123,12 +222,17 @@ async def delete_workspace_sessions(app: Any, deps: "GactDeps", wid: str) -> lis
     for sid in sids:
         if await delete_session(app, deps, sid, wid):
             deleted.append(sid)
+    await close_workspace_fleet(app, wid, REASON_FLEET_WORKSPACE_DELETED)
     return deleted
 
 
 __all__ = [
+    "REASON_FLEET_SESSION_DELETED",
+    "REASON_FLEET_WORKSPACE_DELETED",
     "active_work",
+    "close_workspace_fleet",
     "delete_session",
     "delete_workspace_sessions",
     "session_has_active_work",
+    "stop_for_delete",
 ]

@@ -260,6 +260,8 @@ class Conversations:
                     or self.sessions.startup_retirement_error(sid) is not None
                 ):
                     return None
+                if self.sessions.get(sid) is None:
+                    return None  # deleted: what it left (mail, an obligation) wakes nothing
                 caller = self.caller(sid)
                 # Trusted retry withdrawal precedes releasing the stopped trigger.
                 staged = self.mail.stage(caller)
