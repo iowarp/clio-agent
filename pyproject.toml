@@ -211,14 +211,10 @@ claude-code = [
     # persistent in-process Claude Code session instead of one spawn per LM
     # call (#715). Auth is the user's Claude Code OAuth login.
     #
-    # mcp-2 note (#1107): the SDK declares a protective `mcp<2` bound for its
-    # SDK-MCP-server bridging feature. CLIO uses the SDK PURELY as an LLM
-    # provider (ClaudeSDKClient/ClaudeAgentOptions — owner decision: "to us he
-    # is a provider of llm, not a tool calling semantics") and never touches
-    # that bridging surface. The [tool.uv] override below neutralizes the
-    # bound; the full import surface is verified under mcp 2.0.0 by
-    # tests and the compat matrix doc. The live SDK-session smoke runs at the
-    # P0 phase gate.
+    # CLIO uses the SDK PURELY as an LLM provider (ClaudeSDKClient /
+    # ClaudeAgentOptions -- owner decision: "to us he is a provider of llm, not a
+    # tool calling semantics"). Since 0.2.187 (the floor) the SDK accepts mcp<3,
+    # so the mcp-2 core co-resolves without the old [tool.uv] override (#1107).
     # USER-UPDATABLE COMPONENT (providers/components/registry.py): a floor,
     # never an upper bound; updated in place from the provider panel and bumped
     # weekly by the provider-sdk-bump workflow.
@@ -399,14 +395,6 @@ exclude = ['src/clio_agent/plugins/builtin/[^/]+/ai\.iowarp\.clio/']
 paths_to_mutate = ["src/clio_agent/arc/segments.py", "src/clio_agent/gact/events.py"]
 tests_dir = ["tests/mutmut_runner/"]
 also_copy = ["src/clio_agent/", "tests/"]
-
-[tool.uv]
-# #1107: claude-agent-sdk declares mcp<2 as a protective bound for its
-# SDK-MCP-server bridging feature, which CLIO never uses (LLM provider only).
-# Override it so the mcp-2 core and the claude-code extra co-resolve; the
-# combination's import surface is test-verified, the live session smoke runs
-# at the phase gate. Drop this override when upstream supports mcp 2.
-override-dependencies = ["mcp==2.3.0"]
 
 [tool.uv.sources]
 # Develop pins the merged sibling commits so their unreleased work runs without a
