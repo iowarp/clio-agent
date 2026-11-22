@@ -933,7 +933,8 @@ sessions.cache_records: 1024
 
 # CLIO_SESSION_DELETE_SETTLE_S  (float)  <- src/clio_agent/gact/routes/session_delete.py
 # Seconds deleting a conversation waits for the turn and tasks it stopped to
-# settle before refusing with 409; raise for servers that take long to cancel.
+# settle before refusing with 409; raise for servers that take long to
+# cancel.
 sessions.delete_settle_s: 60.0
 
 # CLIO_TRANSCRIPT_FILE  (bool)  <- src/clio_agent/gact/transcript_file.py
@@ -1016,8 +1017,8 @@ arc.core_threads: 8
 
 # CLIO_ARC_CTE_AUTO_EXPAND  (bool)  <- src/clio_agent/arc/clio_core_growth.py
 # Allow bounded live capacity additions when CLIO's generated file store is
-# full; disable to retain a fixed capacity. Explicit file_capacity settings
-# disable growth.
+# full; disable to retain a fixed capacity. An explicit file_capacity is the
+# seed size, not a ceiling: that store grows too.
 arc.cte.auto_expand: true
 
 # CLIO_ARC_CTE_DIR  (str)  <- src/clio_agent/arc/clio_core_config.py
@@ -1033,7 +1034,8 @@ arc.cte.disk_warn_fraction: 0.5
 # CLIO_ARC_CTE_FILE_CAPACITY  (str)  <- src/clio_agent/arc/clio_core_config.py
 # Capacity (e.g. "20GB") of clio-core's disk file tier; unset, a fresh
 # install sizes it to 10% of the disk's free space (2-50 GB). Windows
-# allocates it up front.
+# allocates it up front. A full tier grows unless arc.cte.auto_expand is
+# off.
 # arc.cte.file_capacity:  # default unset; resolved in code
 
 # CLIO_ARC_CTE_HOME_RAM_CAPACITY  (str)  <- src/clio_agent/arc/home_runtime.py

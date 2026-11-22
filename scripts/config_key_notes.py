@@ -360,11 +360,13 @@ KEY_NOTES: dict[str, str] = {
     ),
     "arc.cte.auto_expand": (
         "Allow bounded live capacity additions when CLIO's generated file store is full; "
-        "disable to retain a fixed capacity. Explicit file_capacity settings disable growth."
+        "disable to retain a fixed capacity. An explicit file_capacity is the seed size, not a "
+        "ceiling: that store grows too."
     ),
     "arc.cte.file_capacity": (
         'Capacity (e.g. "20GB") of clio-core\'s disk file tier; unset, a fresh install sizes it '
-        "to 10% of the disk's free space (2-50 GB). Windows allocates it up front."
+        "to 10% of the disk's free space (2-50 GB). Windows allocates it up front. A full tier "
+        "grows unless arc.cte.auto_expand is off."
     ),
     "arc.cte.ram_capacity": (
         'Hard byte ceiling (e.g. "1GB") for clio-core\'s RAM working arena; raise for more '
@@ -1366,6 +1368,10 @@ KEY_NOTES: dict[str, str] = {
     "sessions.cache_records": (
         "How many conversation-list rows stay in memory; older rows are read from clio-core "
         "when the list pages to them."
+    ),
+    "sessions.delete_settle_s": (
+        "Seconds deleting a conversation waits for the turn and tasks it stopped to settle "
+        "before refusing with 409; raise for servers that take long to cancel."
     ),
     "spotter.clearance_progress_timeout_s": (
         "No-progress window (seconds) between observable SPOTTER watcher signals before a "
