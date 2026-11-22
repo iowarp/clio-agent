@@ -82,6 +82,33 @@ def _enum_options(values: Sequence[Any], names: Sequence[Any] | None) -> list[Us
     return options
 
 
+def _titled_choices(spec: Mapping[str, Any]) -> tuple[list[Any], list[str]] | None:
+    """``(values, labels)`` of a titled single-select (``oneOf``/``anyOf`` of ``const``).
+
+    MCP's titled enum form, ``{"oneOf": [{"const": "approve", "title": "Approve"}, ...]}``,
+    names the same closed choice set as ``enum``/``enumNames``, so it maps to the same
+    field. Each label is the option's ``title``, else its value. Anything else (an empty
+    list, an option without ``const``) is not a closed choice set and returns ``None``.
+    """
+
+    for key in ("oneOf", "anyOf"):
+        options = spec.get(key)
+        if options is None:
+            continue
+        if (
+            not isinstance(options, Sequence)
+            or isinstance(options, (str, bytes))
+            or not options
+            or not all(isinstance(option, Mapping) and "const" in option for option in options)
+        ):
+            return None
+        return (
+            [option["const"] for option in options],
+            [str(option.get("title") or option["const"]) for option in options],
+        )
+    return None
+
+
 def _flat_multi_select(spec: Mapping[str, Any]) -> tuple[list[Any], str, list[Any] | None] | None:
     """Return ``(enum, item_type, enum_names)`` for a flat array-of-enum ``spec``.
 
@@ -101,6 +128,8 @@ def _flat_multi_select(spec: Mapping[str, Any]) -> tuple[list[Any], str, list[An
     ):
         return None
     item_enum = items.get("enum")
+    if item_enum is None and (titled := _titled_choices(items)) is not None:
+        return titled[0], str(items.get("type") or "string"), titled[1]
     if not (isinstance(item_enum, Sequence) and not isinstance(item_enum, (str, bytes))):
         return None
     names = items.get("enumNames")
@@ -175,6 +204,9 @@ def _scalar_field(name: str, spec: Mapping[str, Any], required: set[str]) -> dic
 
     field_type = spec.get("type")
     enum = spec.get("enum")
+    enum_names = _scalar_enum_names(spec, enum)
+    if enum is None and (titled := _titled_choices(spec)) is not None:
+        enum, enum_names = titled
     # A nested object (with or without a declared type) is not flat.
     if field_type == "object" or "properties" in spec or "items" in spec:
         return "elicitation_schema_not_flat"
@@ -188,7 +220,7 @@ def _scalar_field(name: str, spec: Mapping[str, Any], required: set[str]) -> dic
         "enum": list(enum)
         if isinstance(enum, Sequence) and not isinstance(enum, (str, bytes))
         else None,
-        "enum_names": _scalar_enum_names(spec, enum),
+        "enum_names": enum_names,
         "multi": False,
         "item_type": "",
         "min_items": None,
