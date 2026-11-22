@@ -348,6 +348,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SERVER_CONF` | `arc.server_conf` | str | _(unset)_ | `src/clio_agent/arc/clio_core_liveness.py` |
 | `CLIO_SESSIONS_CACHE_RECORDS` | `sessions.cache_records` | int | `1024` | `src/clio_agent/gact/session_records.py` |
 | `CLIO_SESSIONS_PATH` | `paths.sessions` | str | _(unset)_ | `src/clio_agent/gact/sessions.py` |
+| `CLIO_SESSION_DELETE_SETTLE_S` | `sessions.delete_settle_s` | float | `60.0` | `src/clio_agent/gact/routes/session_delete.py` |
 | `CLIO_SESSION_RECALL_MAX_SESSIONS` | `gact.session_recall.max_sessions` | int | `5000` | `src/clio_agent/gact/runtime/session_recall_search.py` |
 | `CLIO_SHELL_DEFAULT_OUTPUT_BYTES` | `limits.shell_default_output_bytes` | int | `32768` | `src/clio_agent/tools/servers/shell_server.py` |
 | `CLIO_SHELL_DEFAULT_TIMEOUT_S` | `limits.shell_default_timeout_s` | float | `0.0` | `src/clio_agent/tools/servers/shell_server.py` |

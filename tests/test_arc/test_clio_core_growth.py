@@ -119,16 +119,39 @@ def test_space_available_is_not_misdiagnosed_as_full(store: Any) -> None:
     assert not store._client.registered
 
 
-@pytest.mark.parametrize(
-    "setting,value", [("CLIO_ARC_CTE_FILE_CAPACITY", "8MB"), ("CLIO_ARC_CTE_AUTO_EXPAND", "false")]
-)
-def test_explicit_limits_are_respected(
-    store: Any, monkeypatch: pytest.MonkeyPatch, setting: str, value: str
-) -> None:
-    monkeypatch.setenv(setting, value)
+def test_auto_expand_off_keeps_fixed_capacity(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLIO_ARC_CTE_AUTO_EXPAND", "false")
     before = Path(store._config_path).read_bytes()
     assert not growth.recover_capacity(store, "tag", "record", 1024)
     assert Path(store._config_path).read_bytes() == before
+    assert not store._client.registered
+
+
+def test_explicit_capacity_seeds_and_still_grows(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Take 1r: CLIO_ARC_CTE_FILE_CAPACITY=512MB filled and refused a 27.7 MB chunk."""
+    monkeypatch.setenv("CLIO_ARC_CTE_FILE_CAPACITY", "8MB")
+    assert growth.recover_capacity(store, "tag", "record", 1024)
+    assert len(store._client.registered) == 1
+
+
+def test_legacy_explicit_seed_without_journal_is_adopted(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = Path(store._config_path)
+    config.with_name("cte-capacity.json").unlink()
+    monkeypatch.setenv("CLIO_ARC_CTE_FILE_CAPACITY", "8MB")
+    assert growth.recover_capacity(store, "tag", "record", 1024)
+    assert config.with_name("cte-capacity.json").is_file()
+
+
+def test_legacy_capacity_not_seeded_by_clio_is_not_adopted(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    Path(store._config_path).with_name("cte-capacity.json").unlink()
+    monkeypatch.setenv("CLIO_ARC_CTE_FILE_CAPACITY", "16MB")
+    assert not growth.recover_capacity(store, "tag", "record", 1024)
     assert not store._client.registered
 
 

@@ -54,15 +54,17 @@ def _atomic_text(path: Path, text: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _managed_config(config: Path, text: str) -> dict[str, Any] | None:
-    """Recognize the generated default; explicit config/capacity choices opt out."""
+def _explicit_seed_bytes() -> int | None:
+    """The ``arc.cte.file_capacity`` CLIO seeded its file tier with, when one is set."""
     explicit = conf.resolve(
         "arc.cte.file_capacity", env="CLIO_ARC_CTE_FILE_CAPACITY", default="", cast=conf.as_str
-    )
-    enabled = conf.resolve(
-        "arc.cte.auto_expand", env="CLIO_ARC_CTE_AUTO_EXPAND", default=True, cast=conf.as_bool
-    )
-    if explicit or not enabled or config != (_default_cte_dir() / "cte.yaml").resolve():
+    ).strip()
+    return parse_capacity_bytes(explicit) if explicit else None
+
+
+def _managed_config(config: Path, text: str) -> dict[str, Any] | None:
+    """Recognize the generated default; a hand-written config or layout opts out."""
+    if not _growth_enabled(config):
         return None
     document = yaml.safe_load(text)
     if not isinstance(document, dict):
@@ -72,9 +74,11 @@ def _managed_config(config: Path, text: str) -> dict[str, Any] | None:
         (tier,) = module["storage"]
         capacity = parse_capacity_bytes(tier["capacity_limit"])
         # Older generated configs have no journal. Adopt only the unchanged seed
-        # shape, owned paths and original bounded seed range. Custom topologies,
-        # capacities, paths, limits or policies are never rewritten.
-        if not 2 * _GIB <= capacity <= 50 * _GIB or capacity % _GIB:
+        # shape, owned paths and a capacity CLIO itself seeded: the original bounded
+        # range, or the explicit arc.cte.file_capacity it was given. Custom
+        # topologies, capacities, paths, limits or policies are never rewritten.
+        seeded = 2 * _GIB <= capacity <= 50 * _GIB and not capacity % _GIB
+        if not seeded and capacity != _explicit_seed_bytes():
             return None
         expected = _DEFAULT_CTE_CONFIG_TEMPLATE.format(
             core_port=document["networking"]["port"],
@@ -277,15 +281,15 @@ def recover_capacity(store: Any, tag_id: Any, name: str, payload_bytes: int) -> 
 
 
 def _growth_enabled(config: Path) -> bool:
-    explicit = conf.resolve(
-        "arc.cte.file_capacity", env="CLIO_ARC_CTE_FILE_CAPACITY", default="", cast=conf.as_str
-    )
-    return (
-        not explicit
-        and config == (_default_cte_dir() / "cte.yaml").resolve()
-        and conf.resolve(
-            "arc.cte.auto_expand", env="CLIO_ARC_CTE_AUTO_EXPAND", default=True, cast=conf.as_bool
-        )
+    """Whether CLIO grows this store: its own generated config, unless auto_expand is off.
+
+    An explicit ``arc.cte.file_capacity`` is the size CLIO seeds the file tier with, not
+    a ceiling: a full tier still refuses what the agent must store (take 1r: a 512 MB
+    tier refused a 27.7 MB event chunk with code 12). Only ``arc.cte.auto_expand=false``
+    keeps a fixed capacity.
+    """
+    return config == (_default_cte_dir() / "cte.yaml").resolve() and conf.resolve(
+        "arc.cte.auto_expand", env="CLIO_ARC_CTE_AUTO_EXPAND", default=True, cast=conf.as_bool
     )
 
 
