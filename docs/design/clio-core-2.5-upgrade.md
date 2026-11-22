@@ -17,7 +17,7 @@ tags, and from live runs on this machine. Upstream references are `file:line` at
 | 1 | Daemon binary renamed `clio_run` → `clio-run` (139125d5); wheel ships only `bin/clio-run`; `clio_run` survives as a console-script alias | **Break:** CLIO never found the launcher, so no daemon started | Launcher lookup, process census, process tree and disk-GC markers accept both names |
 | 2 | Daemon refuses to start "half-bound" when it cannot listen on `<memfd dir>/clio_<port>.ipc` (ipc_manager.cc:763-787) | **Break for long `USER`:** exit 1, one ERROR line. The test harness's nested `USER` (90 chars) hit it; real users can via a long account name, `CLIO_CORE_USER` or `CLIO_MEMFD_DIR` | Typed pre-spawn guard `clio_core_ipc_path_too_long`; harness `USER` no longer nests |
 | 3 | `AsyncRegisterTarget(..., persistence_level=-1)` (e24a48fd); −1 resolves only against devices loaded at start | **Break:** live capacity growth refused with rc 16 exactly when the store is full (verified live) | Growth passes the planned tier's level; live test |
-| 4 | Core durability: explicit `durability:` key, else persistent only if *every* device is durable (7822175b, core_config.cc:200-222); a volatile core keeps **no WAL** | Latent: CLIO accepted a file tier beside a volatile RAM data tier, which now loses everything on restart | `config_is_durable` follows upstream's rule |
+| 4 | Core durability: explicit `durability:` key, else persistent only if *every* device is durable (7822175b, core_config.cc:200-222); a volatile core keeps **no WAL** | **Break (data loss):** CLIO accepted a file tier beside a volatile RAM data tier; under 2.5.0 that core keeps no WAL and a restart loses every record (verified live, §4) | `config_is_durable` follows upstream's rule; the in-place upgrade of an older seed adds `durability: persistent`; growth recognizes the line |
 | 5 | Per-user memfd dir must be a real dir owned by this user, not group/other-writable (2a6fc440) | Daemon exit 1 otherwise | Typed pre-spawn check `clio_core_memfd_dir_unsafe` |
 | 6 | macOS also binds `<memfd>/clio_zmq_<port+3>.ipc` (ipc_manager.cc:189-206) | 4 bytes less room on a 104-byte `sun_path` | Guard checks every socket |
 | 7 | Control channel (port+2) binds through `DefaultServerBindAddr` (60cb3df2, clio-core#1355) | CLIO's port-hold stopgap is obsolete and, with it, the channel failed to bind | Stopgap removed (#2038) |
@@ -87,6 +87,19 @@ New core key `durability: persistent|volatile` (7822175b). Unstated, the core is
 persistent only when it has devices and every one is `temporary`/`long_term`; a volatile
 core keeps no WAL, and a persistent core refuses volatile targets with rc 16.
 
+Live check (one record put, clean stop, restart, get), config = RAM data tier plus a
+`temporary` file tier, no `durability:` key, then the same with `durability: persistent`:
+
+| iowarp-core | unstated | `durability: persistent` |
+|---|---|---|
+| 2.4.1 | record kept | record kept (key ignored) |
+| 2.5.0 | **record lost** | record kept |
+
+CLIO's current seed has no RAM data tier, so a default install is not affected. A
+config that is affected is now refused with `clio_core_not_durable`, unless it is CLIO's
+own older seed, which is upgraded in place by adding `durability: persistent`. The
+shared test config (`tests/test_arc/test_clio_core_offload_spill.py`) states it too.
+
 New env vars (all `CLIO_` prefixed): `CLIENT_DATA_SEGMENT_SIZE`, `PEER_TRANSPORT`,
 `NET_TIERS`, `NET_TIER_LANES`, `NET_TIER_ZMQ_FROM`, `NET_DIRECT`, `NET_SPREAD`,
 `NET_SEND_THREADS`, `NET_AVOID_SHARDS`, `NUMA_INTERLEAVE`, `BDEV_AIO`,
@@ -126,7 +139,8 @@ synchronous `Client.PutBlob/GetBlob` are the API that takes that path.
   unchanged, so `arc/clio_core_wal_repair.py` stays valid.
 - **2.4.1 stores restore** (b030f9cd): only legacy hierarchical names (`/` or
   `$tagid{…`) are dropped; CLIO's tags never start with `/`. Verified live: a store
-  written by 2.4.1 reads back under 2.5.0.
+  written by 2.4.1 reads back under 2.5.0 (200 of 200 segment records and a memory
+  record, byte-identical, through CLIO's store).
 - **One-way:** a 2.5.0 WAL holds types 12/13 that 2.4.1 cannot read. Do not downgrade
   a store.
 - The torn-tail append bug is still upstream (transaction_log.h:335-346, :622-633), so
@@ -178,9 +192,10 @@ BENCHMARK_RESULTS
    put test; not changed here.
 2. **Map rc 28** (device ENOSPC) to a typed disk-full reason in the put/lost-write path
    instead of a generic native refusal.
-3. **State `durability: persistent`** in CLIO's seeded template so a stray volatile
-   device is a loud rc 16 instead of a silent WAL-off core. Needs a
-   `_before_clio_upgrades` variant so managed growth keeps recognizing the seed.
+3. **State `durability: persistent`** in CLIO's freshly seeded template too (done here
+   only for upgraded older seeds), so a stray volatile device is a loud rc 16 instead
+   of a silent WAL-off core. Growth's `_before_clio_upgrades` already recognizes the
+   line.
 4. **Shm cache:** evaluate composing `core_shm_cache_writethru` in `md_only` mode
    behind a flag, with a soak; do not compose the write-back cache without a
    durability design.
