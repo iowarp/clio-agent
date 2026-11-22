@@ -97,9 +97,13 @@ def test_adopting_a_volatile_daemon_cannot_report_a_durable_attach(
         clio_core_attach.reset_attach_state()
 
 
-def _core(tiers: str, durability: str = "") -> str:
+_LOGGED = '    performance:\n      metadata_log_path: "m.log"\n'
+
+
+def _core(tiers: str, durability: str = "", logged: bool = True) -> str:
     stated = f"    durability: {durability}\n" if durability else ""
-    return "compose:\n  - mod_name: clio_cte_core\n" + stated + "    storage:\n" + tiers
+    log = _LOGGED if logged else ""
+    return "compose:\n  - mod_name: clio_cte_core\n" + stated + log + "    storage:\n" + tiers
 
 
 _FILE_TEMPORARY = (
@@ -119,3 +123,29 @@ def test_one_volatile_tier_makes_the_whole_core_volatile() -> None:
 def test_an_explicit_durability_wins() -> None:
     assert config_is_durable(_core(_FILE_TEMPORARY + _RAM_VOLATILE, "persistent"))
     assert not config_is_durable(_core(_FILE_TEMPORARY, "volatile"))
+
+
+def test_a_core_without_a_metadata_log_is_not_durable() -> None:
+    """No ``metadata_log_path``: no WAL to restore from, whatever the tier labels say."""
+    assert not config_is_durable(_core(_FILE_TEMPORARY, "persistent", logged=False))
+
+
+def test_a_volatile_config_is_refused_before_any_daemon_starts(tmp_path, monkeypatch) -> None:
+    """iowarp-core 2.5 deletes an existing snapshot and WAL when a core starts volatile,
+    so the refusal sits at the spawn point, ahead of ``clio-run start``.
+
+    SABOTAGE: drop ``refuse_volatile_spawn`` from ``require_spawnable`` and the stubbed
+    launcher is reached.
+    """
+    from clio_agent.arc import clio_core_spawn_preflight
+    from clio_agent.arc.clio_core_durability import ClioCoreNotDurableError
+
+    # tmp_path is too long for an IPC socket; that guard has its own tests.
+    monkeypatch.setattr(clio_core_spawn_preflight, "require_ipc_path_fits", lambda *_a: None)
+    config = tmp_path / "cte.yaml"
+    config.write_text(_core('      - path: "s.bin"\n        bdev_type: "file"\n'))
+    env: dict[str, str] = {}
+    with pytest.raises(ClioCoreNotDurableError, match="delete this store's metadata log"):
+        clio_core_spawn_preflight.require_spawnable(env, str(config), 9413)
+    config.write_text(_core(_FILE_TEMPORARY))
+    clio_core_spawn_preflight.require_spawnable(env, str(config), 9413)

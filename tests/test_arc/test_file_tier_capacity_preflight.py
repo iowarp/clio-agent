@@ -67,6 +67,8 @@ def _write_config(tmp_path: Path, capacities: tuple[str, ...]) -> tuple[Path, tu
         "  - mod_name: clio_cte_core\n"
         "    pool_name: cte_main\n"
         '    pool_id: "512.0"\n'
+        "    performance:\n"
+        '      metadata_log_path: "metadata.log"\n'
         "    storage:\n"
         f"{tiers}\n",
         encoding="utf-8",

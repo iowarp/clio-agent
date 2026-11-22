@@ -70,7 +70,6 @@ from clio_agent.arc.clio_core_indexer import (
     bind_client_to_indexer,
     indexer_pool,
 )
-from clio_agent.arc.clio_core_ipc_path import require_ipc_path_fits
 from clio_agent.arc.clio_core_liveness import (  # noqa: F401 - re-exported for callers/tests
     _DEFAULT_RUNTIME_PORT,
     ClioCoreRuntimeLostError,
@@ -79,6 +78,7 @@ from clio_agent.arc.clio_core_liveness import (  # noqa: F401 - re-exported for 
     _resolve_runtime_port,
     _runtime_alive,
 )
+from clio_agent.arc.clio_core_spawn_preflight import require_spawnable
 from clio_agent.arc.clio_core_writes import SEARCH_SUFFIX, ClioCoreWrites
 from clio_agent.arc.companion_write import companion_sizes
 from clio_agent.arc.native_threads import run_on_native_thread
@@ -181,7 +181,7 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
     if config_path:
         env["CLIO_SERVER_CONF"] = config_path
     pin_core_child_env(env)
-    require_ipc_path_fits(env, _resolve_runtime_port(config_path))
+    require_spawnable(env, config_path, _resolve_runtime_port(config_path))
     state_dir = runtime_state_dir()
     log_path = state_dir / "clio-runtime.log"
     clear_crash_record(state_dir)  # fresh spawn, fresh slate (#1148)

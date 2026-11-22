@@ -4,7 +4,9 @@ A clio-core storage tier left at the default ``volatile`` persistence level keep
 nothing across a daemon restart (verified against iowarp-core 2.2.1: a record written,
 the daemon stopped cleanly, a new daemon on the same config -> the record is gone;
 with the file tier at ``persistence_level: "temporary"`` it is read back, and after a
-crash too once clio-core's periodic flush has run). So:
+crash too). Since iowarp-core 2.5 a core that resolves volatile also *deletes* an
+existing snapshot and metadata log at start, so the check runs before every spawn
+(:func:`refuse_volatile_spawn`). So:
 
 * the config CLIO seeds marks its file tier durable (``clio_core_config`` template);
 * a seeded config from before that is upgraded in place, once, logged
@@ -79,14 +81,53 @@ def _file_tier_durable(config: dict[str, Any]) -> bool:
     )
 
 
+def _metadata_logged(config: dict[str, Any]) -> bool:
+    """Every ``clio_cte_core`` names a metadata log (its WAL; without one nothing restores)."""
+    cores = [
+        module
+        for module in config.get("compose") or []
+        if isinstance(module, dict) and module.get("mod_name") == "clio_cte_core"
+    ]
+    return bool(cores) and all(
+        str(((core.get("performance") or {}).get("metadata_log_path")) or "").strip()
+        for core in cores
+    )
+
+
 def config_is_durable(text: str) -> bool:
     """Whether a clio-core config keeps records across a restart.
 
-    It needs a non-RAM tier at a durable persistence level, and the core itself must be
-    persistent under clio-core's rule (:func:`_core_persistent`).
+    It needs a non-RAM tier at a durable persistence level, a metadata log, and the core
+    itself must be persistent under clio-core's rule (:func:`_core_persistent`).
     """
     config = yaml.safe_load(text) or {}
-    return _file_tier_durable(config) and _core_persistent(config, _tiers(config))
+    return (
+        _file_tier_durable(config)
+        and _metadata_logged(config)
+        and _core_persistent(config, _tiers(config))
+    )
+
+
+def refuse_volatile_spawn(config_path: str) -> None:
+    """Refuse to start a daemon on a config clio-core would treat as volatile.
+
+    iowarp-core 2.5 does not only skip the restore for a volatile core: it deletes the
+    existing snapshot and metadata-log shards when it starts (``core_runtime.cc:862``,
+    ``:8726-8752``), so one start with an unlabelled tier loses the store for good. This
+    runs at the single spawn point, before every daemon start.
+
+    Raises:
+        ClioCoreNotDurableError: The config is not durable (or cannot be read).
+    """
+    try:
+        text = Path(config_path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ClioCoreNotDurableError(f"{config_path}: unreadable ({exc})") from exc
+    if not config_is_durable(text):
+        raise ClioCoreNotDurableError(
+            f"{config_path}: refusing to start clio-core, which would delete this store's "
+            f"metadata log on a volatile start. {_REMEDY}; and name a metadata_log_path"
+        )
 
 
 def ensure_seeded_config_durable(path: Path) -> None:
