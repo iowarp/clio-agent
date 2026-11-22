@@ -55,6 +55,7 @@ from clio_agent.arc import clio_core_durability as _durability
 from clio_agent.arc import clio_core_indexer as _indexer
 from clio_agent.arc import clio_core_relocate as _relocate
 from clio_agent.arc import clio_core_shm_cache as _shm_cache
+from clio_agent.arc.clio_core_child_env import force_safe_core_env
 from clio_agent.arc.clio_core_host_migration import (
     migrate_legacy_cte_store,
 )
@@ -227,8 +228,7 @@ def pin_core_child_env(env: MutableMapping[str, str]) -> None:
     pin_loopback_bind(env)
     if not env.get(CORE_STORAGE_ROOT_ENV):
         env[CORE_STORAGE_ROOT_ENV] = str(runtime_state_dir())
-    if not env.get(CORE_VIZ_ENABLE_ENV):
-        env[CORE_VIZ_ENABLE_ENV] = "0"
+    force_safe_core_env(env)  # no dashboard, no stripe layout (clio_core_child_env)
     from clio_agent.arc.home_runtime import core_user  # noqa: PLC0415 - avoid import cycle
 
     user = core_user()

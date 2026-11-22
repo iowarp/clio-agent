@@ -86,10 +86,23 @@ def test_child_env_turns_off_the_fixed_port_dashboard() -> None:
     assert env[CORE_VIZ_ENABLE_ENV] == "0"
 
 
-def test_child_env_respects_an_explicit_dashboard_setting() -> None:
+def test_child_env_turns_the_dashboard_off_even_when_the_parent_enables_it(caplog) -> None:
+    """iowarp-core 2.5's dashboard has no authentication or Origin check: a cross-origin
+    POST to ``/api/pools/<pool>/destroy`` destroys the pool. CLIO never starts it."""
     env = {CORE_VIZ_ENABLE_ENV: "1"}
-    pin_core_child_env(env)
-    assert env[CORE_VIZ_ENABLE_ENV] == "1"
+    with caplog.at_level("WARNING"):
+        pin_core_child_env(env)
+    assert env[CORE_VIZ_ENABLE_ENV] == "0"
+    assert "clio_core_child_env_overridden" in caplog.text
+
+
+def test_child_env_drops_a_stripe_layout(caplog) -> None:
+    """A file bdev reopened with another stripe layout reads every block back wrong."""
+    env = {"CLIO_BDEV_STRIPE_FILES": "2", "CLIO_BDEV_STRIPE_UNIT": "1MB"}
+    with caplog.at_level("WARNING"):
+        pin_core_child_env(env)
+    assert "CLIO_BDEV_STRIPE_FILES" not in env and "CLIO_BDEV_STRIPE_UNIT" not in env
+    assert caplog.text.count("clio_core_child_env_overridden") == 2
 
 
 def test_spawned_daemon_gets_a_clio_owned_storage_root(
