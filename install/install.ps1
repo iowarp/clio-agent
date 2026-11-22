@@ -14,9 +14,10 @@
 #   install.ps1 -ResetOldData    move data CLIO 0.9.5.1 or older wrote aside without asking
 #                                (this release cannot open it; it is kept, never deleted)
 #   install.ps1 -PrepareToolServers
-#                                also prepare the agents' clio-kit tool servers now, for
-#                                offline or air-gapped use (by default each is downloaded
-#                                when you first enable it in CLIO)
+#                                also prepare every installed agent's clio-kit tool servers
+#                                now, for offline or air-gapped use (by default only the
+#                                default agent's tool servers are prepared; any other is
+#                                downloaded when you first enable it in CLIO)
 #   install.ps1 -EnableLongPaths turn on Windows long path support without asking first
 #                                (one Windows admin prompt for that setting only);
 #                                -SkipLongPaths never asks. Unset, an interactive run
@@ -55,7 +56,8 @@ if (-not (Test-Path -LiteralPath variable:script:ClioScopeProbe)) {
 
 $ErrorActionPreference = 'Stop'
 # CLIO_PORT names the server's API port, but clio-core reads the same name as its RPC
-# port. The installer starts no server, and its migrate step would otherwise put the
+# port. The installer's only server (preparing the default agent's tool servers) takes
+# --port, and its migrate step would otherwise put the
 # clio-core daemon and client on the API port and stall until the daemon-start limit.
 Remove-Item Env:CLIO_PORT -ErrorAction SilentlyContinue
 # Windows PowerShell 5.1 redraws Invoke-WebRequest's progress bar for every chunk, which
@@ -1598,8 +1600,8 @@ function Install-ClioRuntime($Plan, [string]$Scratch, [string]$Previous = '') {
         if ($ProviderSupport -and (Select-String -LiteralPath $docInstall -SimpleMatch 'provider-support' -Quiet)) { $providerFlag = " --provider-support $ProviderSupport" }
         # Only when asked (-PrepareToolServers, for offline use) are the agents' clio-kit
         # tool servers built in this step too, once the clio-kit launcher installed below
-        # is ready (Write-ClioKitReady tells it). By default each is downloaded when the
-        # person first enables it in CLIO.
+        # is ready (Write-ClioKitReady tells it). By default only the default agent's tool
+        # servers are prepared, after this step (Invoke-ClioToolServerWarmup).
         if ($OptPrepareToolServers -and (Select-String -LiteralPath $docInstall -SimpleMatch 'prepare-tool-servers' -Quiet)) {
             $script:KitReadyFile = Join-Path ([System.IO.Path]::GetTempPath()) "clio-kit-ready-$([guid]::NewGuid()).json"
             $env:CLIO_INSTALL_KIT_READY = $script:KitReadyFile
@@ -2226,6 +2228,150 @@ if ($KitReadyFile) {
     Remove-Item -LiteralPath $KitReadyFile -Force -ErrorAction SilentlyContinue
     Remove-Item Env:CLIO_INSTALL_KIT_READY -ErrorAction SilentlyContinue
 }
+
+# ---------- prepare the default agent's tool servers ------------------
+# Whatever tool servers the default agent declares (its plugins' MCP servers) and the
+# always-load services are provisioned, started and listed now, so the first launch
+# finds their listings persisted and its first turn waits for none of them. The
+# installed server does it with its own launch warm-up (gact.workspace_warmup, the
+# engine a launch and a new workspace use), on a private loopback port in this
+# installation's home, and is stopped once each server is ready or has failed. A
+# failure does not fail the install: the first launch prepares that server again.
+$ToolWarmupQuietS = 120  # no progress for this long, with nothing preparing, is a stall
+function Get-ClioWarmupState($row) {
+    if ($row.status -eq 'ready') { return 'ready' }
+    if ($row.preparation) { return "$($row.preparation.state)" }
+    return 'waiting'
+}
+function Stop-ClioWarmupServer($proc) {
+    if (-not $proc -or $proc.HasExited) { return }
+    # taskkill /T ends the whole tree (the server and the tool servers it started), as
+    # 'clio stop' does: every listing is persisted before a server reports ready.
+    & taskkill /PID $proc.Id /T /F 2>&1 | Out-Null
+    for ($i = 0; $i -lt 40 -and -not $proc.HasExited; $i++) { Start-Sleep -Milliseconds 250 }
+}
+function Invoke-ClioToolServerWarmup {
+    $serverBin = Join-Path $Venv 'Scripts\clio-agent.exe'
+    if (-not (Test-Path -LiteralPath $serverBin) -or -not (Test-Path -LiteralPath $VenvPython)) { return }
+    $eap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $proc = $null
+    $logDir = $null
+    $kitDirsSet = $false
+    $providerEnv = $false
+    $savedPath = $env:PATH
+    $savedProvider = $env:CLIO_LM_PROVIDER
+    $savedModel = $env:CLIO_LM_MODEL
+    try {
+        # Releases without the launch warm-up prepare these servers at their first launch.
+        & $VenvPython -c "import importlib.util, sys; s = importlib.util.find_spec('clio_agent.gact.workspace_warmup'); sys.exit(0 if s and 'def start_launch_warmup' in open(s.origin, encoding='utf-8').read() else 3)" 2>$null
+        if ($LASTEXITCODE -ne 0) { return }
+        $resolved = @(& $VenvPython -c 'from clio_agent.paths import user_data_dir, user_state_dir; print(user_data_dir()); print(user_state_dir())' 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $resolved.Count -lt 2) { Warn "cannot resolve CLIO's folders; the default agent's tool servers are prepared at its first launch"; return }
+        # A CLIO already running on this home prepares them itself; a second server must not share it.
+        $pidFile = Join-Path "$($resolved[1])".Trim() 'clio-server.pid'
+        $running = Get-Content -LiteralPath $pidFile -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($running -and "$running".Trim() -match '^\d+$' -and (Get-Process -Id ([int]"$running".Trim()) -ErrorAction SilentlyContinue)) {
+            Say "CLIO is running (pid $("$running".Trim())); it prepares the default agent's tool servers itself"
+            return
+        }
+        # The server's working directory seeds the default workspace, as 'clio start' does.
+        $cwd = Join-Path "$($resolved[0])".Trim() 'workspace'
+        if (Test-Path -LiteralPath (Join-Path $Prefix 'clio-agent\.clio\agent\arc')) { $cwd = Join-Path $Prefix 'clio-agent' }
+        $listener = New-Object System.Net.Sockets.TcpListener -ArgumentList ([System.Net.IPAddress]::Loopback), 0
+        $listener.Start()
+        $port = $listener.LocalEndpoint.Port
+        $listener.Stop()
+        # The tool servers run with the PATH and clio-kit folders the launcher gives the agent.
+        Use-ClioKitToolDirs
+        $kitDirsSet = $true
+        $first = @($BinDir)
+        $uvCommand = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($uvCommand) {
+            $kitBin = (& $uvCommand.Source tool dir --bin 2>$null | Select-Object -First 1)
+            if ($kitBin) { $first = @("$kitBin".Trim(), (Split-Path -Parent $uvCommand.Source)) + $first }
+        }
+        $env:PATH = (($first + @($env:PATH)) -join ';')
+        # The warm-up runs once the server's agent is built, which needs a selected LM
+        # provider. Before the user picks one, this server alone is given a nominal
+        # selection in its environment; it never calls a model and writes no config.
+        $selected = @(& $VenvPython -c 'from clio_agent.gact.providers.boot_selection import explicit_lm_provider; print(explicit_lm_provider())' 2>$null)
+        if ($LASTEXITCODE -eq 0 -and -not ("$($selected -join '')".Trim())) {
+            $providerEnv = $true
+            $env:CLIO_LM_PROVIDER = 'claude_code'
+            $env:CLIO_LM_MODEL = 'sonnet'
+        }
+        $logDir =  Join-Path ([System.IO.Path]::GetTempPath()) "clio-tool-servers-$([guid]::NewGuid())"
+        New-Item -ItemType Directory -Force -Path $logDir, $cwd | Out-Null
+        $outLog = Join-Path $logDir 'server.log'
+        $errLog = Join-Path $logDir 'server.err.log'
+        # cmd-level redirection, as 'clio start': the server inherits only its log files.
+        $inner = '""{0}" serve --host 127.0.0.1 --port {1} > "{2}" 2> "{3}""' -f $serverBin, $port, $outLog, $errLog
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        $proc = Start-Process -FilePath $env:ComSpec -ArgumentList '/c', $inner -WorkingDirectory $cwd -WindowStyle Hidden -PassThru
+        $quiet = [Diagnostics.Stopwatch]::StartNew()
+        $last = ''
+        $rows = @()
+        $outcome = ''
+        $announced = $false
+        while (-not $outcome) {
+            if ($proc.HasExited) { $outcome = 'exited'; break }
+            $listing = $null
+            try { $listing = Invoke-RestMethod -UseBasicParsing -Uri "http://127.0.0.1:$port/v1/mcp/servers" -TimeoutSec 30 } catch { $listing = $null }
+            $states = @()
+            if ($listing) {
+                # The servers a new conversation on the default agent declares that the
+                # warm-up prepares: plugin-owned ones and always-load services.
+                $rows = @($listing.servers | Where-Object { "$($_.id)".StartsWith('draft_mcp_') -and $_.enabled -and ($_.source -eq 'plugin' -or $_.spec.always_load) })
+                if (-not $rows.Count) { $outcome = 'none'; break }
+                if (-not $announced) {
+                    Say "Preparing the default agent's tool servers: $(($rows | ForEach-Object { $_.name }) -join ', ')"
+                    $announced = $true
+                }
+                $states = @($rows | ForEach-Object { Get-ClioWarmupState $_ })
+                if (-not @($states | Where-Object { $_ -notin @('ready', 'failed') }).Count) { $outcome = 'settled'; break }
+            }
+            # Progress is the boot log and the rows; the access log grows with every poll.
+            $now = "$((Get-Item -LiteralPath $errLog -ErrorAction SilentlyContinue).Length)|" +  (@($rows | ForEach-Object { "$($_.name):$(Get-ClioWarmupState $_):$($_.preparation.phase):$($_.preparation.attempt)" }) -join ';')
+            if ($now -ne $last) { $last = $now; $quiet.Restart() }
+            # A server being prepared is watched by the preparation's own stall detection.
+            elseif ($states -notcontains 'preparing' -and $quiet.Elapsed.TotalSeconds -ge $ToolWarmupQuietS) { $outcome = 'stalled'; break }
+            Start-Sleep -Milliseconds 500
+        }
+        $seconds = Format-ClioSeconds $clock.Elapsed.TotalSeconds
+        if ($outcome -eq 'settled') {
+            $failed = @()
+            foreach ($row in $rows) {
+                if ((Get-ClioWarmupState $row) -eq 'ready') {
+                    $count = if ($null -ne $row.preparation.tool_count) { " ($($row.preparation.tool_count) tools)" } else { '' }
+                    Say "  $($row.name): ready$count"
+                } else {
+                    $failed += $row.name
+                    Warn "  $($row.name): not prepared ($($row.preparation.reason)); the first launch prepares it again"
+                }
+            }
+            if ($failed.Count) { Warn "Some of the default agent's tool servers were not prepared ($seconds s)" }
+            else { Say "The default agent's tool servers are ready ($seconds s)" }
+        } elseif ($outcome -ne 'none') {
+            $why = if ($outcome -eq 'exited') { 'the server preparing them exited' } else { "no progress for $ToolWarmupQuietS s" }
+            Warn "The default agent's tool servers were not prepared ($why, after $seconds s); the first launch prepares them"
+            Get-Content -LiteralPath $errLog -Tail 15 -ErrorAction SilentlyContinue | ForEach-Object { Warn "  $_" }
+        }
+    } catch {
+        Warn "The default agent's tool servers were not prepared ($($_.Exception.Message)); the first launch prepares them"
+    } finally {
+        Stop-ClioWarmupServer $proc
+        $env:PATH = $savedPath
+        if ($providerEnv) {
+            if ($null -eq $savedProvider) { Remove-Item Env:CLIO_LM_PROVIDER -ErrorAction SilentlyContinue } else { $env:CLIO_LM_PROVIDER = $savedProvider }
+            if ($null -eq $savedModel) { Remove-Item Env:CLIO_LM_MODEL -ErrorAction SilentlyContinue } else { $env:CLIO_LM_MODEL = $savedModel }
+        }
+        if ($kitDirsSet) { Use-ClioKitToolDirs -Restore }
+        if ($logDir) { Remove-Item -LiteralPath $logDir -Recurse -Force -ErrorAction SilentlyContinue }
+        $ErrorActionPreference = $eap
+    }
+}
+Invoke-ClioToolServerWarmup
 
 # ---------- install the released Web frontend -------------------------
 if (-not $OptSource) {
