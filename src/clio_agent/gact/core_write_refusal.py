@@ -33,6 +33,11 @@ from clio_agent.runtime import trace
 CORE_WRITES_REFUSED = "clio_core_writes_refused"
 #: Native codes clio-core returns when it has no room to place a write.
 NO_ROOM_CODES = frozenset({12, 13})
+#: iowarp-core 2.5's code for a write its storage device refused with ENOSPC (33fedf5d).
+#: Before 2.5 the same failure was the generic rc 21.
+DEVICE_FULL_CODE = 28
+#: The typed cause a device-full refusal carries (``details.cause``).
+DEVICE_FULL = "clio_core_device_full"
 #: What the person reads.
 MESSAGE = (
     "CLIO's conversation store is refusing writes, so nothing new can be recorded. "
@@ -47,9 +52,24 @@ MESSAGE_NO_ROOM = (
     "CLIO's conversation store is full, so nothing new can be recorded. "
     "Free disk space or give the store more room, then restart CLIO."
 )
+MESSAGE_DEVICE_FULL = (
+    "The disk that holds CLIO's conversation store is full, so the store refused the "
+    "last write. Free disk space, then restart CLIO."
+)
 #: (session, route, lost write) already traced: a page polling a refused route is one line.
 _TRACED: set[tuple[str, str, str]] = set()
 _SESSION = re.compile(r"/v1/sessions/([^/]+)")
+
+
+def _cause(lost: Any) -> tuple[str, str]:
+    """The typed cause and the person's message for one lost write."""
+    if DISK_LOW in lost.error:  # CLIO's own refusal (FN-14), not clio-core's
+        return DISK_LOW, MESSAGE_DISK_LOW
+    if lost.native_code == DEVICE_FULL_CODE:
+        return DEVICE_FULL, MESSAGE_DEVICE_FULL
+    if lost.native_code in NO_ROOM_CODES:
+        return "", MESSAGE_NO_ROOM
+    return "", MESSAGE
 
 
 def _refusal(route: str) -> ErrorInfo | None:
@@ -70,17 +90,13 @@ def _refusal(route: str) -> ErrorInfo | None:
             lost.native_code,
             lost.name,
         )
-    disk_low = DISK_LOW in lost.error  # CLIO's own refusal (FN-14), not clio-core's
+    cause, message = _cause(lost)
     return ErrorInfo(
         error=CORE_WRITES_REFUSED,
-        message=MESSAGE_DISK_LOW
-        if disk_low
-        else MESSAGE_NO_ROOM
-        if lost.native_code in NO_ROOM_CODES
-        else MESSAGE,
+        message=message,
         details={
             "reason": lost.reason,
-            "cause": DISK_LOW if disk_low else "",
+            "cause": cause,
             "native_code": lost.native_code,
             "lost_at": lost.occurred_at,
             "lost_payload_bytes": lost.payload_bytes,
@@ -133,4 +149,10 @@ def unhandled_refusal(exc: BaseException, scope: Any) -> JSONResponse | None:
     return _response(info) if info is not None else None
 
 
-__all__ = ["CORE_WRITES_REFUSED", "recording_refusal", "unhandled_refusal", "write_refusal"]
+__all__ = [
+    "CORE_WRITES_REFUSED",
+    "DEVICE_FULL",
+    "recording_refusal",
+    "unhandled_refusal",
+    "write_refusal",
+]
