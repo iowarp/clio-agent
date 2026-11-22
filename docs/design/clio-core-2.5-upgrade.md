@@ -182,7 +182,75 @@ synchronous `Client.PutBlob/GetBlob` are the API that takes that path.
 
 ## 8. Benchmarks: 2.4.1 vs 2.5.0
 
-BENCHMARK_RESULTS
+Same machine (4 vCPU Linux x86_64 container), one version at a time, never
+concurrently with tests. Every number is CLIO's own ARC store path
+(`storage.make_arc_store(backend="cte")`, a private `CLIO_AGENT_HOME`, the daemon and
+`cte.yaml` CLIO generates), except the bundled native benches, which run against that
+same daemon. Scripts: `scripts/bench/` (`compare_versions.sh`, `run_queue.sh`,
+`render_tables.py`). 2.4.1 rows use the branch's code unless marked "develop code";
+the two differ only on the growth path (see the soak).
+
+#### Daemon lifecycle
+
+| Phase (ms, 5 reps) | 2.4.1 p50 / max | 2.5.0 p50 / max |
+|---|---|---|
+| Cold start + attach | 969 / 970 | 971 / 991 |
+| Attach to running daemon | 691 / 710 | 708 / 750 |
+| Restart + attach, existing store | 958 / 972 | 971 / 1020 |
+| Clean stop after 64 KiB x 2000 fill | 1524 / 2127 | 1619 / 2025 |
+
+#### ARC store payload sweep (1 client)
+
+| Size | 2.4.1 put p50/p95/p99 ms | 2.4.1 get p50/p95/p99 ms | 2.4.1 put/get MiB/s | 2.5.0 put p50/p95/p99 ms | 2.5.0 get p50/p95/p99 ms | 2.5.0 put/get MiB/s |
+|---|---|---|---|---|---|---|
+| 1K | 0.72 / 2.15 / 3.81 | 0.17 / 0.35 / 1.20 | 1.0 / 4.8 | 0.95 / 3.48 / 4.87 | 0.09 / 0.16 / 0.25 | 0.8 / 9.4 |
+| 4K | 0.85 / 2.95 / 4.20 | 0.14 / 0.27 / 0.46 | 3.4 / 24.8 | 0.64 / 2.97 / 4.35 | 0.10 / 0.17 / 0.27 | 3.8 / 33.9 |
+| 16K | 0.91 / 2.57 / 4.18 | 0.30 / 0.46 / 1.18 | 13.2 / 49.2 | 0.76 / 2.42 / 4.09 | 0.14 / 0.22 / 0.93 | 15.4 / 95.8 |
+| 64K | 1.23 / 3.73 / 5.44 | 0.37 / 0.58 / 1.42 | 39.4 / 150.4 | 1.17 / 3.83 / 5.40 | 0.42 / 0.63 / 1.53 | 38.7 / 131.9 |
+| 256K | 3.72 / 7.31 / 9.62 | 1.62 / 3.31 / 4.23 | 61.0 / 136.9 | 3.23 / 7.52 / 10.34 | 1.19 / 2.95 / 4.65 | 67.6 / 168.3 |
+| 1M | 8.83 / 14.87 / 17.64 | 4.43 / 6.80 / 7.85 | 106.9 / 218.0 | 8.98 / 14.57 / 19.06 | 5.88 / 8.52 / 11.31 | 106.2 / 163.5 |
+| 4M | 29.71 / 36.13 / 65.05 | 18.52 / 24.09 / 28.26 | 130.3 / 222.1 | 31.04 / 39.13 / 42.34 | 19.45 / 24.68 / 31.00 | 128.6 / 198.6 |
+| 16M | 118.28 / 173.76 / 173.76 | 72.57 / 106.11 / 106.11 | 128.0 / 212.2 | 118.25 / 169.65 / 169.65 | 93.95 / 113.92 / 113.92 | 130.5 / 170.0 |
+
+#### ARC store concurrency (client processes on one daemon)
+
+| Size x clients | 2.4.1 put p50/p99 ms | 2.4.1 get p50/p99 ms | 2.4.1 put/get ops/s | 2.5.0 put p50/p99 ms | 2.5.0 get p50/p99 ms | 2.5.0 put/get ops/s |
+|---|---|---|---|---|---|---|
+| 4K x1 | 0.75 / 5.96 | 0.17 / 0.72 | 776 / 4651 | 0.90 / 5.38 | 0.09 / 0.56 | 672 / 9525 |
+| 4K x4 | 2.90 / 28.89 | 0.30 / 6.08 | 766 / 4673 | 3.54 / 21.72 | 0.22 / 9.02 | 830 / 3062 |
+| 4K x16 | 18.09 / 89.64 | 3.52 / 51.95 | 640 / 1574 | 20.09 / 93.68 | 1.67 / 42.91 | 605 / 2357 |
+| 1M x1 | 8.38 / 16.66 | 5.29 / 11.80 | 110 / 174 | 9.37 / 19.36 | 5.82 / 11.47 | 97 / 166 |
+| 1M x4 | 19.87 / 45.61 | 13.37 / 32.90 | 175 / 269 | 17.41 / 38.84 | 12.30 / 28.01 | 204 / 288 |
+| 1M x16 | 68.08 / 222.03 | 48.31 / 178.41 | 167 / 207 | 73.45 / 219.60 | 51.89 / 153.25 | 172 / 213 |
+
+Daemon RSS across the store bench: 2.4.1: 34.7 → peak 227.1 → 227.1 MiB; 2.5.0: 31.7 → peak 225.9 → 225.9 MiB.
+
+#### Bundled native benches
+
+| Bench | Case | 2.4.1 | 2.5.0 |
+|---|---|---|---|
+| clio_cte_bench | `--op Put --threads 1 --depth 1 --io-size 4k --io-count 4000` | Aggregate bandwidth: 14.2509 MB/s<br>Aggregate IOPS: 3648.23<br>Avg latency per op: 274.106 us | Aggregate bandwidth: 22.5657 MB/s<br>Aggregate IOPS: 5776.82<br>Avg latency per op: 173.106 us |
+| clio_cte_bench | `--op Get --threads 1 --depth 1 --io-size 4k --io-count 4000` | Aggregate bandwidth: 102.524 MB/s<br>Aggregate IOPS: 26246<br>Avg latency per op: 38.101 us | Aggregate bandwidth: 122.14 MB/s<br>Aggregate IOPS: 31267.8<br>Avg latency per op: 31.9818 us |
+| clio_cte_bench | `--op Put --threads 4 --depth 4 --io-size 4k --io-count 4000` | Aggregate bandwidth: 10.6163 MB/s<br>Aggregate IOPS: 2717.77<br>Avg latency per op: 1471.79 us | Aggregate bandwidth: 9.3364 MB/s<br>Aggregate IOPS: 2390.12<br>Avg latency per op: 1673.56 us |
+| clio_cte_bench | `--op Get --threads 4 --depth 4 --io-size 4k --io-count 4000` | Aggregate bandwidth: 45.549 MB/s<br>Aggregate IOPS: 11660.5<br>Avg latency per op: 343.038 us | Aggregate bandwidth: 61.0271 MB/s<br>Aggregate IOPS: 15622.9<br>Avg latency per op: 256.034 us |
+| clio_cte_bench | `--op Put --threads 1 --depth 1 --io-size 1m --io-count 400` | Aggregate bandwidth: 484.755 MB/s<br>Aggregate IOPS: 484.755<br>Avg latency per op: 2062.9 us | Aggregate bandwidth: 285.446 MB/s<br>Aggregate IOPS: 285.446<br>Avg latency per op: 3503.29 us |
+| clio_cte_bench | `--op Get --threads 1 --depth 1 --io-size 1m --io-count 400` | Aggregate bandwidth: 447.127 MB/s<br>Aggregate IOPS: 447.127<br>Avg latency per op: 2236.5 us | Aggregate bandwidth: 400.937 MB/s<br>Aggregate IOPS: 400.937<br>Avg latency per op: 2494.16 us |
+| clio_cte_bench | `--op Put --threads 4 --depth 4 --io-size 1m --io-count 200` | Aggregate bandwidth: 658.978 MB/s<br>Aggregate IOPS: 658.978<br>Avg latency per op: 6070 us | Aggregate bandwidth: 673.169 MB/s<br>Aggregate IOPS: 673.169<br>Avg latency per op: 5942.04 us |
+| clio_cte_bench | `--op Get --threads 4 --depth 4 --io-size 1m --io-count 200` | Aggregate bandwidth: 1361.02 MB/s<br>Aggregate IOPS: 1361.02<br>Avg latency per op: 2938.97 us | Aggregate bandwidth: 1152.88 MB/s<br>Aggregate IOPS: 1152.88<br>Avg latency per op: 3469.58 us |
+| clio_run_thrpt_bench | `--test-case latency --threads 1 --io-size 4k --duration 10 --output-dir` | Throughput: 78093.7 Custom ops/sec<br>Avg round-trip latency: 12.805 us/op | Throughput: 58695.6 Custom ops/sec<br>Avg round-trip latency: 17.037 us/op |
+| clio_run_thrpt_bench | `--test-case latency --threads 4 --io-size 4k --duration 10 --output-dir` | Throughput: 62732.3 Custom ops/sec<br>Avg round-trip latency: 15.94 us/op | Throughput: 74092.4 Custom ops/sec<br>Avg round-trip latency: 13.496 us/op |
+
+Reading: on CLIO's path the two versions are within noise for puts at every size and
+concurrency; 2.5.0 small gets (1-16 KiB) are about 2x faster at one client
+(4K: 0.10 vs 0.14 ms p50, 9.5k vs 4.7k gets/s). The bundled `clio_cte_bench` shows 2.5.0
+faster for 4 KiB ops (Put 5.8k vs 3.6k IOPS single-threaded) and slower for single-
+threaded 1 MiB puts (285 vs 485 MB/s); `clio_run_thrpt_bench` round-trip latency is
+12.8 -> 17.0 us at one thread and 15.9 -> 13.5 us at four. No errors in any run.
+
+SOAK_AND_MEMORY
+
+ADOPTION_RESULTS
+
 
 ## 9. Knobs and follow-ups for CLIO
 
