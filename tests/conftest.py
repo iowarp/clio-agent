@@ -707,6 +707,12 @@ def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
     # rows found 2026-08-13). Point it at the same tree the XDG layout resolves
     # to so both resolution paths agree.
     monkeypatch.setenv("CLIO_USER_DIR", str(xdg_root / "clio-agent"))
+    # The default scratch root is resolved once per process from that state dir; an
+    # earlier test's cached root names a folder outside this test's write fence, so a
+    # code kernel writing its output log there is refused (EPERM).
+    from clio_agent.runtime import session_scratch  # noqa: PLC0415
+
+    session_scratch._default_scratch_root.cache_clear()
     # The default marketplace a test session resolves its agent from is a small
     # hermetic fixture, never the real marketplace or its network URL.
     monkeypatch.setenv("CLIO_DEFAULT_MARKETPLACE", str(_TEST_MARKETPLACE))

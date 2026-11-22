@@ -51,7 +51,7 @@ def note_organization(organization: str) -> None:
         return
     from clio_agent.gact.agents.clio_react import active_loop  # noqa: PLC0415
 
-    # The turn's own marks ride on its loop, read duck-typed as in ``_spawn_tool``.
+    # The per-turn counts live on the loop itself, which lasts exactly one turn.
     loop: Any = active_loop()
     if loop is None:
         trace.event("INJECTION", "%s organization=%s", BRANCHES_NO_TURN, name)
