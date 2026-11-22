@@ -30,7 +30,14 @@ logger = logging.getLogger(__name__)
 
 MCP_APP_SERVER_STOPPED = "mcp_app_server_stopped"
 
-__all__ = ["MCP_APP_SERVER_STOPPED", "admitted", "server_stopped", "watch_views"]
+__all__ = [
+    "MCP_APP_SERVER_STOPPED",
+    "admitted",
+    "drawing_fleet",
+    "server_stopped",
+    "views_left",
+    "watch_views",
+]
 
 
 def _canonical_root(app: Any, sid: str) -> str:
@@ -114,7 +121,11 @@ def watch_views(registry: Any) -> None:
                 undo()
             return ""
         with current._lock:
-            records = tuple(current._records.values())
+            records = (
+                *current._records.values(),
+                *current._cleanup_records.values(),
+                *current._closing_records.values(),  # its cleanup call still needs the server
+            )
         for record in records:
             fleet = record.fleet() if record.fleet is not None else None
             if (
@@ -127,3 +138,27 @@ def watch_views(registry: Any) -> None:
         return ""
 
     remove.append(namespace_instances.add_in_use_probe(open_views))
+
+
+def views_left() -> None:
+    """A view left the registry: stop superseded servers that no longer draw one."""
+    from clio_agent.tools import namespace_instances  # noqa: PLC0415
+
+    try:
+        namespace_instances.retire_superseded()
+    except Exception:  # noqa: BLE001 - typed; a retirement never blocks a close
+        logger.exception("mcp_namespace_retire_failed")
+
+
+def drawing_fleet(record: Any) -> Any:
+    """The live fleet whose server drew ``record`` (``None`` when it is gone).
+
+    A view's own calls go there, so a view drawn before its conversation moved to
+    another fleet (a connector value change) keeps talking to the server that drew it.
+    """
+
+    ref = getattr(record, "fleet", None)
+    fleet = ref() if ref is not None else None
+    if fleet is None or server_stopped(record):
+        return None
+    return fleet

@@ -170,7 +170,7 @@ async def service_refusal(
             return str(getattr(spec, "transport", "") or "") if spec is not None else ""
 
         try:
-            kind = await _run_bound(app, record.session_id, transport)
+            kind = await _run_bound(app, record.session_id, transport, record=record)
         except RuntimeError as exc:
             record_service_reason(
                 "service_server_not_launched",

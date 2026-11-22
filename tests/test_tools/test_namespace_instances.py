@@ -284,3 +284,136 @@ def test_an_executor_without_stops_has_generation_zero() -> None:
     namespace_instances._bump(inner, "paraview")
     assert namespace_instances.generation(wrapper, "paraview") == 1
     assert weakref.ref(inner)() is inner
+
+
+async def _settle() -> None:
+    while namespace_instances._RETIRING:
+        await asyncio.sleep(0)
+        await asyncio.gather(
+            *(f for f in tuple(namespace_instances._RETIRING) if isinstance(f, asyncio.Future))
+        )
+
+
+async def test_a_superseded_server_drawing_a_view_is_retained_until_the_view_closes(
+    tmp_path: Any,
+) -> None:
+    """Take 1s gap 15: a connector value change closed the open ParaView view."""
+    old, old_proxy, old_backend = _served(tmp_path)
+    await namespace_instances.claim(old, "paraview", old_proxy)
+    old_backend.start()
+    old._namespace_clients["paraview"] = object()
+    views = {"open": True}
+    remove = namespace_instances.add_in_use_probe(
+        lambda owner, ns: "open_views"
+        if views["open"] and owner is old and ns == "paraview"
+        else ""
+    )
+    try:
+        new, new_proxy, new_backend = _served(tmp_path)  # the connector value changed
+        assert await namespace_instances.claim(new, "paraview", new_proxy) == 0
+        assert old_backend.disconnects == 0  # the view keeps its server
+        assert namespace_instances.generation(old, "paraview") == 0  # the card stays live
+        assert namespace_instances.retire_superseded() == 0  # still drawn
+        assert old_backend.disconnects == 0
+
+        views["open"] = False  # the last view closed
+        assert namespace_instances.retire_superseded() == 1
+        await _settle()
+    finally:
+        remove()
+    assert old.evicted == ["paraview"]
+    assert old_backend.disconnects == 1
+    assert new_backend.disconnects == 0
+    assert namespace_instances.retire_superseded() == 0  # retired once
+
+
+async def test_a_call_in_flight_does_not_retain_a_superseded_server(tmp_path: Any) -> None:
+    old, old_proxy, old_backend = _served(tmp_path)
+    await namespace_instances.claim(old, "paraview", old_proxy)
+    old_backend.start()
+    end = namespace_instances.begin_proxy_call(old, "paraview")
+    try:
+        new, new_proxy, _ = _served(tmp_path)
+        assert await namespace_instances.claim(new, "paraview", new_proxy) >= 1
+    finally:
+        end()
+    assert old_backend.disconnects == 1  # the call gets the typed stop error and retries
+
+
+async def test_a_views_call_on_its_retained_server_does_not_take_over(tmp_path: Any) -> None:
+    """Live take: each view call re-claimed the old server and stopped the new one."""
+    from clio_agent.tools import call_origin
+
+    old, old_proxy, old_backend = _served(tmp_path)
+    await namespace_instances.claim(old, "paraview", old_proxy)
+    old_backend.start()
+    views = {"open": True}
+    remove = namespace_instances.add_in_use_probe(
+        lambda owner, ns: "open_views" if views["open"] and owner is old else ""
+    )
+    try:
+        new, new_proxy, new_backend = _served(tmp_path)
+        new_backend.start()
+        await namespace_instances.claim(new, "paraview", new_proxy)
+        tag = f"in-process:{id(old_proxy):x}"
+        assert namespace_instances.retained_owners() == {tag}
+        with call_origin.scope("view"):
+            assert await namespace_instances.claim(old, "paraview", old_proxy) == 0
+        assert new_backend.disconnects == 0  # the new server stays current
+        assert namespace_instances._is_current(new_proxy)
+        assert namespace_instances.retained_owners() == {tag}
+        await namespace_instances.claim(new, "paraview", new_proxy)  # the agent's next call
+        assert old_backend.disconnects == 0
+    finally:
+        remove()
+        views["open"] = False
+    assert namespace_instances.retire_superseded() == 1
+    await _settle()
+    assert old_backend.disconnects == 1
+    assert new_backend.disconnects == 0
+    new_backend._connect_task.cancel()  # type: ignore[union-attr]
+
+
+async def test_a_retained_server_that_is_claimed_again_is_not_retired(tmp_path: Any) -> None:
+    old, old_proxy, old_backend = _served(tmp_path)
+    await namespace_instances.claim(old, "paraview", old_proxy)
+    old_backend.start()
+    views = {"open": True}
+    remove = namespace_instances.add_in_use_probe(
+        lambda owner, ns: "open_views" if views["open"] and owner is old else ""
+    )
+    try:
+        new, new_proxy, new_backend = _served(tmp_path)
+        new_backend.start()
+        await namespace_instances.claim(new, "paraview", new_proxy)
+        views["open"] = False
+        await namespace_instances.claim(old, "paraview", old_proxy)  # the value was set back
+        assert new_backend.disconnects == 1
+        assert namespace_instances.retire_superseded() == 0
+    finally:
+        remove()
+    assert old_backend.disconnects == 0
+    old_backend._connect_task.cancel()  # type: ignore[union-attr]
+
+
+async def test_retirement_from_another_thread_runs_on_the_claims_loop(tmp_path: Any) -> None:
+    old, old_proxy, old_backend = _served(tmp_path)
+    await namespace_instances.claim(old, "paraview", old_proxy)
+    old_backend.start()
+    views = {"open": True}
+    remove = namespace_instances.add_in_use_probe(
+        lambda owner, ns: "open_views" if views["open"] and owner is old else ""
+    )
+    try:
+        new, new_proxy, _ = _served(tmp_path)
+        await namespace_instances.claim(new, "paraview", new_proxy)
+        views["open"] = False
+        scheduled = await asyncio.to_thread(namespace_instances.retire_superseded)
+        assert scheduled == 1
+        for _ in range(200):
+            if old_backend.disconnects:
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        remove()
+    assert old_backend.disconnects == 1

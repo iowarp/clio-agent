@@ -310,6 +310,8 @@ class MCPAppRegistry:
                 self.on_closed(record, reason)
             except Exception:  # noqa: BLE001 - typed; a notice never blocks a close
                 logger.exception("mcp_app_close_notice_failed reason=%s", reason)
+        if record is not None:
+            mcp_app_fleet.views_left()  # a superseded server it drew may retire now
 
     def register(
         self,
@@ -436,7 +438,9 @@ class MCPAppRegistry:
         """Forget a successfully cleaned capability."""
 
         with self._lock:
-            self._closing_records.pop(app_instance_id, None)
+            finished = self._closing_records.pop(app_instance_id, None)
+        if finished is not None:
+            mcp_app_fleet.views_left()
 
     def restore_close(self, record: MCPAppRecord) -> None:
         """Make a failed cleanup retriable without losing its ownership identity."""
@@ -629,12 +633,16 @@ def install_mcp_app_runtime(app: FastAPI) -> None:
     app.state.pending_mcp_app_observer = _make_mcp_app_observer(app)
 
 
-def _bound_executor(app: FastAPI, sid: str) -> Any:
+def _bound_executor(app: FastAPI, sid: str, record: Any = None) -> Any:
     agent = getattr(app.state, "agent", None)
     if agent is None:
         raise RuntimeError("agent is not available")
-    resolver = getattr(agent, "_active_tool_executor", None)
-    executor = resolver() if callable(resolver) else getattr(agent, "tool_executor", None)
+    # A view's own call goes to the fleet whose server drew it, even after its
+    # conversation moved to another fleet (a connector value change, take 1s gap 15).
+    executor = mcp_app_fleet.drawing_fleet(record) if record is not None else None
+    if executor is None:
+        resolver = getattr(agent, "_active_tool_executor", None)
+        executor = resolver() if callable(resolver) else getattr(agent, "tool_executor", None)
     if executor is None:
         raise RuntimeError("agent tool executor is not available")
     # #1201: surface any recorded era downgrade for this executor's servers
@@ -647,9 +655,13 @@ def _bound_executor(app: FastAPI, sid: str) -> Any:
     return executor
 
 
-async def _run_bound(app: FastAPI, sid: str, operation: Any, *, request: Any = None) -> Any:
+async def _run_bound(
+    app: FastAPI, sid: str, operation: Any, *, request: Any = None, record: Any = None
+) -> Any:
     """Run a blocking executor operation in the exact session context.
 
+    With ``record`` (a view's own call) the operation runs on the fleet whose
+    server drew that view while it lives (:func:`mcp_app_fleet.drawing_fleet`).
     A view's call arrives outside any turn, so the session is bound as the turn
     session too: an external server's call is then owned by the session's latest
     assignment, as the call that opened the view was. With no turn there is no
@@ -665,7 +677,7 @@ async def _run_bound(app: FastAPI, sid: str, operation: Any, *, request: Any = N
                 view_call_transcript.collecting(app, sid),  # never inside an open turn
                 call_origin.scope("view"),  # the server sees the view's call (FP-D7)
             ):
-                return operation(_bound_executor(app, sid))
+                return operation(_bound_executor(app, sid, record))
         finally:
             gact_context.reset(token)
 

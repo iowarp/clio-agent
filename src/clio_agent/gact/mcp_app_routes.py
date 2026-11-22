@@ -90,6 +90,7 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
                 record.source_namespace,
                 record.resource_uri,
             ),
+            record=record,
         )
         html, csp, permissions = _resource_payload(result)
         record.html = html
@@ -176,7 +177,7 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
                 return executor.call_tool_result(full_name, dict(arguments))
 
         try:
-            result = await _run_bound(app, sid, call, request=request)
+            result = await _run_bound(app, sid, call, request=request, record=record)
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         wire, dropped = strip_service_declaration(call_tool_result_to_wire(result))
@@ -198,6 +199,7 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
             sid,
             lambda executor: executor.read_resource(record.source_namespace, uri),
             request=request,
+            record=record,
         )
         return read_resource_result_to_wire(result)
 

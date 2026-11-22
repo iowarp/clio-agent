@@ -60,7 +60,7 @@ async def _cleanup_record(app: "FastAPI", record: "MCPAppRecord") -> None:
         full_name = mcp_apps._resolve_app_tool(executor, record, cleanup_tool)
         return executor.call_tool_result(full_name, cleanup_args)
 
-    result = await mcp_apps._run_bound(app, record.session_id, cleanup)
+    result = await mcp_apps._run_bound(app, record.session_id, cleanup, record=record)
     if mcp_apps.call_tool_result_to_wire(result).get("isError") is True:
         raise RuntimeError(f"MCP App cleanup tool {cleanup_tool!r} returned an error result")
 
