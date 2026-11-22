@@ -51,4 +51,10 @@ def register_session_defaults_routes(app: FastAPI) -> None:
 
     @app.patch("/v1/session-defaults", response_model=SessionDefaultsResponse)
     async def patch_session_defaults(req: UpdateSessionDefaultsRequest) -> SessionDefaultsResponse:
-        return _respond(app.state.session_defaults.update(req))
+        before = app.state.session_defaults.get().agent_ref
+        value = app.state.session_defaults.update(req)
+        if value.agent_ref != before:
+            from clio_agent.gact.workspace_warmup import start_launch_warmup  # noqa: PLC0415
+
+            start_launch_warmup(app)  # the new default agent's servers, listed off this request
+        return _respond(value)

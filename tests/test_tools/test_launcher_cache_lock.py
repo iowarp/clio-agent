@@ -316,6 +316,49 @@ def test_runaway_backstop_fires_typed_when_holder_unidentifiable(
         assert not holder.is_alive(), "holder did not retire after release"
 
 
+def test_a_connect_queued_on_the_lock_is_not_read_as_a_dead_server(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A connect waiting for the lock has spawned no process of its own yet. While
+    another server holds the lock, its server wait keeps going past the no-progress
+    window instead of reading the empty process tree as a dead server.
+
+    **Sabotage:** drop the queue mark -> ``NoProgressTimeout`` after one window (found
+    live: relay's first connect queued behind spack's provision and failed at 30 s).
+    """
+    import asyncio  # noqa: PLC0415
+
+    from clio_agent.tools import mcp_config  # noqa: PLC0415
+    from clio_agent.tools.launcher_cache_lock import aacquire_launcher_cache_lock  # noqa: PLC0415
+    from clio_agent.tools.mcp_server_progress import wait_while_server_works  # noqa: PLC0415
+
+    monkeypatch.setattr(mcp_config, "_mcp_uv_cache_dir", lambda: tmp_path)
+    held = threading.Event()
+    release = threading.Event()
+
+    def _provision() -> None:
+        with acquire_launcher_cache_lock("spack", timeout_s=30.0):
+            held.set()
+            release.wait(10.0)
+
+    async def _connect() -> str:
+        async with aacquire_launcher_cache_lock("relay", timeout_s=30.0):
+            return "connected"
+
+    holder = threading.Thread(target=_provision)
+    holder.start()
+    timer = threading.Timer(1.0, release.set)
+    try:
+        assert held.wait(5.0)
+        timer.start()
+        assert asyncio.run(wait_while_server_works(_connect(), slice_s=0.2)) == "connected"
+    finally:
+        timer.cancel()
+        release.set()
+        holder.join(timeout=10.0)
+    assert not holder.is_alive()
+
+
 def test_pid_alive_true_for_own_process() -> None:
     assert lcl._pid_alive(os.getpid()) is True
 

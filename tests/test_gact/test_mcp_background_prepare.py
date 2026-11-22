@@ -135,3 +135,101 @@ def test_stop_interrupts_the_wait_without_cancelling_shared_startup(
     finally:
         release.set()
         assert set(warmup.result(_BACKSTOP_S)) == {"geo_x"}
+
+
+class _Fleet:
+    """The executor surface the barrier reads and merges into."""
+
+    def __init__(self) -> None:
+        self.tools: dict[str, Any] = {}
+
+    def merge_namespace_tools(self, namespace: str, tools: dict[str, Any]) -> None:
+        self.tools.update(tools)
+
+    def to_dspy_tools(self) -> list[Any]:
+        return list(self.tools.values())
+
+
+def _stdio_spec() -> Any:
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    return SimpleNamespace(transport="stdio", command="uvx", args=["relay"], env={})
+
+
+def _listing(*names: str) -> list[Any]:
+    from mcp.types import Tool  # noqa: PLC0415
+
+    return [Tool(name=name, inputSchema={"type": "object"}) for name in names]
+
+
+def test_a_listing_persisted_by_a_warm_up_is_adopted_without_starting_anything(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The launch or workspace warm-up stored the listing after this fleet was built:
+    the first request has the tools at once, and no preparation starts on its path."""
+
+    def mount(executor: Any, namespace: str, spec: Any) -> dict[str, Any]:
+        raise AssertionError("the request path must not prepare a listed server")
+
+    monkeypatch.setattr("clio_agent.gact.mcp_readiness.mount_namespace_for_session", mount)
+    monkeypatch.setattr(
+        "clio_agent.connectors.listing.cached_offered", lambda ns, spec: _listing("ping")
+    )
+    fleet = _Fleet()
+    assert background.prepare_for_turn(fleet, {"geo": _stdio_spec()}) == {}
+    assert [tool.name for tool in fleet.to_dspy_tools()] == ["geo_ping"]
+    assert not mcp_prepare.is_preparing("geo")
+
+
+def test_a_turn_joins_another_fleets_preparation_and_returns_once_listed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A turn arriving while the launch warm-up prepares the same server does not
+    provision it again: it waits for that preparation, adopts its listing, and returns
+    while its own fleet's connection is still starting.
+
+    **Sabotage:** no join -> two cold provisions race (the uv launcher lock); no
+    listed event -> the first request also waits for this fleet's connect.
+    """
+    stored: list[Any] = []
+    warm_release = threading.Event()
+    connect_release = threading.Event()
+    calls: list[Any] = []
+
+    def mount(executor: Any, namespace: str, spec: Any) -> dict[str, Any]:
+        calls.append(executor)
+        if executor is warm:
+            assert warm_release.wait(_BACKSTOP_S)
+            stored.extend(_listing("ping"))  # the warm-up persists its live listing
+        else:
+            assert connect_release.wait(_BACKSTOP_S)
+        return {"geo_ping": object()}
+
+    monkeypatch.setattr("clio_agent.gact.mcp_readiness.mount_namespace_for_session", mount)
+    monkeypatch.setattr("clio_agent.connectors.listing.cached_offered", lambda ns, spec: stored)
+    warm, turn = _Fleet(), _Fleet()
+    spec = _stdio_spec()
+    warmup = background.prepare_in_background(warm, "geo", spec)
+    results: list[dict[str, str]] = []
+    worker = threading.Thread(
+        target=lambda: results.append(background.prepare_for_turn(turn, {"geo": spec}))
+    )
+    worker.start()
+    try:
+        worker.join(0.3)
+        assert worker.is_alive(), "definitions are unknown until the warm-up lists them"
+        assert calls == [warm], "the turn must not start a second provision"
+        warm_release.set()
+        worker.join(_BACKSTOP_S)
+        assert not worker.is_alive()
+        assert results == [{}]
+        assert [tool.name for tool in turn.to_dspy_tools()] == ["geo_ping"]
+        assert not connect_release.is_set(), "returned before its own connect finished"
+    finally:
+        warm_release.set()
+        connect_release.set()
+        warmup.result(_BACKSTOP_S)
+        with background._lock:
+            still = [f for (_, ns), f in background._inflight.items() if ns == "geo"]
+        for future in still:
+            future.result(_BACKSTOP_S)

@@ -35,3 +35,26 @@ composes, including against a remote agent; Desktop never resolves the remote
 root as a local path. Sending does not wait on the preparation request. After
 leaving, the ordinary workspace fleet idle reaper controls connection lifetime.
 Older agents without the capability continue preparing tools at session creation.
+
+## Preparation without a client request
+
+The agent also prepares the default agent's servers by itself, off every
+request path:
+
+- **When the agent becomes ready** (launch, or a model change that rebuilds it), and
+  when `PATCH /v1/session-defaults` changes `agent_ref`: a fleet rooted in a
+  CLIO-owned folder (`launch-warmup` under the user state directory) provisions,
+  starts and lists every plugin server and always-load service of the default
+  agent. The listing is stored in the listing cache, and then that fleet is
+  closed.
+- **When a workspace is created** (`POST /v1/workspaces`): the new root's fleet is
+  prepared the same way. The ordinary idle reaper brings it down.
+
+Every workspace fleet preloads the cached listings when it is built. A listing
+stored later is adopted by the next turn. So the first turn's model request
+already lists those servers' tools, without a "Setting up environment" wait.
+
+A turn that arrives while that preparation is still running does not start a
+second one. It joins the running preparation and uses its listing. The first
+request still waits only for definitions that are not known yet: it never omits a
+declared server that is still listing.
