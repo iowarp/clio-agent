@@ -11,6 +11,11 @@ would ask, the approval mode decides (the plan's table):
 - ``ask``: it asks, one question per script at a time, showing the script; the answer
   "Allow for the rest of this script" (``allow_script``) covers the rest of that call.
 
+The question that approves the script itself offers ``allow_script`` too: choosing it
+there covers the script's nested calls from the start, so one answer approves the script
+and its calls (an upload in chunks asks once, not once per chunk). "Allow once" there
+approves only the script, and its calls ask as above.
+
 The grant lives in a ``ContextVar`` that ``run_code`` binds for its nested calls, so
 the gate (which runs in the nested call's thread) sees it, and nothing outside the
 script does. Nothing bounds a script's time, so waiting for an answer costs it nothing
@@ -34,6 +39,7 @@ __all__ = [
     "ScriptGrant",
     "active_grant",
     "approval_mode",
+    "approving",
     "bind_grant",
     "covering_postures",
     "covers",
@@ -94,6 +100,19 @@ class ScriptGrant:
 
 
 _ACTIVE: ContextVar[ScriptGrant | None] = ContextVar("clio_run_code_grant", default=None)
+#: The grant of a script whose own approval is being asked: it only shapes that question
+#: and takes its answer, never decides a call (the script is not running yet).
+_APPROVING: ContextVar[ScriptGrant | None] = ContextVar("clio_run_code_approving", default=None)
+
+
+@contextlib.contextmanager
+def approving(grant: ScriptGrant) -> Iterator[ScriptGrant]:
+    """Ask the script's own approval with ``allow_script`` offered for ``grant``."""
+    token = _APPROVING.set(grant)
+    try:
+        yield grant
+    finally:
+        _APPROVING.reset(token)
 
 
 def approval_mode(current: Any) -> str:
@@ -128,7 +147,7 @@ def covers(posture: str) -> bool:
 
 def row_fields(actions: list[str]) -> dict[str, Any]:
     """What a permission question asked from inside a script adds to its row."""
-    grant = _ACTIVE.get()
+    grant = _ACTIVE.get() or _APPROVING.get()
     if grant is None:
         return {}
     return {
@@ -149,7 +168,8 @@ def question() -> Iterator[None]:
 
 
 def answered(row: Mapping[str, Any]) -> None:
-    """An ``allow_script`` answer covers the rest of the script."""
-    grant = _ACTIVE.get()
+    """An ``allow_script`` answer covers the rest of the script (all of it, when the
+    answer approved the script itself)."""
+    grant = _ACTIVE.get() or _APPROVING.get()
     if grant is not None and row.get("action") == ALLOW_SCRIPT:
         grant.covered = True

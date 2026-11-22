@@ -132,6 +132,56 @@ def test_ask_mode_asks_with_the_script_and_allow_script_covers_the_rest(tmp_path
         assert grants.REASON_SCRIPT_GRANT in reasons
 
 
+def test_allow_script_on_the_scripts_own_question_covers_all_its_calls(tmp_path: Path) -> None:
+    """Take 1r: one answer approves the script and its calls (an upload in chunks asks
+    once, not once per chunk); "Allow once" there approves only the script."""
+    from fastapi.testclient import TestClient
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        sid = _session(client, "ask")
+        gate = _make_permission_gate(app)
+        code = "for c in chunks:\n    await tools.shell.exec(c)"
+        result: dict[str, Any] = {}
+
+        def fire(action_key: str) -> None:
+            grant = grants.ScriptGrant("call_7", code)
+            with _tool_session_context(sid):
+                with grants.approving(grant):
+                    result[action_key] = [gate("run_code", {"code": code})]
+                token = grants.bind_grant(grant)
+                try:
+                    result[action_key] += [gate(_NON_READ, {"cmd": c}) for c in "abc"]
+                finally:
+                    grants.reset_grant(token)
+
+        thread = threading.Thread(target=fire, args=("script",))
+        thread.start()
+        row = _pending(app)
+        assert row["tool_call"]["tool_name"] == "run_code"
+        assert row["script"] == {"call_id": "call_7", "code": code}
+        assert row["actions"][-1] == grants.ALLOW_SCRIPT
+        answer = client.post(f"/v1/permissions/{row['id']}", json={"action": grants.ALLOW_SCRIPT})
+        assert answer.status_code == 204
+        thread.join(timeout=5)
+        assert result["script"] == ["allow"] * 4
+        asked = [r for r in app.state.permissions.values() if r.get("status") != "auto_approved"]
+        assert len(asked) == 1  # only the script's own question
+
+        thread = threading.Thread(target=fire, args=("once",))
+        thread.start()
+        first = _pending(app)
+        client.post(f"/v1/permissions/{first['id']}", json={"action": "allow"})
+        nested = _pending(app)  # "Allow once" approved only the script
+        assert (
+            nested["tool_call"]["tool_name"] == _NON_READ
+            and nested["actions"][-1] == grants.ALLOW_SCRIPT
+        )
+        client.post(f"/v1/permissions/{nested['id']}", json={"action": grants.ALLOW_SCRIPT})
+        thread.join(timeout=5)
+        assert result["once"] == ["allow"] * 4
+
+
 def test_allow_script_is_refused_on_a_question_that_does_not_offer_it(tmp_path: Path) -> None:
     from fastapi.testclient import TestClient
 

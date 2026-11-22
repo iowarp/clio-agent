@@ -207,18 +207,22 @@ def _session_approval_mode() -> str:
     return str(getattr(session, "approval_mode", "") or "")
 
 
-def prepare_script(agent: Any, code: str) -> PreparedScript:
-    """Capture the calling ``run_code`` call's grant and context for ``code``'s nested calls."""
+def new_grant(code: str) -> Any:
+    """The calling ``run_code`` call's grant for ``code``, before it is approved."""
     from clio_agent.gact.artifacts.observer_bridge import current_call_id  # noqa: PLC0415
-    from clio_agent.gact.code_mode.grants import (  # noqa: PLC0415
-        ScriptGrant,
-        bind_grant,
-        reset_grant,
-    )
+    from clio_agent.gact.code_mode.grants import ScriptGrant  # noqa: PLC0415
+
+    return ScriptGrant(current_call_id(), code, approval_mode=_session_approval_mode())
+
+
+def prepare_script(agent: Any, code: str, grant: Any = None) -> PreparedScript:
+    """Capture the calling ``run_code`` call's grant (``grant``, the one its approval
+    answered, else a new one) and context for ``code``'s nested calls."""
+    from clio_agent.gact.code_mode.grants import bind_grant, reset_grant  # noqa: PLC0415
     from clio_agent.gact.model_media import CALL_MEDIA, DETACHED, SCRIPT_MEDIA  # noqa: PLC0415
     from clio_agent.gact.tool_call_nesting import PARENT_CALL_ID  # noqa: PLC0415
 
-    grant = ScriptGrant(current_call_id(), code, approval_mode=_session_approval_mode())
+    grant = grant if grant is not None else new_grant(code)
     grant_token, parent_token = bind_grant(grant), PARENT_CALL_ID.set(grant.call_id)
     # The script's views ride the calling run_code call's result (model_media).
     call_media = CALL_MEDIA.get()
@@ -355,13 +359,19 @@ def _boundary(kernel: Any, outcome: Mapping[str, Any]) -> dict[str, Any] | None:
 
 
 def run_script(
-    agent: Any, code: str, *, session_id: str, scope: str, read_only: bool = False
+    agent: Any,
+    code: str,
+    *,
+    session_id: str,
+    scope: str,
+    read_only: bool = False,
+    grant: Any = None,
 ) -> dict[str, Any]:
     """Run ``code`` in the scope's kernel (a read-only one in plan mode); the outcome."""
     from clio_agent.agent import cancellation_requested  # noqa: PLC0415
     from clio_agent.gact.code_mode import kernels  # noqa: PLC0415
 
-    prepared = prepare_script(agent, code)
+    prepared = prepare_script(agent, code, grant)
     kernel = kernels.kernel_for(session_id, scope, _workspace(), read_only=read_only)
     outcome = execute_script(prepared, kernel, cancellation_requested)
     if outcome["status"] == "cancelled":
@@ -372,7 +382,14 @@ def run_script(
 
 
 def launch_background(
-    app: Any, agent: Any, code: str, label: str, *, session_id: str, read_only: bool
+    app: Any,
+    agent: Any,
+    code: str,
+    label: str,
+    *,
+    session_id: str,
+    read_only: bool,
+    grant: Any = None,
 ) -> dict[str, Any]:
     """Hand an approved script to the code root; the task's acceptance receipt (CT2)."""
     import asyncio  # noqa: PLC0415
@@ -380,7 +397,7 @@ def launch_background(
     from clio_agent.gact.model_media import DETACHED, SCRIPT_MEDIA  # noqa: PLC0415
     from clio_agent.gact.native_code import CodeLaunch, stage_launch, take_launch  # noqa: PLC0415
 
-    prepared = prepare_script(agent, code)
+    prepared = prepare_script(agent, code, grant)
     # It outlives this model step: an image it views has no result to ride (model_media).
     prepared.context.run(SCRIPT_MEDIA.set, DETACHED)
     key = stage_launch(CodeLaunch(prepared, session_id, _workspace(), read_only))
@@ -474,6 +491,7 @@ def build_run_code_tool() -> Any:
         declare_structured_content,
         native_tool,
     )
+    from clio_agent.gact.code_mode.grants import approving  # noqa: PLC0415
     from clio_agent.gact.code_mode.presentation import present, starting  # noqa: PLC0415
     from clio_agent.gact.model_media import CALL_MEDIA  # noqa: PLC0415
     from clio_agent.tools.tool_settings import self_gated  # noqa: PLC0415
@@ -487,16 +505,29 @@ def build_run_code_tool() -> Any:
         if not str(code or "").strip():
             raise CodeError("code is empty.", "code_empty")
         read_only = _plan_mode_refusal(app, session_id)
-        _approve(app, code)
+        grant = new_grant(code)
+        with approving(grant):  # its question offers "Allow for the rest of this script"
+            _approve(app, code)
         if background:
             receipt = launch_background(
-                app, loop.agent, code, label, session_id=session_id, read_only=read_only
+                app,
+                loop.agent,
+                code,
+                label,
+                session_id=session_id,
+                read_only=read_only,
+                grant=grant,
             )
             declare_structured_content(receipt)
             return background_text(receipt, label)
         scope = _ctx.run_keyed_scope(_ctx.active_react_scope() or "")
         outcome = run_script(
-            loop.agent, code, session_id=session_id, scope=scope, read_only=read_only
+            loop.agent,
+            code,
+            session_id=session_id,
+            scope=scope,
+            read_only=read_only,
+            grant=grant,
         )
         if viewed := CALL_MEDIA.get():
             outcome["attached_media"] = [_attached_row(item) for item in viewed]
