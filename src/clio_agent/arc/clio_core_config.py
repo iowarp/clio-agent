@@ -54,6 +54,7 @@ import yaml
 from clio_agent.arc import clio_core_durability as _durability
 from clio_agent.arc import clio_core_indexer as _indexer
 from clio_agent.arc import clio_core_relocate as _relocate
+from clio_agent.arc import clio_core_shm_cache as _shm_cache
 from clio_agent.arc.clio_core_host_migration import (
     migrate_legacy_cte_store,
 )
@@ -444,6 +445,7 @@ def default_cte_config_path() -> str:
         from clio_agent.arc.clio_core_growth import initialize_managed_capacity  # noqa: PLC0415
 
         initialize_managed_capacity(cfg)
+    _shm_cache.apply_shm_cache(cfg)  # arc.cte.shm_cache, both ways (opt-in, 2.5)
     return str(cfg)
 
 

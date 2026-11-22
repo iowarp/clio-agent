@@ -519,6 +519,7 @@ clio_agent/arc/blob_frame.py
 clio_agent/arc/cache.py
 clio_agent/arc/chunk_records.py
 clio_agent/arc/clio_core_async_ops.py
+clio_agent/arc/clio_core_sync_calls.py
 clio_agent/arc/clio_core_attach.py
 clio_agent/arc/clio_core_config.py
 clio_agent/arc/clio_core_daemon.py
@@ -535,6 +536,7 @@ clio_agent/arc/clio_core_native_preflight.py
 clio_agent/arc/clio_core_relocate.py
 clio_agent/arc/clio_core_retry.py
 clio_agent/arc/clio_core_segments.py
+clio_agent/arc/clio_core_shm_cache.py
 clio_agent/arc/clio_core_threads.py
 clio_agent/arc/clio_core_writes.py
 clio_agent/arc/companion_policy.py
