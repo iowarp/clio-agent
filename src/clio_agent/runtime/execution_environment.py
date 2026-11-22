@@ -105,10 +105,11 @@ def shell_environment(workspace: Path, *, session_id: str | None = None) -> dict
     """Return only this process's verified workspace binding, never workspace input.
 
     ``TMPDIR``/``TEMP``/``TMP`` point at the session's own scratch folder (TD56) when a
-    session owns the call (``session_id``, else the active one), through a short ``/tmp``
-    alias when that folder is too deep for a unix socket; ``UV_CACHE_DIR`` and
-    ``CLIO_DOCUMENT_SCRATCH`` stay on the workspace scratch. On Windows a uv cache too
-    deep for its packages' DLLs moves to a short stand-in (``short_uv_cache``).
+    session owns the call (``session_id``, else the active one), through a short link when
+    that folder is too deep for a unix socket; ``UV_CACHE_DIR`` and
+    ``CLIO_DOCUMENT_SCRATCH`` stay on the workspace scratch. A uv cache too deep for its
+    packages' native libraries moves to a short stand-in (``short_uv_cache``). Both go through
+    ``session_scratch.short_root``, with each OS's own limits.
     """
     with _LOCK:
         environment = dict(_ENVIRONMENTS.get(workspace.resolve(), {}))

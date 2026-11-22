@@ -13,8 +13,8 @@ from clio_agent.runtime import session_scratch
 
 @pytest.fixture(autouse=True)
 def _uv_cache_in_place(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep uv's cache where it is named; its Windows stand-in is tested on its own."""
-    monkeypatch.setattr(session_scratch, "_windows", lambda: False)
+    """Keep uv's cache where it is named; its short stand-in is tested on its own."""
+    monkeypatch.setattr(session_scratch, "short_uv_cache", lambda cache: cache)
 
 
 def _without_clio_tools(environment: dict[str, str]) -> dict[str, str]:
