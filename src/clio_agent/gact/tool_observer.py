@@ -87,25 +87,6 @@ from clio_agent.gact.tool_event_identity import (
 )
 
 
-def _wire_content_blocks(app: Any, sid: str, result: Any) -> list[dict[str, Any]] | None:
-    """The result's content blocks for the stored part, each oversized text bounded
-    (its whole value saved beside the session; :mod:`clio_agent.arc.record_budget`)."""
-    from clio_agent.arc.record_budget import bound_record  # noqa: PLC0415
-    from clio_agent.gact.task_result_spill import save_record_leaf  # noqa: PLC0415
-
-    blocks = content_blocks_for_wire(result)
-    if not blocks:
-        return blocks
-    return bound_record(
-        blocks,
-        session_id=sid,
-        externalize=lambda session_id, text, digest: save_record_leaf(
-            app, session_id, text, digest
-        ),
-        label="tool_result.content_blocks",
-    )
-
-
 def _session_turn_transcript(app: "FastAPI", sid: str) -> "Optional[TurnTranscript]":
     """The open TurnTranscript ledger for ``sid``, or ``None`` (#767 PR1).
 
@@ -793,7 +774,7 @@ def _make_tool_observer(app: "FastAPI"):
                             # separate ``model_text`` built at the execution boundary.
                             structured_content=structured_content,
                             presentation=presentation,
-                            content_blocks=_wire_content_blocks(app, sid, result),  # #1188
+                            content_blocks=content_blocks_for_wire(result),  # #1188
                             content=[
                                 Part(
                                     id=f"live_{call_id}_result_text",
