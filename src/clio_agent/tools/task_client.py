@@ -268,6 +268,39 @@ class TaskAwareClient(Client):
             name, submitted_arguments, progress_handler, timeout, request_meta or None
         )
 
+    async def _drive_input_required(self, first: Any, retry: Any) -> Any:
+        """Drive SEP-2322 rounds with each round's carrier ``_meta`` on its input requests.
+
+        A 2026-07-28 embedded input request has no ``_meta``, so a server carries typed
+        data for it on the ``InputRequiredResult`` itself. The SDK driver keeps only the
+        embedded request's, so the input context gets the round's ``_meta`` beneath it
+        (the request's own keys win); the elicitation handler reads ``request.meta``.
+        """
+        if not isinstance(first, mcp_types.InputRequiredResult):
+            return first
+        from mcp.client._input_required import run_input_required_driver  # noqa: PLC0415
+        from mcp.client.session import ClientRequestContext  # noqa: PLC0415
+
+        carried: dict[str, Any] = {"meta": first.meta}
+
+        async def tracked(responses: Any, state: str | None) -> Any:
+            result = await retry(responses, state)
+            if isinstance(result, mcp_types.InputRequiredResult):
+                carried["meta"] = result.meta
+            return result
+
+        session = self.session
+
+        async def dispatch(key: str, request: Any) -> Any:
+            own = request.params.meta if request.params else None
+            meta = {**(carried["meta"] or {}), **(own or {})} or None
+            context = ClientRequestContext(session=session, request_id=key, meta=meta)
+            return await session.dispatch_input_request(context, request)
+
+        return await run_input_required_driver(
+            first, dispatch=dispatch, retry=tracked, max_rounds=self.input_required_max_rounds
+        )
+
     async def _resolve_claimed_result(
         self,
         name: str,
