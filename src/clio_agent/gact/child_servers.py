@@ -67,7 +67,9 @@ def _close(app: Any, sid: str) -> None:
                 reset(namespace)  # the executor's own hold on it ends first
         except Exception:  # noqa: BLE001 - the retained connection still retires below
             logger.exception("%s_reset_failed namespace=%s", CHILD_SERVERS_CLOSED, namespace)
-        proxies_dropped(root, (proxy,), CHILD_SETTLED)
+        from clio_agent.tools import namespace_instances  # noqa: PLC0415
+
+        proxies_dropped(root, namespace_instances.unshared((proxy,), inner), CHILD_SETTLED)
         closed.append(namespace)
     if closed:
         logger.info(

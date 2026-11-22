@@ -8,12 +8,22 @@ connector-values change started a new fleet's server beside the old fleet's, and
 ``open_view`` failed with "another node half is running in this folder".
 
 Every stdio namespace proxy a gateway builds for a folder is registered here
-(:func:`register`). Before an executor starts a namespace's server through proxy P,
-:func:`claim` stops that connector's server behind every other registered proxy of the
-same folder: the owning executor's namespace connection, the application's kept-alive
-direct connection (:func:`add_stopper`) and the proxy's own kept-alive backend. Each
-stop bumps the owner's instance generation, so the views that server drew close with
-Reopen (``gact.mcp_app_fleet``) instead of pointing at a dead service.
+(:func:`register`) with its launch: the command, arguments, environment and folder the
+server starts with. Fleets of one folder differ only by the connector values a
+conversation set (CV-D3), so most of their servers launch the same way. Before an
+executor starts a namespace's server through its proxy P, :func:`adopt` routes it to
+a sibling fleet's proxy of the same launch that an open fleet already routes to: one
+server serves both fleets, and a values change of one connector never restarts the
+others (seen live, take 1p: setting ParaView's ``pvserver`` started a new fleet whose
+first relay call stopped the running relay and its ssh forward). Then :func:`claim`
+stops that connector's server behind every other registered proxy of the folder whose
+launch differs (or that no open fleet routes to any more): each executor routing to
+it loses its namespace connection, and the application's kept-alive direct
+connection (:func:`add_stopper`) and the proxy's own kept-alive backend stop. Each
+stop bumps those executors' instance generation, so the views that server drew close
+with Reopen (``gact.mcp_app_fleet``) instead of pointing at a dead service. A fleet
+that closes or rebinds a namespace leaves a proxy another open fleet still routes to
+running (:func:`unshared`).
 
 Within one proxy, the proxy route's kept-alive backend and the direct route are two
 processes of the same server. :func:`may_go_direct` keeps the proxy route while that
@@ -26,6 +36,7 @@ This module owns no connection; executors and the application register how their
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import threading
 import weakref
@@ -35,6 +46,8 @@ from typing import Any
 from clio_agent.runtime import trace
 
 MCP_NAMESPACE_INSTANCE_STOPPED = "mcp_namespace_instance_stopped"
+MCP_NAMESPACE_INSTANCE_SHARED = "mcp_namespace_instance_shared"
+MCP_NAMESPACE_INSTANCE_KEPT = "mcp_namespace_instance_kept"
 MCP_NAMESPACE_ROUTE_SWITCH_DEFERRED = "mcp_namespace_route_switch_deferred"
 
 #: ``stopper(proxies, reason)`` retires what the application keeps open through those
@@ -47,11 +60,15 @@ _LOCK = threading.Lock()
 _PROXIES: dict[tuple[str, str], weakref.WeakSet[Any]] = {}
 _STOPPERS: list[tuple[asyncio.AbstractEventLoop, Stopper]] = []
 _PROBES: list[InUseProbe] = []
+#: Every executor that started a namespace through a registered proxy.
+_EXECUTORS: weakref.WeakSet[Any] = weakref.WeakSet()
 
 _KEY = "_clio_instance_key"
+_LAUNCH = "_clio_instance_launch"
 _TRANSPORT = "_clio_backend_transport"
 _OWNER = "_clio_instance_owner"
 _GENERATIONS = "_clio_instance_generations"
+_STOPS_BEGUN = "_clio_instance_stops_begun"
 _PROXY_CALLS = "_clio_proxy_route_calls"
 
 
@@ -59,8 +76,31 @@ def _folder(root: str) -> str:
     return os.path.normcase(os.path.abspath(root))
 
 
-def register(proxy: Any, namespace: str, root: str | None, transport: Any) -> None:
-    """Record that ``proxy`` runs ``namespace``'s stdio server in folder ``root``."""
+def launch_key(spec: Any, root: str | None) -> str:
+    """How ``spec``'s stdio server starts in ``root``: two equal keys are one server."""
+
+    env = getattr(spec, "env", None) or {}
+    return json.dumps(
+        [
+            getattr(spec, "transport", None),
+            getattr(spec, "command", None),
+            [str(arg) for arg in getattr(spec, "args", None) or ()],
+            sorted((str(name), str(value)) for name, value in env.items()),
+            getattr(spec, "url", None),
+            _folder(root) if root else "",
+        ],
+        default=str,
+    )
+
+
+def register(
+    proxy: Any, namespace: str, root: str | None, transport: Any, launch: str | None = None
+) -> None:
+    """Record that ``proxy`` runs ``namespace``'s stdio server in folder ``root``.
+
+    ``launch`` (:func:`launch_key`) lets a fleet share a sibling's server of the same
+    launch; without it the proxy is never shared.
+    """
 
     if not root or proxy is None:
         return
@@ -68,10 +108,94 @@ def register(proxy: Any, namespace: str, root: str | None, transport: Any) -> No
     try:
         setattr(proxy, _KEY, key)
         setattr(proxy, _TRANSPORT, transport)
+        setattr(proxy, _LAUNCH, launch)
     except (AttributeError, TypeError):  # a proxy that takes no attributes is not tracked
         return
     with _LOCK:
         _PROXIES.setdefault(key, weakref.WeakSet()).add(proxy)
+
+
+def _inner(executor: Any) -> Any:
+    return getattr(executor, "_async_executor", executor)
+
+
+def routers(proxy: Any, *, exclude: Any = None) -> list[Any]:
+    """The open executors (other than ``exclude``) that route a namespace to ``proxy``."""
+
+    skip = _inner(exclude) if exclude is not None else None
+    with _LOCK:
+        tracked = tuple(_EXECUTORS)
+    return [
+        executor
+        for executor in tracked
+        if executor is not skip
+        and not getattr(executor, "_closed", False)
+        and any(
+            routed is proxy
+            for routed in (getattr(executor, "_namespace_servers", None) or {}).values()
+        )
+    ]
+
+
+def unshared(proxies: Iterable[Any], by: Any) -> tuple[Any, ...]:
+    """Those of ``proxies`` no open executor but ``by`` routes to: safe to retire.
+
+    A proxy another fleet still routes to keeps its server (typed
+    ``mcp_namespace_instance_kept``).
+    """
+
+    free: list[Any] = []
+    for proxy in proxies:
+        if proxy is None:
+            continue
+        others = routers(proxy, exclude=by)
+        if not others:
+            free.append(proxy)
+            continue
+        key = getattr(proxy, _KEY, ("-", "-"))
+        trace.event(
+            "TOOLS",
+            "%s namespace=%s folder=%s routers=%d",
+            MCP_NAMESPACE_INSTANCE_KEPT,
+            key[1],
+            key[0],
+            len(others),
+        )
+    return tuple(free)
+
+
+def adopt(executor: Any, namespace: str, proxy: Any) -> Any:
+    """The proxy ``executor`` should start ``namespace`` through: ``proxy``, or the
+    proxy of the same launch in this folder that another open fleet routes to.
+
+    Adopting routes the executor's namespace there (typed
+    ``mcp_namespace_instance_shared``): its calls reach the running server and its
+    kept-alive connection, so a sibling fleet's values change never restarts it.
+    """
+
+    key = getattr(proxy, _KEY, None)
+    launch = getattr(proxy, _LAUNCH, None)
+    if key is None or launch is None or routers(proxy, exclude=executor):
+        return proxy
+    with _LOCK:
+        twins = [
+            other
+            for other in _PROXIES.get(key, ())
+            if other is not proxy and getattr(other, _LAUNCH, None) == launch
+        ]
+    for twin in twins:
+        if routers(twin, exclude=executor):
+            executor._namespace_servers[namespace] = twin
+            _bind(executor, twin)
+            trace.event(
+                "TOOLS",
+                "%s namespace=%s folder=%s",
+                MCP_NAMESPACE_INSTANCE_SHARED,
+                namespace,
+                key[0],
+            )
+            return twin
+    return proxy
 
 
 def _listen(registry: list[Any], entry: Any) -> Callable[[], None]:
@@ -105,8 +229,19 @@ def generation(executor: Any, namespace: str) -> int:
     return int(getattr(inner, "__dict__", {}).get(_GENERATIONS, {}).get(namespace, 0))
 
 
-def _bump(executor: Any, namespace: str) -> None:
-    generations = executor.__dict__.setdefault(_GENERATIONS, {})
+def stops_begun(executor: Any, namespace: str) -> int:
+    """How many stops of ``namespace``'s server behind ``executor`` have begun.
+
+    Counted before the stop closes anything, so a call cut off by it (its reply is the
+    closed transport's error) can tell, even before :func:`generation` moves.
+    """
+
+    inner = getattr(executor, "_async_executor", executor)
+    return int(getattr(inner, "__dict__", {}).get(_STOPS_BEGUN, {}).get(namespace, 0))
+
+
+def _bump(executor: Any, namespace: str, counter: str = "") -> None:
+    generations = executor.__dict__.setdefault(counter or _GENERATIONS, {})
     generations[namespace] = generations.get(namespace, 0) + 1
 
 
@@ -193,11 +328,18 @@ async def stop_instance(proxy: Any, reason: str, *, direct: bool = True) -> int:
     namespace = key[1]
     owner_ref = getattr(proxy, _OWNER, None)
     owner = owner_ref() if owner_ref is not None else None
+    owners = routers(proxy)
+    if owner is not None and not getattr(owner, "_closed", False) and owner not in owners:
+        owners.append(owner)
+    if owner is None and owners:
+        owner = owners[0]
+    for routed in owners or ([owner] if owner is not None else []):
+        _bump(routed, namespace, _STOPS_BEGUN)
     stopped = 0
-    if owner is not None and not getattr(owner, "_closed", False):
+    for routed in owners:
         stopped += await _on(
-            owner.__dict__.get("_clio_loop"),
-            _release_executor(owner, namespace, proxy, direct=direct),
+            routed.__dict__.get("_clio_loop"),
+            _release_executor(routed, namespace, proxy, direct=direct),
         )
     if direct:
         stopped += await stop_pooled((proxy,), reason)
@@ -218,8 +360,8 @@ async def stop_instance(proxy: Any, reason: str, *, direct: bool = True) -> int:
                 exc,
             )
     if stopped:
-        if owner is not None:
-            _bump(owner, namespace)
+        for routed in owners or ([owner] if owner is not None else []):
+            _bump(routed, namespace)
         trace.event(
             "TOOLS",
             "%s namespace=%s folder=%s reason=%s stopped=%d",
@@ -254,6 +396,8 @@ async def _release_executor(executor: Any, namespace: str, proxy: Any, *, direct
 
 def _bind(executor: Any, proxy: Any) -> None:
     executor.__dict__["_clio_loop"] = asyncio.get_running_loop()
+    with _LOCK:
+        _EXECUTORS.add(executor)
     try:
         setattr(proxy, _OWNER, weakref.ref(executor))
     except (AttributeError, TypeError):
@@ -263,8 +407,10 @@ def _bind(executor: Any, proxy: Any) -> None:
 async def claim(executor: Any, namespace: str, proxy: Any) -> int:
     """Before ``executor`` starts ``namespace`` through ``proxy``: stop its other servers.
 
-    Every other registered proxy of the same folder and connector whose executor is
-    still open has its server stopped (:func:`stop_instance`, reason ``superseded``).
+    Every other registered proxy of the same folder and connector whose server may
+    run has it stopped (:func:`stop_instance`, reason ``superseded``), unless it
+    launches the same way and an open fleet still routes to it: that one is the same
+    server, shared through :func:`adopt`, and is never stopped for a sibling's change.
     Returns how many connections were stopped.
     """
 
@@ -272,13 +418,16 @@ async def claim(executor: Any, namespace: str, proxy: Any) -> int:
     if key is None:
         return 0
     _bind(executor, proxy)
+    launch = getattr(proxy, _LAUNCH, None)
     with _LOCK:
         others = [other for other in _PROXIES.get(key, ()) if other is not proxy]
     stopped = 0
     for other in others:
+        if launch is not None and getattr(other, _LAUNCH, None) == launch and routers(other):
+            continue
         owner_ref = getattr(other, _OWNER, None)
         owner = owner_ref() if owner_ref is not None else None
-        if owner is None or getattr(owner, "_closed", False):
+        if (owner is None or getattr(owner, "_closed", False)) and not routers(other):
             if not backend_live(other):
                 continue
         stopped += await stop_instance(other, "superseded")
@@ -289,13 +438,18 @@ async def may_go_direct(executor: Any, namespace: str, proxy: Any) -> bool:
     """Whether ``namespace`` may start its direct server now beside ``proxy``'s backend.
 
     The proxy route's kept-alive backend is the same server: with open views or calls
-    in flight on it, the route stays (typed deferral, retried on a later use); otherwise
-    it is stopped first so one process serves the namespace.
+    in flight on it (through any fleet routing to it), the route stays (typed
+    deferral, retried on a later use); otherwise it is stopped first so one process
+    serves the namespace.
     """
 
     if not backend_live(proxy):
         return True
     reason = in_use(executor, namespace)
+    for routed in routers(proxy, exclude=executor):
+        if reason:
+            break
+        reason = in_use(routed, namespace)
     if reason:
         trace.event(
             "TOOLS",
@@ -311,17 +465,24 @@ async def may_go_direct(executor: Any, namespace: str, proxy: Any) -> bool:
 
 
 __all__ = [
+    "MCP_NAMESPACE_INSTANCE_KEPT",
+    "MCP_NAMESPACE_INSTANCE_SHARED",
     "MCP_NAMESPACE_INSTANCE_STOPPED",
     "MCP_NAMESPACE_ROUTE_SWITCH_DEFERRED",
     "add_in_use_probe",
     "add_stopper",
+    "adopt",
     "backend_live",
     "begin_proxy_call",
     "claim",
     "generation",
     "in_use",
+    "launch_key",
     "may_go_direct",
     "register",
+    "routers",
     "stop_instance",
     "stop_pooled",
+    "stops_begun",
+    "unshared",
 ]

@@ -73,7 +73,10 @@ def _drop(executor: Any, namespace: str, root: str) -> None:
         factories.pop(namespace, None)
     servers = getattr(inner, "_namespace_servers", None)
     if isinstance(servers, dict) and namespace in servers:
-        proxies_dropped(root, (servers.pop(namespace),), "namespace_removed")
+        from clio_agent.tools import namespace_instances  # noqa: PLC0415
+
+        dropped = namespace_instances.unshared((servers.pop(namespace),), inner)
+        proxies_dropped(root, dropped, "namespace_removed")
     tools = getattr(inner, "_mcp_tools", None)
     if isinstance(tools, dict):
         prefix = f"{namespace}_"

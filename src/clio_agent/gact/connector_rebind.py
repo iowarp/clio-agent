@@ -128,15 +128,21 @@ def _install(executor: Any, namespace: str, spec: Any, root: str) -> None:
         if isinstance(inner_specs, dict):
             inner_specs[namespace] = spec
         if proxy is not None:
+            from clio_agent.tools import namespace_instances  # noqa: PLC0415
+
             replaced = inner._namespace_servers.get(namespace)
             stop = getattr(executor, "stop_namespace_instance", None)
-            if replaced is not None and callable(stop):
+            shared = replaced is not None and namespace_instances.routers(replaced, exclude=inner)
+            if replaced is not None and callable(stop) and not shared:
                 # MI1: the replaced proxy's own kept-alive server stops before the new
-                # one can start in the same folder.
+                # one can start in the same folder. Another fleet that still routes to
+                # it (its connection did not change) keeps it.
                 stop(namespace, "namespace_rebound")
             inner._namespace_servers[namespace] = proxy
             # CV-N2: a connection retained on the replaced proxy keeps its server running.
-            proxies_dropped(root, (replaced,), "namespace_rebound")
+            proxies_dropped(
+                root, namespace_instances.unshared((replaced,), inner), "namespace_rebound"
+            )
         factories = getattr(inner, "_clio_namespace_direct_factories", None)
         factory = namespace_direct_factories(gateway).get(namespace)
         if isinstance(factories, dict) and factory is not None:

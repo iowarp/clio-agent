@@ -181,6 +181,101 @@ async def test_a_closed_fleets_dead_proxy_is_skipped(tmp_path: Any) -> None:
     assert old_backend.disconnects == 0
 
 
+def _launched(tmp_path: Any, namespace: str, launch: str) -> tuple[_Executor, _Proxy, _Transport]:
+    executor, proxy, transport = _Executor(), _Proxy(), _Transport()
+    namespace_instances.register(proxy, namespace, str(tmp_path), transport, launch)
+    executor._namespace_servers[namespace] = proxy
+    return executor, proxy, transport
+
+
+async def test_a_values_change_of_one_connector_keeps_its_siblings_server(
+    tmp_path: Any,
+) -> None:
+    """Take 1p: setting ParaView's value started a new fleet whose relay call stopped
+    the running relay (and its ssh forward). An unchanged launch is one shared server."""
+
+    old, relay, relay_backend = _launched(tmp_path, "relay", "relay-launch")
+    _, view, view_backend = _launched(tmp_path, "paraview", "pv-old")
+    old._namespace_servers["paraview"] = view
+    await namespace_instances.claim(old, "relay", relay)
+    await namespace_instances.claim(old, "paraview", view)
+    relay_backend.start()
+    view_backend.start()
+    old._namespace_clients.update(relay=object(), paraview=object())
+    pooled: list[tuple[set[int], str]] = []
+    remove = namespace_instances.add_stopper(asyncio.get_running_loop(), _pooled(pooled))
+    try:
+        new, new_relay, new_relay_backend = _launched(tmp_path, "relay", "relay-launch")
+        _, new_view, _ = _launched(tmp_path, "paraview", "pv-new")
+        new._namespace_servers["paraview"] = new_view
+
+        adopted = namespace_instances.adopt(new, "relay", new_relay)
+        assert adopted is relay
+        assert new._namespace_servers["relay"] is relay
+        assert await namespace_instances.claim(new, "relay", adopted) == 0
+
+        assert namespace_instances.adopt(new, "paraview", new_view) is new_view
+        assert await namespace_instances.claim(new, "paraview", new_view) == 3
+    finally:
+        remove()
+
+    assert relay_backend.disconnects == 0
+    assert new_relay_backend.disconnects == 0
+    assert old.evicted == ["paraview"]  # only the connector whose launch changed moved
+    assert pooled == [({id(view)}, "superseded")]
+    assert view_backend.disconnects == 1
+    assert namespace_instances.generation(old, "relay") == 0
+    relay_backend._connect_task.cancel()  # type: ignore[union-attr]
+
+
+async def test_the_old_fleet_reclaiming_a_shared_server_stops_nothing(tmp_path: Any) -> None:
+    old, relay, backend = _launched(tmp_path, "relay", "same")
+    await namespace_instances.claim(old, "relay", relay)
+    backend.start()
+    new, new_relay, _ = _launched(tmp_path, "relay", "same")
+    assert namespace_instances.adopt(new, "relay", new_relay) is relay
+    await namespace_instances.claim(new, "relay", relay)
+
+    assert await namespace_instances.claim(old, "relay", relay) == 0  # no ping-pong
+    assert backend.disconnects == 0
+    backend._connect_task.cancel()  # type: ignore[union-attr]
+
+
+async def test_a_shared_server_survives_one_fleet_dropping_it(tmp_path: Any) -> None:
+    old, relay, _ = _launched(tmp_path, "relay", "same")
+    await namespace_instances.claim(old, "relay", relay)
+    new, new_relay, _ = _launched(tmp_path, "relay", "same")
+    namespace_instances.adopt(new, "relay", new_relay)
+    await namespace_instances.claim(new, "relay", relay)
+
+    assert namespace_instances.unshared((relay,), old) == ()
+    assert namespace_instances.routers(relay, exclude=old) == [new]
+    new._closed = True
+    assert namespace_instances.unshared((relay,), old) == (relay,)
+
+
+async def test_a_changed_launch_still_supersedes_the_running_server(tmp_path: Any) -> None:
+    old, relay, backend = _launched(tmp_path, "relay", "v1")
+    await namespace_instances.claim(old, "relay", relay)
+    backend.start()
+    new, new_relay, _ = _launched(tmp_path, "relay", "v2")
+    assert namespace_instances.adopt(new, "relay", new_relay) is new_relay
+    assert await namespace_instances.claim(new, "relay", new_relay) >= 1
+    assert backend.disconnects == 1
+
+
+def test_the_launch_key_is_the_servers_start() -> None:
+    spec = type("Spec", (), {})()
+    spec.transport, spec.command, spec.args = "stdio", "relay", ["serve"]
+    spec.env, spec.url = {"B": "2", "A": "1"}, None
+    other = type("Spec", (), {})()
+    other.transport, other.command, other.args = "stdio", "relay", ["serve"]
+    other.env, other.url = {"A": "1", "B": "2"}, None
+    assert namespace_instances.launch_key(spec, "/w") == namespace_instances.launch_key(other, "/w")
+    other.env = {"A": "1", "B": "3"}
+    assert namespace_instances.launch_key(spec, "/w") != namespace_instances.launch_key(other, "/w")
+
+
 def test_an_executor_without_stops_has_generation_zero() -> None:
     assert namespace_instances.generation(object(), "paraview") == 0
     wrapper = type("Sync", (), {})()
