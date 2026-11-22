@@ -17,6 +17,9 @@ is a :class:`CallGrouper`. The gate still checks every call; only the record is 
 
 A held call is recorded in the context of its own last call, so it carries that call's
 parent (the ``run_code`` call) and session like any other nested call.
+
+A nested call has no row of its own while it runs, so its progress messages (the
+stall watch's "No reply from ... for 30s", say) go to ``notice`` for the task's row.
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ from __future__ import annotations
 import contextvars
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -66,6 +69,9 @@ class CallGrouper:
     """Holds a background script's repeated successful calls and records them grouped."""
 
     asked: Any = None  # a callable returning how many questions the task has asked so far
+    #: Called with ``(tool, message)`` for a running call's progress message and with
+    #: ``(tool, None)`` when that call ends (the task row shows and clears it).
+    notice: Callable[[str, str | None], None] | None = None
     window_s: float = field(default_factory=record_window_s)
     _groups: dict[str, _Group] = field(default_factory=dict)
     _starts: dict[int, int] = field(default_factory=dict)
@@ -87,7 +93,15 @@ class CallGrouper:
                 self._starts[ident] = self._questions()
             return None
         if phase != "completed":
-            return None  # progress of a held call: the call is not shown on its own
+            # Progress of a held call: the call is not shown on its own; its message is.
+            message = result.get("message") if isinstance(result, Mapping) else None
+            if phase == "progress" and self.notice is not None and isinstance(message, str):
+                text = message.strip()
+                if text and not text.startswith("{"):  # not a JSON envelope (output chunk)
+                    self.notice(name, text)
+            return None
+        if self.notice is not None:
+            self.notice(name, None)
         with self._lock:
             asked_before = self._starts.pop(ident, self._questions())
             individual = error is not None or self._questions() != asked_before

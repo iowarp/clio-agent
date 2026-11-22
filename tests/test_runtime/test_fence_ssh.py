@@ -348,6 +348,48 @@ def test_the_real_program_skips_the_shim_directory(
     assert Path(found).parent == real
 
 
+@pytest.mark.skipif(os.name != "nt", reason="POSIX execs the real program in place")
+def test_stopping_the_launcher_stops_the_real_program_and_its_children(tmp_path: Path) -> None:
+    """Windows runs ssh as a child: killing the shim must not leave ssh or its proxy running."""
+    pids = tmp_path / "pids.txt"
+    grandchild = "import time; time.sleep(120)"
+    child = (
+        "import subprocess, sys, time; "
+        f"g = subprocess.Popen([sys.executable, '-c', {grandchild!r}]); "
+        f"open({str(pids)!r}, 'w').write(f'{{__import__(\"os\").getpid()}} {{g.pid}}'); "
+        "time.sleep(120)"
+    )
+    launcher = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.path.insert(0, sys.argv[1]); import net_connect; "
+            "net_connect._run([sys.executable, '-c', sys.argv[2]])",
+            str(Path(HELPER).parent),
+            child,
+        ]
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while not (pids.exists() and len(pids.read_text().split()) == 2):
+            assert time.monotonic() < deadline, "the real program never started"
+            time.sleep(0.1)
+        spawned = [int(pid) for pid in pids.read_text().split()]
+    finally:
+        launcher.kill()
+        launcher.wait()
+    import psutil
+
+    deadline = time.monotonic() + 10
+    while (alive := [pid for pid in spawned if psutil.pid_exists(pid)]) and (
+        time.monotonic() < deadline
+    ):
+        time.sleep(0.1)
+    for pid in alive:
+        psutil.Process(pid).kill()
+    assert not alive, f"left running after the launcher stopped: {alive}"
+
+
 @pytest.mark.skipif(os.name == "nt" or not shutil.which("ssh"), reason="needs POSIX OpenSSH")
 def test_real_ssh_reaches_the_proxy_on_port_22_and_reports_a_refusal(tmp_path: Path) -> None:
     """The real ssh runs the helper, which asks the proxy for host:22 and surfaces its 403."""

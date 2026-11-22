@@ -109,3 +109,39 @@ def test_outside_a_background_script_every_call_is_recorded() -> None:
     for i in range(3):
         _call(observer, "fetch", {"n": i})
     assert len(observer.calls) == 6
+
+
+def test_a_running_calls_progress_message_reaches_the_task_row() -> None:
+    """A nested call has no row while it runs, so its stall notice goes to the task's.
+
+    SABOTAGE: drop the grouper's progress notice -> the stall stays log-only -> red.
+    """
+    notices: list[tuple[str, str | None]] = []
+    observer = Recorder()
+    grouper = CallGrouper(window_s=60, notice=lambda tool, text: notices.append((tool, text)))
+    stall = "No reply from relay exec_read for 30s; still waiting. Stop the turn to cancel."
+
+    def body() -> None:
+        notify_tool_observer(observer, "relay_exec_read", {}, "started", None)
+        for message in (stall, '{"type": "clio.terminal.chunk", "text": "x"}', "  "):
+            progress = {"observer_handle": None, "progress": 30.0, "message": message}
+            notify_tool_observer(observer, "relay_exec_read", {}, "progress", None, progress)
+        notify_tool_observer(observer, "relay_exec_read", {}, "completed", None, {"ok": 1})
+
+    _grouped(grouper, body)
+    assert notices == [("relay_exec_read", stall), ("relay_exec_read", None)]
+    assert observer.calls == []  # the call itself is still held for the grouped record
+
+
+def test_the_task_row_shows_a_nested_calls_notice_until_it_ends() -> None:
+    from clio_agent.gact import native_code
+    from clio_agent.gact.external_call_stall import STOP_HINT, TASK_STOP_HINT
+
+    live: dict[str, Any] = {"started": time.monotonic()}
+    notice = native_code._call_notice(live)
+    notice("live-move_move_wait", f"No reply from live-move move_wait for 30s. {STOP_HINT}")
+    row = native_code.status(live, live["started"])
+    assert row["call_notice"].endswith(TASK_STOP_HINT)  # a task outlives the turn
+    assert "No reply from live-move move_wait for 30s" in row["summary"]
+    notice("live-move_move_wait", None)
+    assert "call_notice" not in native_code.status(live, live["started"])

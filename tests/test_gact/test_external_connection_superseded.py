@@ -77,7 +77,11 @@ async def test_a_busy_superseded_connection_is_kept_until_its_work_ends(
 
     monkeypatch.setattr(connections, "retire_connection", _retire)
     busy = SimpleNamespace(
-        cache_key=("colab-mcp", "scope", "in-process:1"), rpcs={object()}, calls={}, drivers={}
+        cache_key=("colab-mcp", "scope", "in-process:1"),
+        rpcs={object()},
+        calls={},
+        drivers={},
+        client=None,
     )
     idle = SimpleNamespace(
         cache_key=("colab-mcp", "scope", "in-process:2"), rpcs=set(), calls={}, drivers={}

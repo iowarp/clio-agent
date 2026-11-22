@@ -249,7 +249,12 @@ def test_a_closed_fleets_retained_connection_is_retired() -> None:
     def host(owner: object, *, busy: bool = False) -> Any:
         key = ("pv", "scope", f"in-process:{id(owner):x}")
         return SimpleNamespace(
-            cache_key=key, rpcs={1} if busy else set(), calls={}, drivers={}, superseded=False
+            cache_key=key,
+            rpcs={1} if busy else set(),
+            calls={},
+            drivers={},
+            superseded=False,
+            client=None,
         )
 
     idle, busy, kept = host(proxy), host(proxy, busy=True), host(other)

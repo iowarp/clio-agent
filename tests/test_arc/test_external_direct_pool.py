@@ -27,7 +27,7 @@ from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.task_types import QuestionReply, TaskSnapshot
 from clio_agent.gact import context
 from clio_agent.gact import external_task_connections as connections
-from clio_agent.gact.external_tasks import ExternalTasks
+from clio_agent.gact.external_tasks import SERVER_STOPPED_UNDER_CALL, ExternalTasks
 from clio_agent.gact.questions import QuestionCommands
 from clio_agent.gact.task_operations import TaskOperations
 from clio_agent.gact.workspaces import WorkspaceStore
@@ -67,6 +67,15 @@ async def nap(seconds: float) -> dict[str, int]:
     await asyncio.sleep(seconds)
     return {"pid": os.getpid()}
 
+@server.tool(annotations={"readOnlyHint": True, "destructiveHint": False})
+async def peek(seconds: float) -> dict[str, int]:
+    await asyncio.sleep(seconds)
+    return {"pid": os.getpid()}
+
+@server.tool(annotations={"readOnlyHint": True, "destructiveHint": False})
+def closed() -> dict[str, int]:
+    raise RuntimeError("Connection closed")
+
 @server.tool
 async def choose(tag: str, ctx: Context) -> dict[str, str]:
     response = await ctx.elicit("Choose a value for " + tag, response_type=str)
@@ -84,19 +93,21 @@ class _Env(SimpleNamespace):
     script: Path
     tmp: Path
 
-    def client(self) -> Client:
+    def client(self, timeout: float | None = 20) -> Client:
         transport = StdioTransport(
             sys.executable, ["-B", str(self.script), str(self.starts)], cwd=str(self.tmp)
         )
-        return Client(transport, mode="legacy", timeout=20)
+        return Client(transport, mode="legacy", timeout=timeout)
 
-    async def call(self, tool: str, args: dict[str, Any], owner: Any, tag: str) -> Any:
+    async def call(
+        self, tool: str, args: dict[str, Any], owner: Any, tag: str, timeout: float | None = 20
+    ) -> Any:
         app_token = context.set_app(self.app)
         session_token = context.set_session_id(self.root.owner.session_id)
         invocation_token = TASK_CALL.set(TaskCall(invocation_id="pool-" + tag))
         try:
             return await self.external.call(
-                "pooled", self.client(), tool, args, auth_scope="scope", pool_owner=owner
+                "pooled", self.client(timeout), tool, args, auth_scope="scope", pool_owner=owner
             )
         finally:
             TASK_CALL.reset(invocation_token)
@@ -330,6 +341,161 @@ async def test_unheld_sequential_calls_keep_the_server_and_its_state(env: _Env) 
     assert await connections.retire_owned(env.external, owners, "/w", "idle_ttl") == 1
     await env.settle()
     assert not env.external.connections and all(_gone(p) for p in env.started())
+
+
+async def _in_flight(env: _Env, tool: str, proxy: Any, tag: str) -> asyncio.Task[Any]:
+    """Start ``tool`` (sleeping 60 s, no request timeout) once its request is on the wire."""
+    call = asyncio.create_task(env.call(tool, {"seconds": 60}, proxy, tag, timeout=None))
+    for _ in range(400):
+        if any(host.rpcs for host in env.external.connections.values()):
+            break
+        await asyncio.sleep(0.05)
+    await asyncio.sleep(0.5)  # the server is now inside the sleep
+    assert not call.done()
+    return call
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)  # Real stdio servers start and must retire.
+async def test_a_read_in_flight_when_its_server_stops_ends_typed_and_retry_safe(
+    env: _Env,
+) -> None:
+    """Take 1p: two exec_read calls on a superseded relay waited 23+ minutes. A busy
+    connection was only marked; the server it waited on kept running.
+
+    SABOTAGE: in ``_retire_stale`` only mark a busy host (drop the ``client.close()``);
+    the read then waits out its 60 s nap and this test times out.
+    """
+    proxy = object()
+    call = await _in_flight(env, "peek", proxy, "read")
+    [start] = env.started()
+    owners = {f"in-process:{id(proxy):x}"}
+
+    assert await connections.retire_owned(env.external, owners, "/w", "superseded") == 1
+    assert _gone(start), "The stopped server's process is gone before its replacement starts"
+    # Promptly: the server's 60 s sleep is not waited out.
+    reply = await asyncio.wait_for(call, 5)
+    await env.settle()
+
+    assert reply.is_error is True
+    body = json.loads(reply.content[0].text)
+    assert body["acceptance"] == "server_stopped" and body["retry_safe"] is True
+    assert body["error"].startswith(connections.EXTERNAL_MCP_CONNECTION_FLEET_CLOSED + ":")
+    assert not env.external.connections
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)  # Real stdio servers start and must retire.
+async def test_a_write_in_flight_when_its_server_stops_ends_uncertain_with_its_reason(
+    env: _Env,
+) -> None:
+    """A call that may have changed something is not retry-safe, but it ends now, typed."""
+    proxy = object()
+    call = await _in_flight(env, "nap", proxy, "write")
+    owners = {f"in-process:{id(proxy):x}"}
+
+    assert await connections.retire_owned(env.external, owners, "/w", "superseded") == 1
+    reply = await asyncio.wait_for(call, 5)  # not the server's 60 s sleep
+    await env.settle()
+
+    body = reply.structured_content
+    assert body["acceptance"] == "uncertain" and body["retry_safe"] is False
+    assert body["error"].startswith(connections.EXTERNAL_MCP_CONNECTION_FLEET_CLOSED + ":")
+    assert all(_gone(p) for p in env.started())
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)  # Real stdio servers start and must retire.
+async def test_an_error_reply_from_a_server_stopped_under_the_call_is_typed(
+    env: _Env,
+) -> None:
+    """Take 1p, proxy route: the fleet proxy answers a call whose backend it lost with an
+    error reply ("Connection closed"), not a transport failure. When the server was being
+    stopped under the call, that reply is the typed, retry-safe ``server_stopped``.
+
+    SABOTAGE: drop the ``stopped_under()`` check in ``ExternalTasks._call``; the first
+    reply is then the plain error text.
+    """
+
+    async def call(stopped: bool) -> Any:
+        app_token = context.set_app(env.app)
+        session_token = context.set_session_id(env.root.owner.session_id)
+        invocation_token = TASK_CALL.set(TaskCall(invocation_id=f"pool-cut-{stopped}"))
+        try:
+            return await env.external.call(
+                "pooled",
+                env.client(),
+                "closed",
+                {},
+                auth_scope="scope",
+                pool_owner=proxy,
+                stopped_under=lambda: stopped,
+            )
+        finally:
+            TASK_CALL.reset(invocation_token)
+            context.reset(session_token)
+            context.reset(app_token)
+
+    proxy = object()
+    cut = await call(True)
+    plain = await call(False)
+    await env.settle()
+
+    assert cut.is_error is True
+    body = json.loads(cut.content[0].text)
+    assert body["acceptance"] == "server_stopped" and body["retry_safe"] is True
+    assert body["error"].startswith(SERVER_STOPPED_UNDER_CALL + ":")
+    assert "Connection closed" in body["error"]
+    # No stop under it: the server's own error, unchanged.
+    assert plain.is_error is True and "Connection closed" in plain.content[0].text
+    assert "server_stopped" not in plain.content[0].text
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)  # Real stdio servers start and must retire.
+async def test_a_silent_call_is_reported_on_its_row_and_keeps_waiting(
+    env: _Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No reply for a window: a visible notice, growing windows, no deadline.
+
+    SABOTAGE: await ``rpc`` directly in ``ExternalTasks._call``; no notice arrives.
+    """
+    from clio_agent.gact import external_call_stall
+
+    monkeypatch.setattr(external_call_stall, "mcp_no_progress_s", lambda: 0.4)
+    notices: list[tuple[float, str | None]] = []
+
+    async def progress(value: float, total: float | None, message: str | None) -> None:
+        notices.append((value, message))
+
+    proxy = object()
+    app_token = context.set_app(env.app)
+    session_token = context.set_session_id(env.root.owner.session_id)
+    invocation_token = TASK_CALL.set(TaskCall(invocation_id="pool-stall"))
+    try:
+        reply = await env.external.call(
+            "pooled",
+            env.client(),
+            "peek",
+            {"seconds": 2.0},
+            auth_scope="scope",
+            pool_owner=proxy,
+            progress_handler=progress,
+        )
+    finally:
+        TASK_CALL.reset(invocation_token)
+        context.reset(session_token)
+        context.reset(app_token)
+    await env.settle()
+
+    assert reply.structured_content == {"pid": env.started()[0]["pid"]}, "It still answered"
+    messages = [message for _, message in notices]
+    assert messages and all(
+        m is not None and m.startswith("No reply from pooled peek for ") for m in messages
+    )
+    assert "Stop the turn to cancel." in messages[0]
+    # 0.4 s, then 0.8 s, 1.6 s ...: fewer notices than fixed 0.4 s windows would give.
+    assert len(messages) <= 3
 
 
 @pytest.mark.asyncio
