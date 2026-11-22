@@ -20,7 +20,7 @@ behaviour at v2.5.0 and a minimal reproduction. Source references are `file:line
 | #1336 scope BlobQuery / GetContainedBlobs to the tag | **Met** | 3.3 |
 | #1337 Python bindings: put-replace, TruncateBlob, multi-get, multi-put, DelTag | **Not met** | 3.2 |
 | #1338 deferred-put durability / await | **Partly met** (deferred API removed; no durability barrier in Python) | 3.1 |
-| #1339 idle daemon CPU | IDLE_VERDICT | 3.4 |
+| #1339 idle daemon CPU | **Met** (0.52 -> 0.037 of a core, live) | 3.4 |
 | #1340 macOS 14 wheels | **Not met** (still `macosx_15_0_arm64` only) | 3.5 |
 | #1341 conditional puts in a batch / replacing conditional put | **Not met** | 3.6 |
 | #1355 control channel bind | **Met** (verified live) | 3.7 |
@@ -29,7 +29,7 @@ behaviour at v2.5.0 and a minimal reproduction. Source references are `file:line
 | Metadata log: torn tail followed by appends | **Not met** | 4.1 |
 | Metadata log: ENOSPC tears it silently | **Not met** | 4.2 |
 | Metadata log: alloc log vs metadata after a torn delete | **Not met** | 4.3 |
-| Metadata amplification for small appends | AMPLIFICATION_VERDICT | 4.4 |
+| Metadata amplification for small appends | **Not met** (unchanged: 34 bytes of log per data byte) | 4.4 |
 | New in 2.5.0, found during the upgrade | 6 items | 5 |
 
 ## 2. What 2.5.0 fixed or improved for CLIO
@@ -107,9 +107,18 @@ iterate `BlobIndexNames(tag_id)` (8599942d, c5335132, merge 6b6307eb). Two small
 leftovers: `BlobQuery` still builds an unused `std::regex tag_pattern`, and
 `GetContainedBlobs` logs its telemetry as `CteOp::kGetOrCreateTag`.
 
-### 3.4 #1339 idle daemon CPU: IDLE_VERDICT
+### 3.4 #1339 idle daemon CPU: met
 
-IDLE_SECTION
+Live, CLIO's daemon on its own config, measured after 30 s of idle over a 60 s window
+(user + system CPU of every thread; `scripts/bench/idle_and_metadata_bench.py`):
+
+| | 2.4.1 | 2.5.0 |
+|---|---|---|
+| Idle, fresh daemon | 0.519 cores (51 threads, 35 MiB RSS) | **0.037 cores** (54 threads, 32 MiB) |
+| Idle after 1,800 writes, 30 s window | 0.505 cores | **0.039 cores** |
+
+Commits fa77434c, 57ef5025, ee5d7a33 and 4964c577 are in the release. Under the
+acceptance ("a few percent of one core"). Nothing further requested.
 
 ### 3.5 #1340 macOS 14 wheels: not met
 
@@ -218,9 +227,27 @@ block that a restored blob still owns).
 mid-record. Start (M is back). Put N, stop. Start, put M with new bytes, stop. Start and
 read N: it holds M's new bytes, with no error.
 
-### 4.4 Metadata amplification for small appends: AMPLIFICATION_VERDICT
+### 4.4 Metadata amplification for small appends: not met
 
-AMPLIFICATION_SECTION
+Live (`scripts/bench/idle_and_metadata_bench.py`): the metadata log's growth for 600
+writes of 700 bytes (420,000 bytes of data), each pattern on fresh blob names:
+
+| Pattern | 2.4.1 | 2.5.0 |
+|---|---|---|
+| One blob grown by 600 appends at increasing offsets | 14,460,661 B (34.4 B per data byte) | 14,460,661 B (34.4) |
+| 600 separate blobs | 126,980 B (0.30) | 126,980 B (0.30) |
+| 600 CLIO framed records (`store.put`) | 124,580 B (0.30) | 124,580 B (0.30) |
+
+Each put still logs a full-replacement `kExtendBlob` listing every block of the blob
+(`core_runtime.cc:2789-2817`), so the log grows with the square of a blob's appends.
+(The 16 Nov comment's "each append takes a 4 KB block" does not hold: appends fill the
+last block's slack first, `core_runtime.cc:9655-9675`.)
+
+**Request.** A delta record for a put that only adds blocks (log the new blocks, not
+all of them), so an append-grown blob costs O(appends) of log, not O(appends^2).
+
+**Reproduction.** Grow one blob with 600 `AsyncPutBlob(tag, "b", 700 bytes, off=i*700)`
+calls and compare the size of `metadata.log*` before and after.
 
 ## 5. New in 2.5.0, found while upgrading
 

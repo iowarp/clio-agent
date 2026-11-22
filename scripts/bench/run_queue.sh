@@ -19,6 +19,7 @@ trap 'rm -rf "$homes"' EXIT
 
 step() { echo "== $(date -u +%T) $*" >&2; }
 
+if [ "${SKIP_BASELINE:-0}" != "1" ]; then
 step "soak 2.4.1 on develop code"
 PYTHONPATH="$dev_src" "$v241/bin/python" "$here/soak.py" --home "$homes/soak241dev" \
   --minutes "${SOAK_MINUTES:-30}" --out "$out/soak_2.4.1_develop.json" \
@@ -30,6 +31,8 @@ PYTHONPATH="$dev_src" "$v241/bin/python" "$here/idle_and_metadata_bench.py" \
 step "idle + metadata 2.5.0"
 "$v250/bin/python" "$here/idle_and_metadata_bench.py" --home "$homes/idle250" \
   --out "$out/idle_meta_2.5.0.json" 2> "$out/idle_meta_2.5.0.log"
+
+fi
 
 step "adoption bench 2.5.0"
 "$v250/bin/python" "$here/adoption_bench.py" --root "$homes/adopt" \
@@ -47,4 +50,7 @@ step "soak 2.5.0 async (same length, for the on/off comparison)"
 "$v250/bin/python" "$here/soak.py" --home "$homes/soak_async" \
   --minutes "${ADOPT_SOAK_MINUTES:-10}" --out "$out/soak_2.5.0_async.json" \
   2> "$out/soak_2.5.0_async.log"
+step "client data segment sizes 2.5.0"
+"$v250/bin/python" "$here/client_segment_probe.py" --root "$homes/seg" \
+  --out "$out/client_segment_2.5.0.json" 2> "$out/client_segment_2.5.0.log"
 step "done"

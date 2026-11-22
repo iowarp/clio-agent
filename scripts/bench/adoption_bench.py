@@ -51,8 +51,11 @@ store = bc.open_store()
 t1 = time.perf_counter()
 pid = bc.daemon_pid()
 has_cache = bool(getattr(store._client, "HasCache", lambda: False)())
+import idle_and_metadata_bench as idle  # the daemon is released when this process exits
+cpu = idle.idle_cpu(pid, 20.0, 30.0) if pid else {}
+rss = bc._rss_breakdown(pid)
 print("RESULT " + json.dumps({"attach_s": t1 - t0, "pid": pid, "has_cache": has_cache,
-      "config": open(store._config_path).read()}))
+      "config": open(store._config_path).read(), "idle_cpu": cpu, "idle_rss": rss}))
 """
 
 
@@ -71,13 +74,6 @@ def run_mode(name: str, home: Path, out_dir: Path, sizes: str, conc_sizes: str) 
     home.mkdir(parents=True)
     text = _run([sys.executable, "-c", _PROBE, str(HERE)], env, 300)
     probe = json.loads(next(ln for ln in text.splitlines() if ln.startswith("RESULT "))[7:])
-    from importlib import import_module  # noqa: PLC0415
-
-    idle = import_module("idle_and_metadata_bench")
-    import psutil  # noqa: PLC0415
-
-    cpu = idle.idle_cpu(probe["pid"], 20.0, 30.0) if probe["pid"] else {}
-    rss_idle = round(psutil.Process(probe["pid"]).memory_info().rss / 2**20, 1)
     store_json = out_dir / f"adoption_store_{name}.json"
     argv = [sys.executable, str(HERE / "arc_store_bench.py"), "--home", str(home)]
     argv += ["--out", str(store_json), "--sizes", sizes, "--concurrency-sizes", conc_sizes]
@@ -89,8 +85,8 @@ def run_mode(name: str, home: Path, out_dir: Path, sizes: str, conc_sizes: str) 
         "cold_start_attach_ms": round(probe["attach_s"] * 1000, 1),
         "client_has_shm_cache": probe["has_cache"],
         "shm_cache_composed": "clio_cte_core_shm_cache_writethru" in probe["config"],
-        "idle_cpu": cpu,
-        "idle_rss_mib": rss_idle,
+        "idle_cpu": probe["idle_cpu"],
+        "idle_rss_mib": probe["idle_rss"],
         "sweep": store["sweep"],
         "concurrency": store["concurrency"],
         "daemon_rss": store["daemon_rss"],
