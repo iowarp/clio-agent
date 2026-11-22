@@ -19,6 +19,7 @@ Codex-specific detection / provisioning / ladder-gate coverage lives in
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -336,7 +337,10 @@ def test_wrap_confined_active_fence_redirects_child_cache_env(
     assert cache_dir.is_dir()
     assert not (ws / sandbox.CHILD_CACHE_DIRNAME).exists()
     for key in sandbox.CHILD_CACHE_DIR_ENV_KEYS:
-        assert confined.env_overlay[key] == str(cache_dir)
+        assert Path(confined.env_overlay[key]).resolve() == cache_dir.resolve()
+    # Unix sockets under TEMP/TMP must fit: a deep cache dir is reached by a short alias.
+    if os.name == "posix":
+        assert all(len(confined.env_overlay[key]) <= 64 for key in ("TEMP", "TMP"))
     assert confined.env_overlay["FASTMCP_CHECK_FOR_UPDATES"] == "off"
     # The redirect is ADDITIVE — the per-child net proxy overlay still lands.
     assert confined.env_overlay["HTTP_PROXY"] == "http://127.0.0.1:4321"

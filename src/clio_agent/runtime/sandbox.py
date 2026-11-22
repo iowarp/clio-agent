@@ -421,6 +421,11 @@ def _child_cache_env(
         )
     overlay: dict[str, str] = dict.fromkeys(redirected, target)
     overlay["FASTMCP_CHECK_FOR_UPDATES"] = "off"
+    # A deep cache dir leaves no room for a unix socket under TEMP/TMP (ssh ControlMaster,
+    # munge, multiprocessing); a short link leads to the same folder.
+    from clio_agent.runtime.session_scratch import socket_safe_temp  # noqa: PLC0415
+
+    overlay.update(socket_safe_temp(overlay))
     # LibreOffice keeps its user profile under ~/.config (XDG_CONFIG_HOME alone is not
     # enough), which the fence makes read-only: a confined `soffice --convert-to` then
     # aborts with an uncaught DeploymentException. Its UserInstallation bootstrap

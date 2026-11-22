@@ -625,6 +625,11 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
             final_command, final_args = diet_command, diet_args
         else:
             final_command, final_args = resolved, resolved_args
+        # A deep TMPDIR/TEMP/TMP leaves no room for the server's unix sockets (ssh
+        # ControlMaster, munge, multiprocessing); a short link leads to the same folder.
+        from clio_agent.runtime.session_scratch import socket_safe_temp  # noqa: PLC0415
+
+        env = {**env, **socket_safe_temp(env)}
         # Route post-spawn-diet argv through the shared confinement owner (#975),
         # preserving cwd independently of grants and the existing pdeathsig=False lifetime.
         from clio_agent.runtime import sandbox  # noqa: PLC0415 - avoid import cycle
