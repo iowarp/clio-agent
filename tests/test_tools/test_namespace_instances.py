@@ -374,6 +374,82 @@ async def test_a_views_call_on_its_retained_server_does_not_take_over(tmp_path: 
     new_backend._connect_task.cancel()  # type: ignore[union-attr]
 
 
+async def test_a_failure_on_the_new_server_names_the_views_holding_the_old_one(
+    tmp_path: Any,
+) -> None:
+    """The retained server may hold an exclusive resource: the failure says which view."""
+    from clio_agent.errors import MCP_NAMESPACE_INSTANCE_HELD, MCPNamespaceInstanceHeldError
+    from clio_agent.tools import mcp_executor
+
+    old, old_proxy, old_backend = _served(tmp_path)
+    await namespace_instances.claim(old, "paraview", old_proxy)
+    old_backend.start()
+    views = {"open": True}
+    remove = [
+        namespace_instances.add_in_use_probe(
+            lambda owner, ns: "open_views" if views["open"] and owner is old else ""
+        ),
+        namespace_instances.add_view_namer(
+            lambda owner, ns: ["open_view view mapp_1 (conversation sess_1)"]
+            if views["open"] and owner is old
+            else []
+        ),
+    ]
+    try:
+        new, new_proxy, new_backend = _served(tmp_path)
+        new_backend.start()
+        await namespace_instances.claim(new, "paraview", new_proxy)
+        assert namespace_instances.holding_views(new_proxy) == [
+            "open_view view mapp_1 (conversation sess_1)"
+        ]
+        assert namespace_instances.holding_views(old_proxy) == []  # the view's own server
+        error = mcp_executor._held_error(
+            "paraview_open_view", "paraview", new_proxy, RuntimeError("node lock held")
+        )
+        assert isinstance(error, MCPNamespaceInstanceHeldError)
+        assert str(error).startswith(MCP_NAMESPACE_INSTANCE_HELD)
+        assert "mapp_1" in str(error) and "node lock held" in str(error)
+        assert error.details["views"] == ["open_view view mapp_1 (conversation sess_1)"]
+        assert mcp_executor._held_error("paraview_x", "paraview", None, RuntimeError()) is None
+
+        import mcp_types
+
+        failed = mcp_types.CallToolResult(
+            content=[mcp_types.TextContent(type="text", text="another node half is running")],
+            is_error=True,
+        )
+        noted = mcp_executor._with_held_note(failed, "paraview_open_view", "paraview", new_proxy)
+        assert noted.content[-1].text == "another node half is running"
+        assert noted.content[0].text.startswith(MCP_NAMESPACE_INSTANCE_HELD)
+        assert "mapp_1" in noted.content[0].text
+        from clio_agent.tools.result_errors import structured_tool_result_error
+
+        shown = structured_tool_result_error(noted) or ""  # the failure people and the model see
+        assert shown.startswith(MCP_NAMESPACE_INSTANCE_HELD)
+        assert "mapp_1" in shown and "another node half is running" in shown
+        from fastmcp.client.client import CallToolResult as ClientResult
+
+        client_failed = ClientResult(  # the proxy's own result shape: a dataclass
+            content=[mcp_types.TextContent(type="text", text="lock held")],
+            structured_content=None,
+            meta=None,
+            data=None,
+            is_error=True,
+        )
+        client_noted = mcp_executor._with_held_note(client_failed, "pv_x", "paraview", new_proxy)
+        assert "mapp_1" in (structured_tool_result_error(client_noted) or "")
+        assert old_backend.disconnects == 0  # the view's server is never stopped for it
+        views["open"] = False
+        assert namespace_instances.holding_views(new_proxy) == []
+    finally:
+        for undo in remove:
+            undo()
+        views["open"] = False
+    namespace_instances.retire_superseded()
+    await _settle()
+    new_backend._connect_task.cancel()  # type: ignore[union-attr]
+
+
 async def test_a_retained_server_that_is_claimed_again_is_not_retired(tmp_path: Any) -> None:
     old, old_proxy, old_backend = _served(tmp_path)
     await namespace_instances.claim(old, "paraview", old_proxy)

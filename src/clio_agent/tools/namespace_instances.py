@@ -1,4 +1,4 @@
-"""One live server per connector per workspace folder (MI1).
+"""One live server per connector per workspace folder (MI1), except for open views.
 
 A connector's stdio server keeps its state in its workspace folder: a ParaView scene and
 its node lock, a notebook kernel, a database session. Two live processes of it in one
@@ -25,12 +25,18 @@ with Reopen (``gact.mcp_app_fleet``) instead of pointing at a dead service. A fl
 that closes or rebinds a namespace leaves a proxy another open fleet still routes to
 running (:func:`unshared`).
 
-A superseded server that still draws open App views is retained instead (typed
-``mcp_namespace_instance_retained``): setting a connector value must not close the
-person's open view (take 1s, gap 15). The view's own calls keep going to the fleet that
-drew it, while the agent's calls go to the new server. :func:`retire_superseded`
-stops the retained server once its last view has closed, or its session ended (typed
-reason ``superseded_views_closed``).
+An open view outranks "one live server": a superseded server that still draws open
+App views is retained (typed ``mcp_namespace_instance_retained``), so for as long as
+those views are open the folder runs two servers of that connector, the retained one
+for its views and the new one for every other call. Setting a connector value must
+not close the person's open view (take 1s, gap 15). The view's own calls keep going
+to the fleet that drew it. :func:`retire_superseded` stops the retained server once
+its last view has closed, or its session ended (typed reason
+``superseded_views_closed``). When a call to the new server fails while a retained one
+runs, the executor names the open views holding it (:func:`holding_views`, typed
+``mcp_namespace_instance_held``): the retained server may hold an exclusive resource
+(a node lock, a port). CLIO neither waits silently for the views to close nor stops
+them.
 
 Within one proxy, the proxy route's kept-alive backend and the direct route are two
 processes of the same server. :func:`may_go_direct` keeps the proxy route while that
@@ -66,11 +72,14 @@ SUPERSEDED_VIEWS_CLOSED = "superseded_views_closed"
 Stopper = Callable[[tuple[Any, ...], str], Awaitable[int]]
 #: ``probe(executor, namespace)``: why that namespace's server is in use ("" when not).
 InUseProbe = Callable[[Any, str], str]
+#: ``namer(executor, namespace)``: labels of the open views that server draws.
+ViewNamer = Callable[[Any, str], list[str]]
 
 _LOCK = threading.Lock()
 _PROXIES: dict[tuple[str, str], weakref.WeakSet[Any]] = {}
 _STOPPERS: list[tuple[asyncio.AbstractEventLoop, Stopper]] = []
 _PROBES: list[InUseProbe] = []
+_NAMERS: list[ViewNamer] = []
 #: Every executor that started a namespace through a registered proxy.
 _EXECUTORS: weakref.WeakSet[Any] = weakref.WeakSet()
 #: Superseded proxies kept for their open views, with the loop their stop runs on.
@@ -239,6 +248,12 @@ def add_in_use_probe(probe: InUseProbe) -> Callable[[], None]:
     return _listen(_PROBES, probe)
 
 
+def add_view_namer(namer: ViewNamer) -> Callable[[], None]:
+    """Register a reader of the open views a namespace's server draws, by label."""
+
+    return _listen(_NAMERS, namer)
+
+
 def generation(executor: Any, namespace: str) -> int:
     """How many times ``executor`` stopped ``namespace``'s server (views stamp it)."""
 
@@ -329,6 +344,31 @@ def _views(proxy: Any, namespace: str) -> str:
             if reason:
                 return reason
     return ""
+
+
+def holding_views(proxy: Any) -> list[str]:
+    """Labels of the open views a retained superseded server of ``proxy``'s connector
+    and folder still draws (empty when none is retained beside ``proxy``)."""
+
+    key = getattr(proxy, _KEY, None)
+    if key is None:
+        return []
+    with _LOCK:
+        retained = [other for other in _RETAINED if other is not proxy]
+        namers = tuple(_NAMERS)
+    labels: list[str] = []
+    for other in retained:
+        if getattr(other, _KEY, None) != key or _is_current(other):
+            continue
+        for executor in _owners(other):
+            for namer in namers:
+                try:
+                    found = namer(executor, key[1])
+                except Exception as exc:  # noqa: BLE001 - an unreadable namer names nothing
+                    trace.event("TOOLS", "mcp_namespace_view_namer_failed error=%r", exc)
+                    continue
+                labels.extend(label for label in found if label not in labels)
+    return labels
 
 
 def retained_owners() -> set[str]:
@@ -623,11 +663,13 @@ __all__ = [
     "SUPERSEDED_VIEWS_CLOSED",
     "add_in_use_probe",
     "add_stopper",
+    "add_view_namer",
     "adopt",
     "backend_live",
     "begin_proxy_call",
     "claim",
     "generation",
+    "holding_views",
     "in_use",
     "launch_key",
     "may_go_direct",

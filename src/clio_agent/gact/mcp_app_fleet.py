@@ -90,7 +90,8 @@ def admitted(app: Any, record: Any) -> None:
 
 def server_stopped(record: Any) -> bool:
     """Whether the server that opened ``record`` stopped: its fleet closed, or the fleet
-    stopped that namespace's server since (MI1: one server per connector per folder)."""
+    stopped that namespace's server since. MI1 keeps one server per connector per folder,
+    except that a superseded one stays alive while views it drew are open."""
     from clio_agent.tools.namespace_instances import generation  # noqa: PLC0415
 
     ref = getattr(record, "fleet", None)
@@ -114,18 +115,19 @@ def watch_views(registry: Any) -> None:
     ref = weakref.ref(registry)
     remove: list[Any] = []
 
-    def open_views(executor: Any, namespace: str) -> str:
+    def drawn(executor: Any, namespace: str) -> list[Any] | None:
         current = ref()
         if current is None:
             for undo in remove:
                 undo()
-            return ""
+            return None
         with current._lock:
             records = (
                 *current._records.values(),
                 *current._cleanup_records.values(),
                 *current._closing_records.values(),  # its cleanup call still needs the server
             )
+        found = []
         for record in records:
             fleet = record.fleet() if record.fleet is not None else None
             if (
@@ -134,10 +136,20 @@ def watch_views(registry: Any) -> None:
                 and _inner(fleet) is executor
                 and not server_stopped(record)
             ):
-                return "open_views"
-        return ""
+                found.append(record)
+        return found
+
+    def open_views(executor: Any, namespace: str) -> str:
+        return "open_views" if drawn(executor, namespace) else ""
+
+    def view_labels(executor: Any, namespace: str) -> list[str]:
+        return [
+            f"{record.tool_name} view {record.app_instance_id} (conversation {record.session_id})"
+            for record in drawn(executor, namespace) or ()
+        ]
 
     remove.append(namespace_instances.add_in_use_probe(open_views))
+    remove.append(namespace_instances.add_view_namer(view_labels))
 
 
 def views_left() -> None:

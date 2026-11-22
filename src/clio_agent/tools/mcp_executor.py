@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import logging
@@ -223,6 +224,74 @@ def _builtin_namespace_server(namespace: str) -> Any:
     from clio_agent.tools.builtin_gateway import builtin_servers  # noqa: PLC0415
 
     return dict(builtin_servers()).get(namespace)
+
+
+def _held_error(name: str, namespace: str, proxy: Any, error: BaseException) -> Exception | None:
+    """A failed call on a connector's new server, typed with the open views holding the
+    superseded one (``mcp_namespace_instance_held``); ``None`` when none is retained."""
+
+    from clio_agent.errors import (  # noqa: PLC0415
+        MCP_NAMESPACE_INSTANCE_HELD,
+        MCPNamespaceInstanceHeldError,
+    )
+    from clio_agent.gact.external_tasks import SERVER_STOPPED_UNDER_CALL  # noqa: PLC0415
+
+    if proxy is None or str(error).startswith(SERVER_STOPPED_UNDER_CALL):
+        return None  # its own server stopped under it: the typed retry stands
+    views = namespace_instances.holding_views(proxy)
+    if not views:
+        return None
+    logger.warning(
+        "%s namespace=%s tool=%s views=%d error_type=%s",
+        MCP_NAMESPACE_INSTANCE_HELD,
+        namespace,
+        name,
+        len(views),
+        type(error).__name__,
+    )
+    return MCPNamespaceInstanceHeldError(name, namespace, views, f"{type(error).__name__}: {error}")
+
+
+def _with_held_note(result: Any, name: str, namespace: str, proxy: Any) -> Any:
+    """An error result from a connector's new server, with the open views holding its
+    superseded server named (typed ``mcp_namespace_instance_held``)."""
+
+    import mcp_types  # noqa: PLC0415
+
+    from clio_agent.errors import MCP_NAMESPACE_INSTANCE_HELD, held_by_views_text  # noqa: PLC0415
+
+    views = namespace_instances.holding_views(proxy)
+    content = getattr(result, "content", None)
+    if not views or not isinstance(content, list):
+        return result
+    logger.warning(
+        "%s namespace=%s tool=%s views=%d error_type=tool_error",
+        MCP_NAMESPACE_INSTANCE_HELD,
+        namespace,
+        name,
+        len(views),
+    )
+    cause = next(
+        (
+            t.strip()
+            for b in content
+            if isinstance(t := getattr(b, "text", None), str) and t.strip()
+        ),
+        "",
+    )
+    # First, so the failure's own text (the first block) carries the reason and the views.
+    note = mcp_types.TextContent(
+        type="text",
+        text=f"{MCP_NAMESPACE_INSTANCE_HELD}: {held_by_views_text(namespace, views)}"
+        + (f" The new server said: {cause}" if cause else ""),
+    )
+    blocks = [note, *content]
+    if dataclasses.is_dataclass(result) and not isinstance(result, type):
+        return dataclasses.replace(result, content=blocks)  # FastMCP's client result
+    try:
+        return result.model_copy(update={"content": blocks})
+    except AttributeError:
+        return result
 
 
 class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
@@ -470,11 +539,18 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                             app, captured, spec, name, error
                         ):
                             return await product_call()  # the same call, set up again (CN5)
+                        held = _held_error(
+                            name, namespace, proxy if pool_owner is not None else None, error
+                        )
+                        if held is not None:
+                            raise held from error
                         raise
                     finally:
                         if end_proxy_call is not None:
                             end_proxy_call()
                     self._namespace_succeeded(namespace if proxy is not None else None)
+                    if pool_owner is not None and getattr(result, "is_error", False):
+                        result = _with_held_note(result, name, namespace, proxy)
                     return _MCPCallOutcome(
                         _result_to_text(result), result, namespace if proxy is not None else None
                     )

@@ -370,6 +370,45 @@ class MCPInputRequiredRoundsExceededError(ToolError):
         )
 
 
+#: A connector's new server failed while its superseded server still runs for open views.
+MCP_NAMESPACE_INSTANCE_HELD = "mcp_namespace_instance_held"
+
+
+def held_by_views_text(namespace: str, views: list[str]) -> str:
+    """The person-facing sentence naming the open views a retained server runs for."""
+
+    named = "; ".join(views)
+    return (
+        f"The previous {namespace} server is still running because these views are open: "
+        f"{named}. It may hold a resource the new server needs (a lock or a port). "
+        "Close that view to release it, then retry. CLIO does not stop an open view."
+    )
+
+
+class MCPNamespaceInstanceHeldError(ToolError):
+    """A call to a connector's new server failed while its superseded one is retained.
+
+    The old server stays alive while App views it drew are open (setting a connector
+    value must not close them), so it may still hold an exclusive resource. The error
+    names those views instead of the call waiting or the view being stopped.
+    """
+
+    def __init__(self, tool: str, namespace: str, views: list[str], cause: str) -> None:
+        self.reason = MCP_NAMESPACE_INSTANCE_HELD
+        self.namespace = namespace
+        self.views = list(views)
+        super().__init__(
+            f"{MCP_NAMESPACE_INSTANCE_HELD}: {tool} failed on the new {namespace} server "
+            f"({cause}). {held_by_views_text(namespace, self.views)}",
+            details={
+                "reason": MCP_NAMESPACE_INSTANCE_HELD,
+                "namespace": namespace,
+                "tool": tool,
+                "views": self.views,
+            },
+        )
+
+
 class ConfigError(ClioError):
     """Configuration invalid or missing."""
 
