@@ -241,6 +241,31 @@ def floor_sandbox(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _remove_short_roots(monkeypatch):
+    """Remove the short roots (socket links, uv cache stand-ins) a test's deep folders got.
+
+    :func:`session_scratch.short_root` gives a folder too deep for a unix socket or a uv
+    cache a short name in ``/tmp`` or the system temp; every ``tmp_path`` is that deep, so
+    without this each shell environment a test builds would leave one outside the runtime.
+    """
+    from clio_agent.runtime import session_scratch as _scratch
+
+    made: list[tuple[Path, object]] = []
+    original = _scratch.short_root
+
+    def _tracked(target: Path, role):
+        short = original(target, role)
+        if short != target:
+            made.append((target, role))
+        return short
+
+    monkeypatch.setattr(_scratch, "short_root", _tracked)
+    yield
+    for target, role in made:
+        _scratch._remove_short_root(target, role)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_provider_dependency_install(request, monkeypatch):
     """Refuse real optional-dependency installs (claude-agent-sdk, globus-sdk).
 

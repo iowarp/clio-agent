@@ -26,9 +26,12 @@ import os
 import re
 import shutil
 import socket
+import stat
+import sys
 import tempfile
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from clio_agent import conf, paths
@@ -172,72 +175,233 @@ def active_scratch_dir(*, create: bool = False) -> Path | None:
     return session_scratch_dir(sid, create=create) if sid else None
 
 
-#: Longest uv cache a Windows shell uses in place. ``uv run --with`` imports packages from
-#: the cache itself (``archive-v0\<id>\Lib\site-packages\...``), and the Windows DLL loader
-#: refuses a path past MAX_PATH unless long paths are enabled, which they are not by default
-#: ("DLL load failed ... The filename or extension is too long"). CadQuery's deepest DLL sits
-#: 115 characters below the cache, so a cache in a deep scratch folder or workspace fails.
-#: A link does not help: the loader finds a DLL's dependencies by its real path.
-WINDOWS_UV_CACHE_MAX = 48
-_WINDOWS_UV_CACHE_DIR = "clio-u"
+SOCKET_LIMIT = "socket"
+PATH_LIMIT = "path"
+SHEBANG_LIMIT = "shebang"
+#: Each OS's limits. ``socket``: ``sun_path`` is 108 bytes on Linux and Windows and 104 on
+#: macOS and the BSDs. ``path``: a DLL load stops at MAX_PATH (260) on Windows without
+#: long-path support, ``dlopen`` at PATH_MAX (1024 on macOS, 4096 on Linux). ``shebang``:
+#: the kernel reads a ``#!`` line into a fixed buffer (512 bytes on macOS, 256 on Linux 5.1+,
+#: 128 before it); a longer interpreter path makes execve fail with ENOEXEC, and glibc then
+#: runs the Python entry point with ``/bin/sh``. Windows has no shebang (uv writes .exe
+#: launchers).
+_OS_LIMITS: dict[str, dict[str, int]] = {
+    "windows": {SOCKET_LIMIT: 108, PATH_LIMIT: 260},
+    "darwin": {SOCKET_LIMIT: 104, PATH_LIMIT: 1024, SHEBANG_LIMIT: 512},
+    "linux": {SOCKET_LIMIT: 108, PATH_LIMIT: 4096, SHEBANG_LIMIT: 256},
+    "posix": {SOCKET_LIMIT: 104, PATH_LIMIT: 1024, SHEBANG_LIMIT: 256},
+}
+_LINUX_OLD_SHEBANG = 128
+#: A link: files and sockets made through it stay in the folder it leads to (a symlink on
+#: POSIX, a junction on Windows, which an AF_UNIX bind follows as well).
+LINK = "link"
+#: A real folder of its own: needed where the loader resolves a link (Windows DLLs find
+#: their dependencies by real path) or a tool canonicalizes it.
+STAND_IN = "stand-in"
+_OWNER_FILE = "owner.txt"
+#: Typed reason: a short alias for a deep scratch folder could not be made; the folder is used.
+SOCKET_ALIAS_FAILED_REASON = "session_scratch_socket_alias_failed"
 #: Typed reason: the short stand-in for a deep uv cache could not be made; the cache stays.
 SHORT_UV_CACHE_FAILED_REASON = "session_scratch_short_uv_cache_failed"
-_OWNER_FILE = "owner.txt"
 
 
-def _windows() -> bool:
-    return os.name == "nt"
+@dataclass(frozen=True)
+class ShortRootRole:
+    """What a short root stands in for: the limits it must fit, the room below it, and how."""
+
+    name: str
+    #: ``(limit name, headroom)`` pairs; the root must leave each headroom under its limit.
+    limits: tuple[tuple[str, int], ...]
+    mechanism: str
+    failed_reason: str
 
 
-def _short_uv_cache_path(cache: Path) -> Path:
+#: ``TMPDIR``/``TEMP``/``TMP``: a ``mkdtemp`` folder and a socket name need about 44 bytes
+#: below it (ssh's ``ControlPath`` adds about 35), so ssh's ControlMaster socket, munge,
+#: ``multiprocessing`` and Chromium-style singletons fit.
+SOCKET_ROLE = ShortRootRole("socket", ((SOCKET_LIMIT, 44),), LINK, SOCKET_ALIAS_FAILED_REASON)
+#: ``UV_CACHE_DIR``: ``uv run --with`` imports packages from the cache itself
+#: (``archive-v0/<id>/.../site-packages/...``); CadQuery's deepest native library sits 115
+#: characters below it (136 on Linux), so 212 leaves room for deeper wheels. Its entry
+#: points start ``#!<cache>/builds-v0/.tmpXXXXXX/bin/python`` (``uvx`` uses
+#: ``environments-v2/<name>-<hash>``), so 64 covers the ``#!`` line below the cache.
+#: Windows fails on the DLL load ("The filename or extension is too long"), Linux on the
+#: shebang (a ``black`` entry point under a 230-character cache), macOS on either.
+UV_CACHE_ROLE = ShortRootRole(
+    "uv-cache",
+    ((PATH_LIMIT, 212), (SHEBANG_LIMIT, 64)),
+    STAND_IN,
+    SHORT_UV_CACHE_FAILED_REASON,
+)
+
+
+def _host_os() -> str:
+    if os.name == "nt":
+        return "windows"
+    if sys.platform == "darwin":
+        return "darwin"
+    return "linux" if sys.platform.startswith("linux") else "posix"
+
+
+def _kernel_release() -> tuple[int, int]:
+    try:
+        major, minor = os.uname().release.split(".")[:2]
+        return int(major), int("".join(ch for ch in minor if ch.isdigit()) or 0)
+    except (AttributeError, ValueError):
+        return (0, 0)
+
+
+def _os_limits() -> dict[str, int]:
+    host = _host_os()
+    limits = dict(_OS_LIMITS[host])
+    if host == "linux" and _kernel_release() < (5, 1):
+        limits[SHEBANG_LIMIT] = _LINUX_OLD_SHEBANG
+    return limits
+
+
+def short_root_budget(role: ShortRootRole) -> int:
+    """Longest folder ``role`` keeps in place on this OS (each limit less its headroom)."""
+
+    limits = _os_limits()
+    return min(limits[name] - room for name, room in role.limits if name in limits)
+
+
+def _short_base(role: ShortRootRole) -> Path:
+    # A POSIX link may sit in /tmp, the shortest place every user can write and traverse;
+    # what is written through it lands in its target. Everything else sits in the system
+    # temp, the one short place a fenced child is granted (``paths.allow_system_temp``).
+    if role.mechanism == LINK and _host_os() != "windows" and Path("/tmp").is_dir():
+        return Path("/tmp")
+    return Path(tempfile.gettempdir())
+
+
+def _short_path(target: Path, role: ShortRootRole) -> Path:
     import hashlib  # noqa: PLC0415
 
-    digest = hashlib.sha256(os.path.normcase(str(cache)).encode("utf-8")).hexdigest()[:10]
-    return Path(tempfile.gettempdir()) / _WINDOWS_UV_CACHE_DIR / digest
+    digest = hashlib.sha256(os.path.normcase(str(target)).encode("utf-8")).hexdigest()[:16]
+    owner = os.getuid() if hasattr(os, "getuid") else "w"
+    return _short_base(role) / f"clio-{owner}-{digest}"
 
 
-def _owns_short_uv_cache(short: Path, cache: Path) -> bool:
+def _same_path(left: str, right: Path) -> bool:
+    for prefix in ("\\\\?\\", "\\??\\"):  # a junction's target may carry either
+        left = left.removeprefix(prefix)
+    return os.path.normcase(left.rstrip("\\/")) == os.path.normcase(str(right).rstrip("\\/"))
+
+
+def _mine(info: os.stat_result) -> bool:
+    return not hasattr(os, "getuid") or info.st_uid == os.getuid()
+
+
+def _owns_short_root(short: Path, target: Path, role: ShortRootRole) -> bool:
+    """Whether ``short`` is this user's ``role`` root for ``target`` (never a foreign name)."""
+
     try:
+        info = short.lstat()
+        if not _mine(info):
+            return False
+        if role.mechanism == LINK:
+            is_link = stat.S_ISLNK(info.st_mode) or short.is_junction()
+            return is_link and _same_path(os.readlink(short), target)
+        if not stat.S_ISDIR(info.st_mode) or short.is_junction():
+            return False
         owner = (short / _OWNER_FILE).read_text(encoding="utf-8").strip()
     except OSError:
         return False
-    return os.path.normcase(owner) == os.path.normcase(str(cache))
+    return _same_path(owner, target)
+
+
+def _make_short_root(short: Path, target: Path, role: ShortRootRole) -> None:
+    if role.mechanism == LINK:
+        if _host_os() == "windows":
+            import _winapi  # noqa: PLC0415 - CPython's junction call; needs no privilege
+
+            _winapi.CreateJunction(str(target), str(short))
+        else:
+            os.symlink(target, short)
+        return
+    short.mkdir(mode=_FOLDER_MODE, parents=True, exist_ok=True)
+    info = short.lstat()
+    if not stat.S_ISDIR(info.st_mode) or short.is_junction() or not _mine(info):
+        raise FileExistsError(f"{short} is not this user's folder")
+    if any(entry.name != _OWNER_FILE for entry in short.iterdir()):
+        raise FileExistsError(f"{short} holds another {role.name} root")
+    (short / _OWNER_FILE).write_text(f"{target}\n", encoding="utf-8")
+
+
+def short_root(target: Path, role: ShortRootRole) -> Path:
+    """``target``, or a short root of this user's standing in for it when it is too deep.
+
+    One code path for every OS: a ``target`` longer than :func:`short_root_budget` gets
+    ``<base>/clio-<uid>-<hash of target>``, one per target, so sessions stay apart. A
+    :data:`LINK` role gets a symlink (POSIX, in ``/tmp``) or a junction (Windows) to
+    ``target``, so its files stay in ``target``; a :data:`STAND_IN` role gets a real folder
+    in the system temp whose ``owner.txt`` names ``target``. Anything in the system temp is
+    used only while ``paths.allow_system_temp`` grants it to fenced children. A name that
+    exists but is not this user's root for ``target`` is never used: ``target`` is.
+    Roots are removed with the session's scratch folder (:func:`remove_session_scratch`).
+    """
+
+    if len(str(target)) <= short_root_budget(role):
+        return target
+    in_system_temp = role.mechanism == STAND_IN or _host_os() == "windows"
+    if in_system_temp and not allow_system_temp():
+        return target
+    short = _short_path(target, role)
+    if len(str(short)) >= len(str(target)):
+        return target
+    if _owns_short_root(short, target, role):
+        return short
+    try:
+        _make_short_root(short, target, role)
+    except (OSError, ImportError) as exc:
+        trace.event("SCRATCH", "%s path=%s error=%r", role.failed_reason, target, exc)
+        return target
+    return short if _owns_short_root(short, target, role) else target
+
+
+def _remove_short_root(target: Path, role: ShortRootRole) -> None:
+    short = _short_path(target, role)
+    if not _owns_short_root(short, target, role):
+        return
+    try:
+        if role.mechanism == STAND_IN:
+            shutil.rmtree(win_extended_path(short), ignore_errors=True)
+        elif short.is_junction():
+            os.rmdir(short)  # removes the junction, never what it leads to
+        else:
+            short.unlink()
+    except OSError:
+        pass
+
+
+def socket_safe_dir(folder: Path) -> Path:
+    """``folder``, or a short link to it when a unix socket below it would not fit."""
+
+    return short_root(folder, SOCKET_ROLE)
+
+
+def socket_safe_temp(environment: dict[str, str]) -> dict[str, str]:
+    """Each deep ``TMPDIR``/``TEMP``/``TMP`` moved to its :func:`socket_safe_dir` link.
+
+    Returns only the changed keys (empty when nothing changes).
+    """
+
+    changed: dict[str, str] = {}
+    for key in ("TMPDIR", "TEMP", "TMP"):
+        current = environment.get(key, "")
+        if len(current) <= short_root_budget(SOCKET_ROLE) or not Path(current).is_dir():
+            continue
+        short = str(socket_safe_dir(Path(current)))
+        if short != current:
+            changed[key] = short
+    return changed
 
 
 def short_uv_cache(cache: Path) -> Path:
-    """``cache``, or on Windows a short stand-in for it when it is too deep for uv's packages.
+    """``cache``, or a short stand-in for it when it is too deep for uv's native packages."""
 
-    The stand-in is ``<system temp>\\clio-u\\<hash of cache>``, one per cache, so each
-    session keeps its own; the system temp is in every shell's write roots. Its
-    ``owner.txt`` names the cache it stands in for, and it is removed with the session's
-    scratch folder. Without the system temp (``paths.allow_system_temp`` off) the cache
-    stays where it is.
-    """
-
-    if not _windows() or len(str(cache)) <= WINDOWS_UV_CACHE_MAX or not allow_system_temp():
-        return cache
-    short = _short_uv_cache_path(cache)
-    if len(str(short)) >= len(str(cache)):
-        return cache
-    if _owns_short_uv_cache(short, cache):
-        return short
-    try:
-        short.mkdir(parents=True, exist_ok=True)
-        if any(entry.name != _OWNER_FILE for entry in short.iterdir()):
-            raise FileExistsError(f"{short} holds another cache")
-        (short / _OWNER_FILE).write_text(f"{cache}\n", encoding="utf-8")
-    except OSError as exc:
-        trace.event("SCRATCH", "%s path=%s error=%r", SHORT_UV_CACHE_FAILED_REASON, cache, exc)
-        return cache
-    return short
-
-
-def _remove_short_uv_cache(cache: Path) -> None:
-    if not _windows():
-        return
-    short = _short_uv_cache_path(cache)
-    if _owns_short_uv_cache(short, cache):
-        shutil.rmtree(win_extended_path(short), ignore_errors=True)
+    return short_root(cache, UV_CACHE_ROLE)
 
 
 def remove_session_scratch(session_id: str, *, why: str) -> bool:
@@ -246,7 +410,8 @@ def remove_session_scratch(session_id: str, *, why: str) -> bool:
     folder = session_scratch_dir(session_id, create=False)
     if folder is None or not folder.is_dir():
         return False
-    _remove_short_uv_cache(folder / "uv-cache")
+    _remove_short_root(folder, SOCKET_ROLE)
+    _remove_short_root(folder / "uv-cache", UV_CACHE_ROLE)
     try:
         shutil.rmtree(win_extended_path(folder))
     except OSError as exc:
@@ -314,7 +479,11 @@ __all__ = [
     "retention_days",
     "scratch_root",
     "session_scratch_dir",
+    "short_root",
+    "short_root_budget",
     "short_uv_cache",
+    "socket_safe_dir",
+    "socket_safe_temp",
     "sweep",
     "system_temp_roots",
 ]

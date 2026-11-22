@@ -188,71 +188,191 @@ def test_tmpdir_points_at_the_session_folder_for_the_kernel(root: Path, workspac
     mine = (root / "node-a" / "sess_k").resolve()
     _python, env = kernels._environment(workspace, "sess_k")
     for key in ("TMPDIR", "TEMP", "TMP"):
-        assert env[key] == str(mine)
+        assert Path(env[key]).resolve() == mine  # a short alias when the folder is deep
+        assert len(env[key]) <= max(len(str(mine)), 64)
     assert mine.is_dir()
     assert shell_environment(workspace).get("TMPDIR") != str(mine)  # off-session: unchanged
 
 
+@pytest.mark.parametrize(
+    ("host", "kernel", "socket_budget", "uv_cache_budget"),
+    [
+        ("linux", (5, 15), 64, 192),
+        ("linux", (4, 18), 64, 64),
+        ("darwin", (25, 0), 60, 448),
+        ("windows", (0, 0), 64, 48),
+        ("posix", (14, 1), 60, 192),
+    ],
+)
+def test_each_os_gets_its_own_short_root_budgets(
+    monkeypatch: pytest.MonkeyPatch,
+    host: str,
+    kernel: tuple[int, int],
+    socket_budget: int,
+    uv_cache_budget: int,
+) -> None:
+    """sun_path is 108 bytes on Linux and Windows, 104 on macOS; MAX_PATH/PATH_MAX differ,
+    and a uv entry point's ``#!`` line must fit the kernel's buffer (128 before Linux 5.1)."""
+
+    monkeypatch.setattr(session_scratch, "_host_os", lambda: host)
+    monkeypatch.setattr(session_scratch, "_kernel_release", lambda: kernel)
+    assert session_scratch.short_root_budget(session_scratch.SOCKET_ROLE) == socket_budget
+    assert session_scratch.short_root_budget(session_scratch.UV_CACHE_ROLE) == uv_cache_budget
+    assert session_scratch.short_root_budget(session_scratch.UV_CACHE_ROLE) == uv_cache_budget
+
+
+@pytest.mark.skipif(os.name != "posix", reason="a POSIX symlink in /tmp")
+def test_a_deep_scratch_folder_gets_a_short_private_link_for_unix_sockets(
+    tmp_path: Path,
+) -> None:
+    import socket as socket_module
+
+    deep = tmp_path.joinpath(*(["d" * 20] * 6), "sess_deep")
+    deep.mkdir(parents=True)
+    alias = session_scratch.socket_safe_dir(deep)
+    try:
+        assert alias != deep and len(str(alias)) <= 64
+        assert alias.is_symlink() and alias.resolve() == deep.resolve()
+        assert session_scratch.socket_safe_dir(deep) == alias  # reused, not duplicated
+        server = socket_module.socket(socket_module.AF_UNIX)
+        server.bind(tempfile.mkdtemp(dir=str(alias)) + "/cm.sock")
+        server.close()
+        changed = session_scratch.socket_safe_temp(
+            {"TMPDIR": str(deep), "TEMP": str(deep), "TMP": "/elsewhere"}
+        )
+        assert changed == {"TMPDIR": str(alias), "TEMP": str(alias)}
+        short = tmp_path / "s"
+        short.mkdir()
+        if len(str(short)) <= 60:
+            assert session_scratch.socket_safe_dir(short) == short
+    finally:
+        session_scratch._remove_short_root(deep, session_scratch.SOCKET_ROLE)
+    assert not alias.exists() and not alias.is_symlink()
+
+
 @pytest.fixture
-def windows_temp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Act as Windows with a short system temp folder."""
+def short_temp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A short system temp folder for stand-ins and Windows links."""
 
     temp = tmp_path / "t"
     temp.mkdir()
-    monkeypatch.setattr(session_scratch, "_windows", lambda: True)
     monkeypatch.setattr(session_scratch.tempfile, "gettempdir", lambda: str(temp))
     return temp
 
 
-def test_a_deep_uv_cache_gets_a_short_owned_stand_in_on_windows(
-    tmp_path: Path, windows_temp: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.skipif(os.name != "nt", reason="a Windows junction in the system temp")
+def test_a_deep_scratch_folder_gets_a_short_junction_on_windows(
+    tmp_path: Path, short_temp: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """uv imports ``--with`` packages from its cache, and the DLL loader stops at MAX_PATH."""
+    """An AF_UNIX bind follows a junction, and files made through it stay in the folder."""
 
-    cache = tmp_path.joinpath(*(["d" * 20] * 4), "sess_deep", "uv-cache")
+    deep = tmp_path / ("d" * 40) / "sess_deep"  # deeper than its junction in short_temp
+    deep.mkdir(parents=True)
+    alias = session_scratch.socket_safe_dir(deep)
+    assert alias.parent == short_temp and alias.is_junction()
+    assert session_scratch.socket_safe_dir(deep) == alias  # reused, not duplicated
+    (alias / "made-through-the-link").write_text("x", encoding="utf-8")
+    assert (deep / "made-through-the-link").is_file()
+    assert session_scratch.socket_safe_temp({"TEMP": str(deep), "TMP": str(deep)}) == {
+        "TEMP": str(alias),
+        "TMP": str(alias),
+    }
+    session_scratch._remove_short_root(deep, session_scratch.SOCKET_ROLE)
+    assert not os.path.lexists(alias) and (deep / "made-through-the-link").is_file()
+    monkeypatch.setenv("CLIO_ALLOW_SYSTEM_TEMP", "0")
+    assert session_scratch.socket_safe_dir(deep) == deep  # the fence would not grant it
+
+
+@pytest.mark.skipif(os.name != "posix", reason="a POSIX symlink in /tmp")
+def test_a_socket_link_never_follows_a_name_it_does_not_own(tmp_path: Path) -> None:
+    deep = tmp_path.joinpath(*(["e" * 20] * 6), "sess_squat")
+    deep.mkdir(parents=True)
+    alias = session_scratch._short_path(deep, session_scratch.SOCKET_ROLE)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    os.symlink(elsewhere, alias)  # squatted: the name points somewhere else
+    try:
+        assert session_scratch.socket_safe_dir(deep) == deep
+        assert session_scratch.socket_safe_temp({"TMPDIR": str(deep)}) == {}
+        session_scratch._remove_short_root(deep, session_scratch.SOCKET_ROLE)
+        assert alias.is_symlink()  # someone else's link is left alone
+    finally:
+        alias.unlink()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="a POSIX symlink in /tmp")
+def test_deleting_a_session_removes_its_socket_link(root: Path) -> None:
+    folder = session_scratch.session_scratch_dir("sess_" + "a" * 60)
+    alias = session_scratch.socket_safe_dir(folder)
+    assert alias != folder and alias.is_symlink()
+    assert session_scratch.remove_session_scratch("sess_" + "a" * 60, why="session_deleted")
+    assert not alias.is_symlink()
+
+
+@pytest.mark.parametrize("host", ["windows", "darwin", "linux"])
+def test_a_uv_cache_past_its_os_budget_gets_a_short_owned_stand_in(
+    tmp_path: Path, short_temp: Path, monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    """uv imports ``--with`` packages from its cache; each OS bounds a library's path."""
+
+    monkeypatch.setattr(session_scratch, "_host_os", lambda: host)
+    monkeypatch.setattr(session_scratch, "_kernel_release", lambda: (5, 15))
+    budget = session_scratch.short_root_budget(session_scratch.UV_CACHE_ROLE)
+    base = Path(tmp_path.anchor) / "v"  # a name only: a cache is keyed before it exists
+    at_budget = base / ("d" * (budget - len(str(base)) - 1))
+    assert len(str(at_budget)) == budget
+    assert session_scratch.short_uv_cache(at_budget) == at_budget  # fits: stays put
+    pad = "x" * (len(str(short_temp)) + 40)  # past the budget and longer than its stand-in
+    cache = Path(str(at_budget) + pad) / "uv-cache"
     short = session_scratch.short_uv_cache(cache)
-    assert short.parent == windows_temp / "clio-u" and short.is_dir()
+    assert short.parent == short_temp and short.is_dir() and not short.is_symlink()
     assert (short / "owner.txt").read_text(encoding="utf-8").strip() == str(cache)
     assert session_scratch.short_uv_cache(cache) == short  # reused, not duplicated
-    other = session_scratch.short_uv_cache(cache.parent.parent / "sess_other" / "uv-cache")
+    other_cache = Path(str(at_budget) + pad + "y") / "uv-cache"
+    other = session_scratch.short_uv_cache(other_cache)
     assert other not in (short, cache)  # each session keeps its own cache
+    session_scratch._remove_short_root(cache, session_scratch.UV_CACHE_ROLE)
+    session_scratch._remove_short_root(other_cache, session_scratch.UV_CACHE_ROLE)
+    assert not short.exists() and not other.exists()
     monkeypatch.setenv("CLIO_ALLOW_SYSTEM_TEMP", "0")
-    assert session_scratch.short_uv_cache(cache) == cache  # temp not writable: stays put
-    monkeypatch.setattr(session_scratch, "_windows", lambda: False)
-    monkeypatch.delenv("CLIO_ALLOW_SYSTEM_TEMP")
-    assert session_scratch.short_uv_cache(cache) == cache
+    assert session_scratch.short_uv_cache(cache) == cache  # temp not granted: stays put
 
 
 def test_a_short_uv_cache_never_takes_a_folder_it_does_not_own(
-    tmp_path: Path, windows_temp: Path
+    tmp_path: Path, short_temp: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(session_scratch, "_host_os", lambda: "windows")
     cache = tmp_path.joinpath(*(["e" * 20] * 4), "sess_squat", "uv-cache")
-    squatted = session_scratch._short_uv_cache_path(cache)
+    squatted = session_scratch._short_path(cache, session_scratch.UV_CACHE_ROLE)
     squatted.mkdir(parents=True)
     (squatted / "theirs").write_text("x", encoding="utf-8")
     assert session_scratch.short_uv_cache(cache) == cache
-    session_scratch._remove_short_uv_cache(cache)
+    session_scratch._remove_short_root(cache, session_scratch.UV_CACHE_ROLE)
     assert (squatted / "theirs").is_file()  # someone else's folder is left alone
 
 
-def test_deleting_a_session_removes_its_short_uv_cache(root: Path, windows_temp: Path) -> None:
+def test_deleting_a_session_removes_its_short_uv_cache(
+    root: Path, short_temp: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(session_scratch, "_host_os", lambda: "windows")
     sid = "sess_" + "b" * 60
     folder = session_scratch.session_scratch_dir(sid)
     short = session_scratch.short_uv_cache(folder / "uv-cache")
-    assert short.parent == windows_temp / "clio-u"
+    assert short.parent == short_temp
     (short / "archive-v0").mkdir()
     assert session_scratch.remove_session_scratch(sid, why="session_deleted")
     assert not short.exists()
 
 
 def test_a_session_shell_uses_the_short_uv_cache(
-    root: Path, workspace: Path, windows_temp: Path
+    root: Path, workspace: Path, short_temp: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(session_scratch, "_host_os", lambda: "windows")
     sid = "sess_" + "c" * 60
     with bound(sid):
         environment = shell_environment(workspace)
     short = Path(environment["UV_CACHE_DIR"])
-    assert short.parent == windows_temp / "clio-u"
+    assert short.parent == short_temp
     assert (short / "owner.txt").read_text(encoding="utf-8").strip().endswith("uv-cache")
 
 
