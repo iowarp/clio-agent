@@ -324,8 +324,7 @@ def chunk_for_append(store: "SegmentStore", session_id: str, base: str, *, capac
     """Reserve a slot in the lane's active chunk and return its scope — THE writer seam.
 
     Advances the per-``(store, session_id, base)`` cursor, rolling to the next chunk
-    once the active one has reached ``capacity`` segments or :func:`chunk_max_bytes`
-    stored bytes (so an append re-encodes only
+    once the active one has reached ``capacity`` segments (so an append re-encodes only
     the active chunk, not the whole lane). The cursor is trusted only while its active
     chunk is still present in the store's own ``_loaded`` cache; an eraser
     (``drop_scope`` / ``release`` / ``clear``) discards that key as a side effect, which
@@ -362,41 +361,13 @@ def chunks_for_append(
         if cur is None or (session_id, chunk_scope(base, cur.index)) not in store._loaded:
             index, stored = recover_writer(store, session_id, base)
             cur = _LaneCursor(index=index, count=stored)
-        max_bytes = chunk_max_bytes()
         for _slot in range(count):
-            if cur.count >= capacity or (
-                cur.count
-                and (
-                    _sealed(store, session_id, base, cur.index)
-                    or _stored_bytes(store, session_id, chunk_scope(base, cur.index)) >= max_bytes
-                )
-            ):
+            if cur.count >= capacity or (cur.count and _sealed(store, session_id, base, cur.index)):
                 cur = _LaneCursor(index=cur.index + 1, count=0)
             cur.count += 1
             placed.append(chunk_scope(base, cur.index))
         store_cursors[key] = cur
     return placed
-
-
-def chunk_max_bytes() -> int:
-    """Stored bytes after which a lane's active chunk rolls, whatever its segment count.
-
-    Keeps every chunk blob well inside what clio-core places in one put (take 1r: a
-    27 MB event chunk was refused with code 12)."""
-    from clio_agent import conf  # noqa: PLC0415
-
-    return conf.resolve(
-        "arc.chunk_max_bytes",
-        env="CLIO_ARC_CHUNK_MAX_BYTES",
-        default=8_388_608,
-        cast=conf.as_int,
-    )
-
-
-def _stored_bytes(store: "SegmentStore", session_id: str, scope: str) -> int:
-    """The stored end of a cached chunk (0 when its size is not known here)."""
-    mark = getattr(store, "_chunk_marks", {}).get((session_id, scope))
-    return int(getattr(mark, "end", 0) or 0)
 
 
 def _sealed(store: "SegmentStore", session_id: str, base: str, index: int) -> bool:

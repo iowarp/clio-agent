@@ -111,10 +111,9 @@ def build_event_content(event: Any) -> Optional[dict[str, Any]]:
     (``LiveRuntimeContext._record``), so the persisted ``_events`` log is identical
     regardless of path.
 
-    Builds the event VERBATIM; the writers then bound only oversized leaves
-    (:func:`clio_agent.arc.record_budget.bound_record`: head, size and digest kept, the
-    whole value saved to the session's spill folder when one is wired), so one record
-    always fits what clio-core places. The read-time reducer :func:`_apply`
+    Stores the event VERBATIM — NO truncation, NO caps. ARC is the source and holds
+    everything (freeze-anytime); any bound is a downstream consumer's deliberate,
+    configurable choice, never imposed here. The read-time reducer :func:`_apply`
     consumes ``event_type`` / ``payload`` / ``actor`` / ``provider`` / ``status`` /
     ``occurred_at`` / ``trace_id``; ``summary`` / ``subject`` are kept for completeness.
 
@@ -321,9 +320,6 @@ class LiveRuntimeContext:
         content = build_event_content(event)
         if content is None:  # an event with no event_type -> nothing to log
             return
-        from clio_agent.arc.record_budget import bound_record  # noqa: PLC0415
-
-        content = bound_record(content, session_id=sid, label=str(content["event_type"]))
         self._segments.append(
             sid,
             EVENTS_SCOPE,

@@ -138,21 +138,6 @@ def save_task_result(
     }
 
 
-def save_record_leaf(app: Any, session_id: str, text: str, digest: str) -> str:
-    """Save one oversized value of an ARC record whole and return its path.
-
-    The ARC record keeps the value's head and digest
-    (:mod:`clio_agent.arc.record_budget`); the file is named by the digest, so the same
-    value (a chunk sent and then read back) is written once, and it lives in the
-    session's spill folder, so deleting the session deletes it.
-    """
-
-    folder = spill_directory(_workspace_root(app, session_id), session_id=session_id)
-    path = folder / f"record-value-{_UNSAFE.sub('_', digest)[:32]}.txt"
-    _write_once(path, text)
-    return str(path)
-
-
 def saved_result_block(row: Mapping[str, Any], index: int) -> dict[str, Any] | None:
     """The "Full result saved" link for a row whose result went to a file."""
 
@@ -177,7 +162,6 @@ __all__ = [
     "RESULT_EXCERPT_CHARS",
     "TASK_RESULT_SAVED_REASON",
     "TASK_RESULT_SAVE_FAILED_REASON",
-    "save_record_leaf",
     "save_task_result",
     "saved_result_block",
 ]
