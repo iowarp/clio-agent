@@ -7,7 +7,7 @@ keeps one connection out to CLIO's publisher (``CLIO_FENCE_LOOPBACK=<port>:<toke
 
 * when the server writes a loopback address (``127.0.0.1:<port>``, ``localhost:<port>`` or
   ``[::1]:<port>``), the agent asks CLIO to publish that port. CLIO does so only when the
-  server's own process tree listens on it. The address becomes ``127.0.0.1:<host port>``,
+  server's own launch (its process tree, or its AppContainer) listens on it. The address becomes ``127.0.0.1:<host port>``,
   a fresh host port that reaches it; in a URL, when CLIO could also listen on ``[::1]`` with
   the same port, it becomes ``localhost:<port>`` instead, so a page that checks its own
   origin still accepts it. Host ports CLIO sends back are rewritten the other way, so the
@@ -31,6 +31,8 @@ import time
 
 VARIABLE = "CLIO_FENCE_LOOPBACK"
 #: How the MXC fence's loopback works, stamped on its sandbox state (and so its records).
+#: Inside it WMI refuses to start processes, and a job breakaway still leaves the child in the
+#: fence's job, so a "detached" child lives while its server's launch does and ends with it.
 MXC_LOOPBACK_DETAILS = {
     "host_loopback": "direct",
     "detached_children": "terminated",

@@ -9,12 +9,14 @@ on ``127.0.0.1:<port>`` would be unreachable from the desktop and from CLIO.
 So on that fence, CLIO starts each stdio MCP server behind
 :mod:`clio_agent.runtime.fence_loopback_agent`, which keeps one connection out to the
 :class:`LoopbackPublisher` here. When the server writes a loopback address in its output, the
-agent asks to publish that port. The publisher checks that a process in the server's own
-tree listens on it, opens a host listener on a fresh loopback port, and the address is
+agent asks to publish that port. The publisher checks that the server's own launch listens on
+it (a process in its tree, or in the AppContainer the fence started it in, which is how a
+detached port forward whose launcher has exited stays attributed to it), opens a host listener
+on a fresh loopback port, and the address is
 rewritten to it. Each connection to that port is spliced to a connection the agent makes to
 the server's listener from inside the container. CLIO itself reaches a declared MCP App
 service the same way without a host listener (:func:`connect`). Only ports the server's
-tree listens on are ever published or dialed, and only on loopback. Linux and macOS are
+launch listens on are ever published or dialed, and only on loopback. Linux and macOS are
 unchanged.
 """
 
@@ -40,6 +42,9 @@ AGENT = Path(__file__).with_name("fence_loopback_agent.py")
 _HELLO_S = 10.0
 _LISTEN_WAIT_S = 2.0
 _DIAL_S = 10.0
+_QUERY_LIMITED = 0x1000
+_TOKEN_QUERY = 0x0008
+_TOKEN_APP_CONTAINER_SID = 31
 
 
 def publishing_applies(state: Any) -> bool:
@@ -64,6 +69,8 @@ class _Server:
     pid: int
     control: socket.socket
     child_id: str = ""
+    #: The AppContainer SID of the server's launch ("" when it has none).
+    container: str = ""
     lock: threading.Lock = field(default_factory=threading.Lock)
     published: dict[int, list[socket.socket]] = field(default_factory=dict)
 
@@ -89,8 +96,72 @@ def _tree(pid: int) -> set[int]:
         return set()
 
 
-def _listener_address(pid: int, port: int) -> str | None:
-    """The address to dial for loopback ``port`` when ``pid``'s tree listens on it."""
+def _container_sid(pid: int) -> str:
+    """The AppContainer SID on ``pid``'s token, or ``""`` (not one, gone, or not Windows).
+
+    The MXC fence runs each launch in an AppContainer of its own, and Windows stamps that SID
+    on every process started inside it, whatever becomes of its parent.
+    """
+
+    if sys.platform != "win32" or pid <= 0:
+        return ""
+    import ctypes  # noqa: PLC0415
+    from ctypes import wintypes  # noqa: PLC0415
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    advapi32.OpenProcessToken.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
+    advapi32.GetTokenInformation.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
+    process = kernel32.OpenProcess(_QUERY_LIMITED, False, pid)
+    if not process:
+        return ""
+    token = wintypes.HANDLE()
+    try:
+        if not advapi32.OpenProcessToken(process, _TOKEN_QUERY, ctypes.byref(token)):
+            return ""
+        try:
+            buffer = ctypes.create_string_buffer(256)
+            size = wintypes.DWORD()
+            if not advapi32.GetTokenInformation(
+                token, _TOKEN_APP_CONTAINER_SID, buffer, len(buffer), ctypes.byref(size)
+            ):
+                return ""
+            sid = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p))[0]
+            text = wintypes.LPWSTR()
+            if not sid or not advapi32.ConvertSidToStringSidW(sid, ctypes.byref(text)):
+                return ""
+            try:
+                return text.value or ""
+            finally:
+                kernel32.LocalFree(text)
+        finally:
+            kernel32.CloseHandle(token)
+    finally:
+        kernel32.CloseHandle(process)
+
+
+def _listener_address(pid: int, port: int, container: str = "") -> str | None:
+    """The address to dial for loopback ``port`` when ``pid``'s launch listens on it.
+
+    The launch is ``pid``'s process tree, and, given its ``container`` SID, every process in
+    that AppContainer: a listener started by a launcher that has since exited (a detached port
+    forward) is no longer in the tree but stays in the container.
+    """
 
     import psutil  # noqa: PLC0415
 
@@ -103,7 +174,16 @@ def _listener_address(pid: int, port: int) -> str | None:
     for conn in table:
         if conn.status != psutil.CONN_LISTEN or not conn.laddr or conn.laddr.port != port:
             continue
-        if conn.pid in tree and _is_loopback(conn.laddr.ip):
+        if not _is_loopback(conn.laddr.ip):
+            continue
+        if conn.pid in tree or (container and conn.pid and _container_sid(conn.pid) == container):
+            if conn.pid not in tree:
+                logger.info(
+                    "fence loopback listener outside tree via=container port=%s pid=%s agent=%s",
+                    port,
+                    conn.pid,
+                    pid,
+                )
             ip = conn.laddr.ip
             if ipaddress.ip_address(ip.split("%", 1)[0]).is_unspecified:
                 return "::1" if ":" in ip else "127.0.0.1"
@@ -176,7 +256,9 @@ class LoopbackPublisher:
             conn.close()
             return
         conn.settimeout(None)
-        server = _Server(token=token, pid=pid, control=conn, child_id=child_id)
+        server = _Server(
+            token=token, pid=pid, control=conn, child_id=child_id, container=_container_sid(pid)
+        )
         key = secrets.token_hex(8)
         with self._lock:
             self._servers[key] = server
@@ -215,10 +297,11 @@ class LoopbackPublisher:
             # Another server's published address (e.g. a pvserver handed to a client).
             return None
         deadline = time.monotonic() + _LISTEN_WAIT_S
-        address = _listener_address(server.pid, port)
+        container = self._container(server)
+        address = _listener_address(server.pid, port, container)
         while address is None and time.monotonic() < deadline:
             time.sleep(0.2)
-            address = _listener_address(server.pid, port)
+            address = _listener_address(server.pid, port, container)
         if address is None:
             logger.info("fence loopback not published reason=not_listening port=%s", port)
             return None
@@ -328,10 +411,28 @@ class LoopbackPublisher:
             servers = list(self._servers.values())
         marked = [server for server in servers if child_id and server.child_id == child_id]
         for server in marked or servers:
-            address = _listener_address(server.pid, port)
+            address = _listener_address(server.pid, port, self._container(server))
             if address is not None:
                 return server, address
         return None
+
+    def _container(self, server: _Server) -> str:
+        """``server``'s container SID, when no other running server shares it (else ``""``).
+
+        A shared SID would no longer single out one server's launch, so its listeners are then
+        found through its process tree only.
+        """
+
+        if not server.container:
+            return ""
+        with self._lock:
+            others = [other for other in self._servers.values() if other is not server]
+        if any(other.container == server.container for other in others):
+            logger.warning(
+                "fence loopback container shared reason=ambiguous_container pid=%s", server.pid
+            )
+            return ""
+        return server.container
 
 
 _PUBLISHER: LoopbackPublisher | None = None
