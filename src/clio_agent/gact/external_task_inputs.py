@@ -189,17 +189,21 @@ def _record_reply(
         )
 
 
-def _request_meta(task: TaskSnapshot, key: str, raw: dict[str, Any]) -> dict[str, Any] | None:
-    """An input request's namespaced ``_meta``: its own, over its task reply's.
+def _request_meta(
+    task: TaskSnapshot, key: str, raw: dict[str, Any], context_meta: Any = None
+) -> dict[str, Any] | None:
+    """An input request's namespaced ``_meta``: its own, over its carrier's.
 
     A 2026-07-28 embedded request has no ``_meta``; a server carries typed data for it
-    on the ``tasks/get`` / status reply instead, kept on the task as ``metadata``.
+    on the ``tasks/get`` / status reply (kept on the task as ``metadata``) or, for a
+    plain call, on the ``InputRequiredResult`` (the input context's ``meta``,
+    :meth:`clio_agent.tools.task_client.TaskAwareClient._drive_input_required`).
     """
 
     from clio_agent.gact.elicitation_schema import namespaced_meta  # noqa: PLC0415
 
     own = (raw.get("params") or {}).get("_meta") if isinstance(raw, dict) else None
-    carried = None if key.startswith("inline:") else task.metadata
+    carried = context_meta if key.startswith("inline:") else task.metadata
     return namespaced_meta(own, carried)
 
 
@@ -457,7 +461,9 @@ async def _input(self: ExternalTasks, host: ExternalConnection, params: Any, req
                     translated = translate_form_schema(params.requested_schema)
                     problem = translated.degrade
                     metadata = build_form_metadata(
-                        translated, **correlation, meta=_request_meta(current, key, raw)
+                        translated,
+                        **correlation,
+                        meta=_request_meta(current, key, raw, getattr(request, "meta", None)),
                     )
                     definition = QuestionDefinition.model_validate(
                         {
