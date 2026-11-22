@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import json
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -153,7 +154,9 @@ def status_summary(row: dict[str, Any]) -> str:
         parts.append(f"{done} of {total}" if total is not None else f"{done} done")
     text = ", ".join(parts)
     message = str(row.get("message") or "").strip()
-    return f"{text}: {message}" if message else text
+    text = f"{text}: {message}" if message else text
+    notice = str(row.get("call_notice") or "").strip()
+    return f"{text}. {notice}" if notice else text
 
 
 def status(live: dict[str, Any], started: float) -> dict[str, Any]:
@@ -175,8 +178,37 @@ def status(live: dict[str, Any], started: float) -> dict[str, Any]:
         "output_bytes": os.path.getsize(path) if path and os.path.exists(path) else 0,
         **(live.get("last_progress") or {}),
     }
+    notices = dict(live.get("call_notices") or {})
+    if notices:  # a nested call's own notice (no reply for 30s, say)
+        row["call_notice"] = "; ".join(notices.values())
     row["summary"] = status_summary(row)
     return row
+
+
+def _call_notice(live: dict[str, Any]) -> Any:
+    """The task row's ``CallGrouper.notice``: show a nested call's message at once."""
+    lock = threading.Lock()
+
+    def notice(tool: str, message: str | None) -> None:
+        from clio_agent.gact.external_call_stall import STOP_HINT, TASK_STOP_HINT  # noqa: PLC0415
+
+        with lock:
+            notices = live.setdefault("call_notices", {})
+            if message is None:
+                notices.pop(tool, None)
+                return
+            message = message.replace(STOP_HINT, TASK_STOP_HINT)  # a task outlives the turn
+            if notices.get(tool) == message:
+                return
+            notices[tool] = message
+        loop, progress = live.get("loop"), live.get("progress")
+        if loop is None or progress is None:
+            return
+        row = status(live, float(live["started"]))
+        report = progress.report_progress(float(row["elapsed_s"]), None, json.dumps(row))
+        asyncio.run_coroutine_threadsafe(report, loop)  # never waits: may run on that loop
+
+    return notice
 
 
 def _run(
@@ -199,7 +231,7 @@ def _run(
     from clio_agent.tools.tool_observation import OBSERVATION_GROUP  # noqa: PLC0415
 
     task = BackgroundTask(handle, stop)
-    grouper = CallGrouper(asked=lambda: task.questions[0])
+    grouper = CallGrouper(asked=lambda: task.questions[0], notice=_call_notice(live))
     launch.prepared.context.run(_BACKGROUND_TASK.set, task)
     launch.prepared.context.run(OBSERVATION_GROUP.set, grouper)
     app = launch.prepared.context.run(gact_context.active_app)

@@ -228,15 +228,36 @@ async def _retire_superseded(self: ExternalTasks, current: ExternalConnection) -
 async def _retire_stale(
     self: ExternalTasks, host: ExternalConnection, reason: str, **why: str
 ) -> None:
-    """Retire ``host`` now when idle; a busy one is marked so its calls end typed."""
+    """Retire ``host`` now when idle; a busy one stops now so its calls end typed.
+
+    A busy stdio server is stopped here, before its replacement starts (MI1): a call
+    waiting on it (one whose reply never comes, such as an ssh that never exits) then
+    fails at once with ``reason``, instead of waiting on a server nothing routes to. A
+    remote (http) server is not ours to stop: its calls finish, and it retires after.
+    """
 
     idle = not (host.rpcs or host.calls or any(not d.done() for d in host.drivers.values()))
     detail = "".join(f" {key}={value}" for key, value in why.items())
     logger.warning("%s server=%s retired=%s%s", reason, host.cache_key[0], idle, detail)
     if idle:
         await retire_connection(self, host, shutdown=True)
-    else:  # its calls end with their server, and their records name why
-        host.superseded = True
+        return
+    host.superseded = True  # never leased again; its records name why
+    host.stop_reason = reason
+    client = host.client
+    if client is None or host.closing or "stdio" not in host.backend.transport.casefold():
+        return
+    logger.warning(
+        "external_mcp_connection_stopped_busy server=%s reason=%s rpcs=%d tasks=%d",
+        host.cache_key[0],
+        reason,
+        len(host.rpcs),
+        len(host.calls),
+    )
+    try:
+        await client.close()  # pending replies fail now; retire_connection finishes it
+    except Exception:
+        logger.exception("external_mcp_connection_stop_failed server=%s", host.cache_key[0])
 
 
 def watch_fleets(self: ExternalTasks) -> None:
@@ -295,9 +316,11 @@ async def retire_owned(self: ExternalTasks, owners: set[str], root: str, reason:
 
 
 def failure_reason(host: ExternalConnection, error: BaseException) -> str:
-    """The recorded reason of a failed submission; a superseded connection is typed."""
+    """The recorded reason of a failed submission; a stopped connection's is typed."""
     text = str(error) or type(error).__name__
-    return f"{EXTERNAL_MCP_CONNECTION_SUPERSEDED}: {text}" if host.superseded else text
+    if not host.superseded:
+        return text
+    return f"{host.stop_reason or EXTERNAL_MCP_CONNECTION_SUPERSEDED}: {text}"
 
 
 async def retire_connection(

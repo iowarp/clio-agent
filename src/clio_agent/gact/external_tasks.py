@@ -27,7 +27,12 @@ from clio_agent.arc.task_types import (
     TaskSnapshot,
     argument_digest,
 )
-from clio_agent.gact import context, external_task_connections, external_task_inputs
+from clio_agent.gact import (
+    context,
+    external_call_stall,
+    external_task_connections,
+    external_task_inputs,
+)
 from clio_agent.gact import view_call_ledger as view_calls
 from clio_agent.gact.external_read_only import LazyAdmission, skips_write_ahead
 from clio_agent.gact.native_work import now
@@ -51,6 +56,16 @@ from clio_agent.tools.task_receipt import accepted_result
 
 logger = logging.getLogger(__name__)
 
+#: A call's server was stopped (replaced, or its fleet closed) before it answered.
+SERVER_STOPPED_UNDER_CALL = "mcp_server_stopped_under_call"
+
+
+def _reply_text(reply: Any) -> str:
+    """The text of an error reply, bounded, for the typed reason."""
+    parts = getattr(reply, "content", None) or ()
+    text = " ".join(str(getattr(part, "text", "") or "") for part in parts).strip()
+    return text[:300] or "no reply"
+
 
 @dataclass
 class ExternalConnection:
@@ -71,6 +86,7 @@ class ExternalConnection:
     rpcs: set[asyncio.Task[Any]] = field(default_factory=set)
     closing: bool = False
     superseded: bool = False  # replaced while busy (EXTERNAL_MCP_CONNECTION_SUPERSEDED)
+    stop_reason: str = ""  # why it was stopped while busy (superseded or fleet closed)
     #: This connection's tool listing, read once per connected client (reset on reconnect).
     tools: dict[str, Any] | None = None
 
@@ -254,8 +270,14 @@ class ExternalTasks:
         auth_scope: str,
         progress_handler: Callable[[float, float | None, str | None], Awaitable[None]]
         | None = None,
+        stopped_under: Callable[[], bool] | None = None,
     ) -> Any:
-        """Confirm custody before one SDK tools/call; uncertain replies are never replayed."""
+        """Confirm custody before one SDK tools/call; uncertain replies are never replayed.
+
+        ``stopped_under`` says whether the server behind the namespace proxy was stopped
+        while the call ran: its error reply is then the typed ``server_stopped`` outcome,
+        not the transport's text.
+        """
         if self._closing:
             raise ValueError("External task observation is closing")
         public = dict(arguments)
@@ -264,7 +286,9 @@ class ExternalTasks:
             raise ValueError("Task description is invalid")
         host = await self.connection(server, configured, auth_scope)
         try:
-            return await self._call(host, name, public, description, progress_handler)
+            return await self._call(
+                host, name, public, description, progress_handler, stopped_under
+            )
         finally:
             self._schedule_retirement(host)
 
@@ -275,6 +299,7 @@ class ExternalTasks:
         public: dict[str, Any],
         description: str,
         progress_handler: Callable[[float, float | None, str | None], Awaitable[None]] | None,
+        stopped_under: Callable[[], bool] | None = None,
     ) -> Any:
         """Submit one call using its captured schema and trusted invocation identity."""
         assert host.client is not None
@@ -379,9 +404,12 @@ class ExternalTasks:
             submission.argument_digest,
         )
 
+        heard = [asyncio.get_running_loop().time()]  # sent, or last progress (stall watch)
+
         async def report_progress(
             progress: float, total: float | None, message: str | None
         ) -> None:
+            heard[0] = asyncio.get_running_loop().time()
             await self._record_or_defer(
                 "external-progress:" + handle,
                 admitted(partial(self._record_progress, handle, progress, total, message)),
@@ -409,10 +437,24 @@ class ExternalTasks:
         rpc = asyncio.create_task(submit())
         host.rpcs.add(rpc)
         rpc.add_done_callback(lambda finished: self._rpc_retired(host, finished))
-        stopped = False
+        stopped = stopped_mid_call = False
         while True:
             try:
-                reply = await asyncio.shield(rpc)
+                reply = await external_call_stall.await_reply(
+                    rpc,
+                    server=host.cache_key[0] or host.backend.server,
+                    tool=name,
+                    heard=heard,
+                    connected=lambda: host.client is not None and host.client.is_connected(),
+                    progress_handler=progress_handler,
+                )
+                if getattr(reply, "is_error", False) and stopped_under is not None:
+                    if stopped_under():  # its server stopped mid-call: no reply is coming
+                        stopped_mid_call = True
+                        raise ConnectionError(
+                            f"{SERVER_STOPPED_UNDER_CALL}: {name} was unanswered when its "
+                            f"server stopped ({_reply_text(reply)})"
+                        )
                 break
             except asyncio.CancelledError:
                 stopped = True
@@ -426,6 +468,39 @@ class ExternalTasks:
                 )
                 reason = external_task_connections.failure_reason(host, error)
                 failure = submission_failure(error)
+                cut_off = host.superseded or stopped_mid_call
+                if failure == "uncertain" and cut_off and lazy is not None:
+                    # A read changed nothing; its server stopped under it (replaced, or its
+                    # fleet closed). The caller gets the typed reason now and may retry.
+                    await self._record_or_defer(
+                        "external-call:" + handle,
+                        admitted(
+                            partial(
+                                view_calls.settle_cut_off,
+                                self.history,
+                                handle,
+                                reason,
+                                status="failed",
+                            )
+                        ),
+                    )
+                    return mcp_types.CallToolResult(
+                        content=[
+                            mcp_types.TextContent(
+                                type="text",
+                                text=json.dumps(
+                                    {
+                                        "handle": handle,
+                                        "accepted": False,
+                                        "acceptance": "server_stopped",
+                                        "error": reason,
+                                        "retry_safe": True,
+                                    }
+                                ),
+                            )
+                        ],
+                        is_error=True,
+                    )
                 if failure == "rejected":
                     await self._record_or_defer(
                         "external-rejected:" + handle,
@@ -460,6 +535,7 @@ class ExternalTasks:
                         "accepted": True if failure == "recording_unconfirmed" else None,
                         "acceptance": failure,
                         "retry_safe": False,
+                        **({"error": reason} if cut_off else {}),
                     }
                 )
         kept = recorded_results.ledger_reply(reply)  # a bounded record; the reply goes back whole
