@@ -35,6 +35,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 
 from clio_agent.errors import CancellationError
+from clio_agent.gact import view_pending
 from clio_agent.gact.mcp_app_label import view_label
 from clio_agent.gact.mcp_apps import (
     DISPLAY_MODES,
@@ -497,7 +498,7 @@ def register_mcp_app_reopen_routes(app: FastAPI) -> None:
         return {"live": app_is_live(app, sid, app_id, data_ref)}
 
     @app.post("/v1/sessions/{sid}/mcp-apps/reopen")
-    async def reopen_mcp_app(sid: str, request: Request) -> dict[str, Any]:
+    async def reopen_mcp_app(sid: str, request: Request) -> Any:
         if app.state.sessions.get(sid) is None:
             raise _session_not_found()
         body = await json_body(request, route="POST MCP App reopen")
@@ -510,11 +511,25 @@ def register_mcp_app_reopen_routes(app: FastAPI) -> None:
                 entry = call_entry(call)
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
-            return await replay_call(app, sid, entry, reopened_from="", save=save, request=request)
+            return await view_pending.respond(
+                app,
+                request,
+                sid,
+                "reopen",
+                lambda cancel: replay_call(
+                    app, sid, entry, reopened_from="", save=save, request=cancel
+                ),
+            )
         app_instance_id = str(body.get("app_instance_id") or "").strip()
         if not app_instance_id:
             raise HTTPException(status_code=422, detail="app_instance_id or call is required")
-        return await reopen_saved_call(app, sid, app_instance_id, request=request)
+        return await view_pending.respond(
+            app,
+            request,
+            sid,
+            "reopen",
+            lambda cancel: reopen_saved_call(app, sid, app_instance_id, request=cancel),
+        )
 
 
 __all__ = [
