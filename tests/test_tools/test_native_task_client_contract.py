@@ -62,10 +62,10 @@ def submission(
 
 def test_dependency_contract_is_pinned() -> None:
     """Any dependency upgrade must revisit the adapter's private and public contracts."""
-    assert version("fastmcp") == "4.1.2"
-    assert version("fastmcp-tasks") == "4.1.2"
-    assert version("mcp") == "2.2.0"
-    assert version("pydocket") == "0.26.2"
+    assert version("fastmcp") == "4.2.4"
+    assert version("fastmcp-tasks") == "4.2.4"
+    assert version("mcp") == "2.3.0"
+    assert version("pydocket") == "0.31.0"
 
 
 @pytest.mark.asyncio

@@ -26,11 +26,22 @@ EXPECTED_VERSION = "0.9.7"
 #: The release the install docs name: the latest stable one. A beta changes the
 #: package version only; users opt into it explicitly.
 DOCUMENTED_VERSION = "0.9.7"
+#: This tree's exact SDK roots (pyproject.toml), which the release workflow smokes
+#: against the wheel it builds from this tree.
 EXPECTED_DSPY = "dspy==3.4.0"
-EXPECTED_FASTMCP = "fastmcp==4.1.2"
-EXPECTED_FASTMCP_SLIM = "fastmcp-slim==4.1.2"
-EXPECTED_FASTMCP_TASKS = "fastmcp-tasks==4.1.2"
+EXPECTED_FASTMCP = "fastmcp==4.2.4"
+EXPECTED_FASTMCP_SLIM = "fastmcp-slim==4.2.4"
+EXPECTED_FASTMCP_TASKS = "fastmcp-tasks==4.2.4"
 EXPECTED_LITELLM = "litellm==1.102.2"
+#: The SDK roots of the published DOCUMENTED_VERSION. The install commands in the
+#: docs and the launcher's ``update`` (which installs the latest PyPI release) must
+#: name that release's own pins: a newer tree's roots cannot resolve against it. The
+#: release that publishes this tree moves these to the EXPECTED_* roots.
+DOCUMENTED_DSPY = "dspy==3.4.0"
+DOCUMENTED_FASTMCP = "fastmcp==4.1.2"
+DOCUMENTED_FASTMCP_SLIM = "fastmcp-slim==4.1.2"
+DOCUMENTED_FASTMCP_TASKS = "fastmcp-tasks==4.1.2"
+DOCUMENTED_MCP = "mcp==2.2.0"
 
 
 def _text(relative_path: str) -> str:
@@ -68,7 +79,9 @@ def test_release_installers_explicitly_root_intentional_prereleases() -> None:
             "'export', '--quiet', '--frozen', '--no-hashes', '--no-emit-project'",
             "$syncArgs = @('sync', '--locked', '--python', $py, '--extra', 'argonne', '--extra', 'flowcept')",
         ),
-        "install/clio": ('"dspy==3.4.0" "fastmcp==4.1.2" "fastmcp-slim==4.1.2"',),
+        "install/clio": (
+            f'"{DOCUMENTED_DSPY}" "{DOCUMENTED_FASTMCP}" "{DOCUMENTED_FASTMCP_SLIM}"',
+        ),
     }
     # The bundled-runtime builders root nothing themselves: they install
     # clio-agent[BUNDLE_EXTRAS] against the lock export, whose exact prerelease
@@ -296,10 +309,11 @@ def test_release_workflow_smokes_the_published_registry_tool() -> None:
 
     assert publish < registry_job < registry_install
     assert "needs: pypi" in workflow[registry_job:registry_install]
-    assert "--with fastmcp==4.1.2" in workflow[registry_install:]
-    assert "--with fastmcp-slim==4.1.2" in workflow[registry_install:]
-    assert "--with fastmcp-tasks==4.1.2" in workflow[registry_install:]
-    assert "assert dspy.__version__ == '3.4.0'" in workflow
+    assert f"--with {EXPECTED_FASTMCP}" in workflow[registry_install:]
+    assert f"--with {EXPECTED_FASTMCP_SLIM}" in workflow[registry_install:]
+    assert f"--with {EXPECTED_FASTMCP_TASKS}" in workflow[registry_install:]
+    dspy_version = EXPECTED_DSPY.removeprefix("dspy==")
+    assert f"assert dspy.__version__ == '{dspy_version}'" in workflow
     assert "assert hasattr(dspy, 'lm15')" in workflow
 
 
@@ -307,8 +321,9 @@ def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
     """Stable installation examples use the current release's exact SDK roots."""
 
     command = (
-        f"uv tool install --python 3.14 --with {EXPECTED_DSPY} --with {EXPECTED_FASTMCP} "
-        f"--with {EXPECTED_FASTMCP_TASKS} --with mcp==2.2.0 clio-agent=={DOCUMENTED_VERSION}"
+        f"uv tool install --python 3.14 --with {DOCUMENTED_DSPY} --with {DOCUMENTED_FASTMCP} "
+        f"--with {DOCUMENTED_FASTMCP_TASKS} --with {DOCUMENTED_MCP} "
+        f"clio-agent=={DOCUMENTED_VERSION}"
     )
     for relative_path in ("docs/INSTALL.md", "install/README.md"):
         contents = _text(relative_path)

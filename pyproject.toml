@@ -71,10 +71,10 @@ dependencies = [
     "clio-kit==2.12.7",  # Source-locked scientific MCP components and launcher.
     # web_fetch turns HTML pages into Markdown (clio_agent.search.fetch).
     "trafilatura>=1.12",
-    "fastmcp==4.1.2",  # stable native Tasks integration; adapter contracts are acceptance gates
-    "fastmcp-tasks==4.1.2",
-    "mcp==2.2.0",  # reviewed native Tasks wire/client contract
-    "pydocket==0.26.2",  # fastmcp-tasks 4.1 requires >=0.26; native execution owner
+    "fastmcp==4.2.4",  # stable native Tasks integration; adapter contracts are acceptance gates
+    "fastmcp-tasks==4.2.4",
+    "mcp==2.3.0",  # reviewed native Tasks wire/client contract
+    "pydocket==0.31.0",  # fastmcp-tasks 4.2.3+ requires >=0.29.1; native execution owner
     # Develop builds clio-schemas from git (the tool.uv.sources entry below); a
     # release pins the published PyPI version instead (release-clio).
     "clio-schemas==0.8.0b2",
@@ -406,7 +406,7 @@ also_copy = ["src/clio_agent/", "tests/"]
 # Override it so the mcp-2 core and the claude-code extra co-resolve; the
 # combination's import surface is test-verified, the live session smoke runs
 # at the phase gate. Drop this override when upstream supports mcp 2.
-override-dependencies = ["mcp==2.2.0"]
+override-dependencies = ["mcp==2.3.0"]
 
 [tool.uv.sources]
 # Develop pins the merged sibling commits so their unreleased work runs without a
