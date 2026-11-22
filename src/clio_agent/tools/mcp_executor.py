@@ -647,7 +647,7 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                 # No host holder on this loop (CLI, tests): this executor owns the connection.
                 logger.info("mcp_direct_namespace_unshared namespace=%s", namespace)
             if spec is not None and uses_shared_launcher_cache(spec):
-                async with aacquire_launcher_cache_lock(namespace):
+                async with aacquire_launcher_cache_lock(namespace, spec=spec):
                     client, ctx = await self._enter_namespace(namespace, proxy, ctx, spec, hold)
             else:
                 client, ctx = await self._enter_namespace(namespace, proxy, ctx, spec, hold)

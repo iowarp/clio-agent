@@ -106,11 +106,10 @@ def _list_one_namespace(
     resolves this namespace's override — contextvars propagate into
     ``asyncio.run``'s task on the thread that calls it, no cross-thread hop.
 
-    A cold spawn onto the SHARED dedicated uv cache first acquires the
-    bounded launcher-cache lock (#1232 pt 3) — serializing just the spawn
-    step against sibling COLD spawns from this same concurrent pass, never
-    the whole connect — and raises typed on a wedged lock instead of
-    stalling this namespace (and, pre-#1232-pt-2, every namespace after it).
+    A cold spawn onto the SHARED dedicated uv cache first acquires the launcher-cache
+    lock of its own uv environment (#1232 pt 3): only a spawn building the SAME
+    environment queues behind it, so independent servers list concurrently. A wedged
+    lock raises typed instead of stalling this namespace.
 
     The connect + listing itself waits while the server's own process tree works and
     raises the typed ``NoProgressTimeout`` once it stops progressing (or at
@@ -140,7 +139,7 @@ def _list_one_namespace(
         try:
             with probe_server_context(namespace, timeout_retries=spec.probe_timeout_retries):
                 if uses_shared_launcher_cache(spec):
-                    with acquire_launcher_cache_lock(namespace):
+                    with acquire_launcher_cache_lock(namespace, spec=spec):
                         listed = _list_declared_tools(spec, attempt_key=attempt_key)
                 else:
                     listed = _list_declared_tools(spec, attempt_key=attempt_key)

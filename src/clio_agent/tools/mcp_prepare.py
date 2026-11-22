@@ -50,6 +50,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -883,7 +884,21 @@ def _run_provision(
         raise PrepareError(
             _failure_reason(text), f"{label} exited {process.returncode}: {text[-1500:]}"
         )
+    if phases := _UV_PHASE_LINE.findall(stdout):
+        trace.event(
+            "TOOLS",
+            "mcp_prepare_uv_phases namespace=%s seconds=%.1f %s",
+            namespace,
+            time.monotonic() - started,
+            "; ".join(line.strip() for line in phases),
+        )
     return None
+
+
+#: uv's own per-phase summary lines (resolve, git fetch, download/build, venv install).
+_UV_PHASE_LINE = re.compile(
+    r"^\s*(?:Resolved|Updated|Prepared|Built|Installed|Downloaded) .*$", re.MULTILINE
+)
 
 
 @contextmanager
@@ -967,7 +982,7 @@ def provision(namespace: str, spec: Any, *, cwd: str | None = None) -> str:
     try:
         with _owned_environment(plan.env.get(_ENV_VAR, "")):
             if uses_shared_launcher_cache(spec):
-                with acquire_launcher_cache_lock(namespace):
+                with acquire_launcher_cache_lock(namespace, spec=spec):
                     result = _run_provision(namespace, plan, env, work_dir)
             else:
                 result = _run_provision(namespace, plan, env, work_dir)
