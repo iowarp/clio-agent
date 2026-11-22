@@ -193,6 +193,69 @@ def test_tmpdir_points_at_the_session_folder_for_the_kernel(root: Path, workspac
     assert shell_environment(workspace).get("TMPDIR") != str(mine)  # off-session: unchanged
 
 
+@pytest.fixture
+def windows_temp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Act as Windows with a short system temp folder."""
+
+    temp = tmp_path / "t"
+    temp.mkdir()
+    monkeypatch.setattr(session_scratch, "_windows", lambda: True)
+    monkeypatch.setattr(session_scratch.tempfile, "gettempdir", lambda: str(temp))
+    return temp
+
+
+def test_a_deep_uv_cache_gets_a_short_owned_stand_in_on_windows(
+    tmp_path: Path, windows_temp: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """uv imports ``--with`` packages from its cache, and the DLL loader stops at MAX_PATH."""
+
+    cache = tmp_path.joinpath(*(["d" * 20] * 4), "sess_deep", "uv-cache")
+    short = session_scratch.short_uv_cache(cache)
+    assert short.parent == windows_temp / "clio-u" and short.is_dir()
+    assert (short / "owner.txt").read_text(encoding="utf-8").strip() == str(cache)
+    assert session_scratch.short_uv_cache(cache) == short  # reused, not duplicated
+    other = session_scratch.short_uv_cache(cache.parent.parent / "sess_other" / "uv-cache")
+    assert other not in (short, cache)  # each session keeps its own cache
+    monkeypatch.setenv("CLIO_ALLOW_SYSTEM_TEMP", "0")
+    assert session_scratch.short_uv_cache(cache) == cache  # temp not writable: stays put
+    monkeypatch.setattr(session_scratch, "_windows", lambda: False)
+    monkeypatch.delenv("CLIO_ALLOW_SYSTEM_TEMP")
+    assert session_scratch.short_uv_cache(cache) == cache
+
+
+def test_a_short_uv_cache_never_takes_a_folder_it_does_not_own(
+    tmp_path: Path, windows_temp: Path
+) -> None:
+    cache = tmp_path.joinpath(*(["e" * 20] * 4), "sess_squat", "uv-cache")
+    squatted = session_scratch._short_uv_cache_path(cache)
+    squatted.mkdir(parents=True)
+    (squatted / "theirs").write_text("x", encoding="utf-8")
+    assert session_scratch.short_uv_cache(cache) == cache
+    session_scratch._remove_short_uv_cache(cache)
+    assert (squatted / "theirs").is_file()  # someone else's folder is left alone
+
+
+def test_deleting_a_session_removes_its_short_uv_cache(root: Path, windows_temp: Path) -> None:
+    sid = "sess_" + "b" * 60
+    folder = session_scratch.session_scratch_dir(sid)
+    short = session_scratch.short_uv_cache(folder / "uv-cache")
+    assert short.parent == windows_temp / "clio-u"
+    (short / "archive-v0").mkdir()
+    assert session_scratch.remove_session_scratch(sid, why="session_deleted")
+    assert not short.exists()
+
+
+def test_a_session_shell_uses_the_short_uv_cache(
+    root: Path, workspace: Path, windows_temp: Path
+) -> None:
+    sid = "sess_" + "c" * 60
+    with bound(sid):
+        environment = shell_environment(workspace)
+    short = Path(environment["UV_CACHE_DIR"])
+    assert short.parent == windows_temp / "clio-u"
+    assert (short / "owner.txt").read_text(encoding="utf-8").strip().endswith("uv-cache")
+
+
 def test_a_kernel_starts_with_its_own_session_environment(
     workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
