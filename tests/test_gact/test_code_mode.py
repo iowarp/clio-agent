@@ -304,12 +304,13 @@ class TestKernel:
         assert not hasattr(tool_module, "call_timeout_s")
         assert not hasattr(dispatch_module, "max_nested_calls")
 
-    def test_the_output_limit_reaches_the_kernel(self, workspace: Path, monkeypatch: Any) -> None:
-        # code.max_output_bytes is resolved where the kernel starts and passed to it.
-        monkeypatch.setenv("CLIO_CODE_MAX_OUTPUT_BYTES", "10")
-        outcome = _run("print('x' * 100)", scope="limited")
+    def test_the_kernel_returns_the_whole_output(self, workspace: Path) -> None:
+        """All of a script's output reaches the host (and clio-core), past the old 2 MB cut.
+        SABOTAGE: read only the capture's first 2 MB -> red."""
+        assert not hasattr(kernels, "max_output_bytes")
+        outcome = _run("print('x' * 2_500_000)", scope="whole")
         assert outcome["status"] == "completed", outcome
-        assert outcome["output"].startswith("x" * 10 + "\n[output cut at 10 of 101 bytes]")
+        assert outcome["output"].rstrip("\r\n") == "x" * 2_500_000
 
     def test_a_replaced_kernel_tells_the_model_its_variables_are_gone(
         self, workspace: Path

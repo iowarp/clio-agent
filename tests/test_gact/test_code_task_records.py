@@ -1,4 +1,5 @@
-"""A background script's repeated calls are one counted record per window (CT5).
+"""A background script's repeated calls are one counted record per window (CT5), holding
+every call's input and result.
 
 Through the real observer choke point (``notify_tool_observer``) with a recording observer:
 what reaches the observer is what clio-core would store.
@@ -53,6 +54,12 @@ def test_repeated_successful_calls_are_one_counted_record() -> None:
     assert name == "update_a2ui_data_model" and error is None
     assert args["value"] == 4 and result == {"ok": {"value": 4}}
     assert args["_clio_repeat"]["count"] == 5
+    # SABOTAGE: drop ``calls`` -> four calls' inputs and results never reach clio-core.
+    earlier = args["_clio_repeat"]["calls"]
+    assert [(c["args"], c["result"]) for c in earlier] == [
+        ({"value": i}, {"ok": {"value": i}}) for i in range(4)
+    ]
+    assert all(isinstance(c["at"], str) for c in earlier)
 
 
 def test_an_error_is_recorded_at_once_and_ends_the_held_run() -> None:

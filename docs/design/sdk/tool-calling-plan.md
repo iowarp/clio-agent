@@ -232,7 +232,7 @@ Tunables and policy lists resolve through `clio_agent.conf` with a documented ke
 | Kind | Values now in code | Key |
 | --- | --- | --- |
 | Concurrency | `tool_concurrency.WORKERS` (32) | `tools.call_workers` |
-| `run_code` | script size (`_CODE_CHARS`), kernel output (`OUTPUT_LIMIT`), kernel start timeout, poll interval, index line length (a stub's `help()` shows the whole description, `5955bf61`) | `code.max_script_chars`, `code.max_output_bytes`, `code.start_timeout_s`, `code.poll_s`, `code.index_line_chars` |
+| `run_code` | script size (`_CODE_CHARS`), kernel start timeout, poll interval, index line length (a stub's `help()` shows the whole description, `5955bf61`). The kernel returns a script's whole output: the model sees it bounded by the result room and clio-core records it whole | `code.max_script_chars`, `code.start_timeout_s`, `code.poll_s`, `code.index_line_chars` |
 | Policy lists | `NOT_IN_SCRIPTS`; never-deferred tools and prefixes and built-in servers; tools whose results are never bounded (`FULL_RESULT_TOOLS`); postures that cover a script's nested calls (`COVERING_POSTURES`) | `tools.callers`; `tools.never_defer`; `tools.full_result`; `code.covering_postures` |
 | Disclosure | `search_tools` default and maximum results, names listed on a miss | `tools.search_limit`, `tools.search_max`, `tools.search_miss_names` |
 | File tools | read window lines, line length, whole-file count size, ripgrep size cap, search timeout and line length | `fs.read_lines`, `fs.read_line_chars`, `fs.count_bytes`, `fs.search_max_bytes`, `fs.search_timeout_s`, `fs.search_line_chars` |

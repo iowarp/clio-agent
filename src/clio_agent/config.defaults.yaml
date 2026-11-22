@@ -375,16 +375,12 @@ limits.shell_max_timeout_s: 0.0
 # the model is shown (tools.result_share).
 limits.tool_result_chars: 12000
 
-# CLIO_TOOL_RESULT_RECORD_BYTES  (int)  <- src/clio_agent/tools/recorded_results.py
-# Largest tool result, in JSON bytes, a call's record keeps inline (at least
-# 1024); past it the record keeps the result's head and the whole result in
-# a file.
-limits.tool_result_record_bytes: 524288
-
 # CLIO_TOOL_STRUCTURED_BYTES  (int)  <- src/clio_agent/gact/structured_wire_bound.py
-# Byte bound on a tool result's structured content in the transcript and
-# trace (a script still receives the whole value); larger payloads are
-# recorded as an envelope with reason structured_content_over_wire_cap.
+# Byte bound on the preview of a tool result's structured content on the
+# wire and in the transcript row (a script still receives the whole value);
+# larger payloads show an envelope with reason
+# structured_content_over_wire_cap. The call's tool.call.completed event in
+# clio-core keeps the whole value.
 limits.tool_structured_bytes: 262144
 
 # CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS  (list)  <- src/clio_agent/agent.py
@@ -1483,11 +1479,6 @@ code.idle_minutes: "30.0"
 # Longest line of the tools index in run_code's description; a server with
 # more tools is listed in part with a count of the rest.
 code.index_line_chars: 320
-
-# CLIO_CODE_MAX_OUTPUT_BYTES  (int)  <- src/clio_agent/gact/code_mode/kernels.py
-# Bytes of one run_code script's printed output the kernel returns; the rest
-# is cut with a note. Read when a kernel starts.
-code.max_output_bytes: 2000000
 
 # CLIO_CODE_MAX_SCRIPT_CHARS  (int)  <- src/clio_agent/gact/code_mode/grants.py
 # Characters of a run_code script that a permission question shows the

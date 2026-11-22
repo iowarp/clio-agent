@@ -48,9 +48,6 @@ import traceback
 import types
 from typing import Any, cast
 
-#: How much of one script's output the kernel returns (the host bounds it further) when
-#: the host passes no limit; the host passes ``code.max_output_bytes`` as the first argument.
-OUTPUT_LIMIT = 2_000_000
 _FLAGS = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
 
 
@@ -284,20 +281,17 @@ def _restore(saved: tuple[int, int]) -> None:
     os.close(saved[1])
 
 
-def _read_output(capture: Any, limit: int = OUTPUT_LIMIT, *, keep: bool = False) -> str:
-    """The script's output, its first ``limit`` bytes; a kept file (a background script's
-    output file) is left whole for the person and the agent to read."""
+def _read_output(capture: Any, *, keep: bool = False) -> str:
+    """The script's whole output (the model is shown a bounded view of it by the host,
+    and clio-core records it whole); a kept file (a background script's output file) is
+    left in place for the person and the agent to read."""
     capture.flush()
-    size = capture.seek(0, os.SEEK_END)
     capture.seek(0)
-    data = capture.read(limit)
+    data = capture.read()
     if not keep:
         capture.seek(0)
         capture.truncate()
-    text = data.decode("utf-8", errors="replace")
-    if size > limit:
-        text += f"\n[output cut at {limit:,} of {size:,} bytes]"
-    return text
+    return data.decode("utf-8", errors="replace")
 
 
 def _script_traceback(exc: BaseException) -> str:
@@ -316,7 +310,6 @@ def _execute(
     code: str,
     capture: Any,
     host: _Host | None = None,
-    output_limit: int = OUTPUT_LIMIT,
     *,
     keep: bool = False,
 ) -> dict[str, Any]:
@@ -340,7 +333,7 @@ def _execute(
         if host is not None:
             host.forget_settled()
         _restore(saved)
-    output = _read_output(capture, output_limit, keep=keep)
+    output = _read_output(capture, keep=keep)
     if stopped:
         output += (
             f"\n[{stopped} task{'s' if stopped != 1 else ''} this script started "
@@ -351,7 +344,6 @@ def _execute(
 
 def main() -> None:
     """Serve scripts until stdin closes."""
-    output_limit = int(sys.argv[1]) if len(sys.argv) > 1 else OUTPUT_LIMIT
     protocol = io.TextIOWrapper(os.fdopen(os.dup(1), "wb"), encoding="utf-8")
     host = _Host(protocol)
     requests = os.fdopen(os.dup(0), "r", encoding="utf-8")
@@ -389,9 +381,9 @@ def main() -> None:
             path = str(message.get("output_path") or "")
             if path:  # a background script: output goes to its file as it is written
                 with open(path, "ab+") as written:
-                    done = _execute(loop, namespace, code, written, host, output_limit, keep=True)
+                    done = _execute(loop, namespace, code, written, host, keep=True)
             else:
-                done = _execute(loop, namespace, code, capture, host, output_limit)
+                done = _execute(loop, namespace, code, capture, host)
             host.send({"type": "done", "id": message.get("id"), **done})
 
 

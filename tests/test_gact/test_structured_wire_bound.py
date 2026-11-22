@@ -1,4 +1,4 @@
-"""The wire and trace copies of a tool's structured content are bounded with a typed reason."""
+"""The wire copies of a tool's structured content are previews; clio-core keeps it whole."""
 
 from __future__ import annotations
 
@@ -7,8 +7,10 @@ import base64
 from clio_agent.gact.structured_wire_bound import (
     BOUNDED_MARKER,
     STRUCTURED_CONTENT_OVER_WIRE_CAP_REASON,
+    WHOLE_VALUE_EVENT,
     bounded_result_structured,
     bounded_structured_content,
+    whole_structured,
     wire_structured,
 )
 
@@ -57,3 +59,19 @@ def test_wire_structured_prefers_the_declared_payload(monkeypatch) -> None:
     assert wired["structuredContent"][BOUNDED_MARKER] is True
     structured, _ = wire_structured(None, result)
     assert structured[BOUNDED_MARKER] is True
+
+
+def test_the_clio_core_event_keeps_every_previewed_value_whole(monkeypatch) -> None:
+    """SABOTAGE: build the event from the wire result and the array is lost from clio-core."""
+    monkeypatch.setenv("CLIO_TOOL_STRUCTURED_BYTES", "1024")
+    array = _array_payload(4096)
+    whole = {"content": [{"type": "text", "text": "summary"}], "structuredContent": array}
+    _, wired = wire_structured(None, whole)
+    assert wired["structuredContent"]["whole_value_in"] == WHOLE_VALUE_EVENT
+    event = whole_structured({"call_id": "c1"}, None, whole, wired)
+    assert event["result"]["structuredContent"] is array and event["call_id"] == "c1"
+    declared = _array_payload(4096)
+    event = whole_structured({}, declared, {"text": "ok"}, {"text": "ok"})
+    assert event["structured_content"] is declared and event["result"] == {"text": "ok"}
+    small = {"structuredContent": {"n": 1}}
+    assert whole_structured({}, {"n": 1}, small, small) == {"result": small}

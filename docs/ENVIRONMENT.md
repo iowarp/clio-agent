@@ -115,7 +115,6 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_CODE_COVERING_POSTURES` | `code.covering_postures` | list | `auto-edits,ai-review,spotter-ai,spotter-watcher` | `src/clio_agent/gact/code_mode/grants.py` |
 | `CLIO_CODE_IDLE_MINUTES` | `code.idle_minutes` | str | `30.0` | `src/clio_agent/gact/code_mode/kernels.py` |
 | `CLIO_CODE_INDEX_LINE_CHARS` | `code.index_line_chars` | int | `320` | `src/clio_agent/gact/code_mode/stubs.py` |
-| `CLIO_CODE_MAX_OUTPUT_BYTES` | `code.max_output_bytes` | int | `2000000` | `src/clio_agent/gact/code_mode/kernels.py` |
 | `CLIO_CODE_MAX_SCRIPT_CHARS` | `code.max_script_chars` | int | `20000` | `src/clio_agent/gact/code_mode/grants.py` |
 | `CLIO_CODE_NOTIFY_MIN_INTERVAL_S` | `code.notify_min_interval_s` | str | `30.0` | `src/clio_agent/gact/code_task_reporting.py` |
 | `CLIO_CODE_POLL_S` | `code.poll_s` | float | `0.25` | `src/clio_agent/gact/code_mode/tool.py` |
@@ -393,7 +392,6 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_TOOLS_WITHHELD` | `tools.withheld` | list | _(unset)_ | `src/clio_agent/gact/agents/native_tool_registry.py` |
 | `CLIO_TOOLS_WRITE_AHEAD` | `tools.write_ahead` | str | `non_read_only` | `src/clio_agent/gact/external_read_only.py` |
 | `CLIO_TOOL_RESULT_CHARS` | `limits.tool_result_chars` | int | `12000` | `src/clio_agent/gact/assignment_evidence.py` |
-| `CLIO_TOOL_RESULT_RECORD_BYTES` | `limits.tool_result_record_bytes` | int | `524288` | `src/clio_agent/tools/recorded_results.py` |
 | `CLIO_TOOL_RESULT_SHARE` | `tools.result_share` | float | `0.125` | `src/clio_agent/tools/result_room.py` |
 | `CLIO_TOOL_STRUCTURED_BYTES` | `limits.tool_structured_bytes` | int | `262144` | `src/clio_agent/gact/structured_wire_bound.py` |
 | `CLIO_TRANSCRIPT_FILE` | `transcript.file` | bool | `true` | `src/clio_agent/gact/transcript_file.py` |
