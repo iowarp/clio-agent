@@ -286,26 +286,84 @@ does not change it (reported upstream, `clio-core-2.5-feedback.md` 3.10). The #1
 latency failure (a store call past 15 s) did not reproduce in 30 minutes on either.
 
 
-ADOPTION_RESULTS
+### 8.1 New 2.5.0 capabilities in CLIO's path, on and off
+
+Each adoption is an opt-in flag, off by default; the table is
+`scripts/bench/adoption_bench.py` (each mode on a fresh home, one run) and a 10-minute
+soak per mode (`soak.py`, 4 clients).
+
+| Measure (2.5.0, one run) | default (async) | `blob_calls=sync` | sync + `shm_cache=md_only` | async + `shm_cache=md_only` |
+|---|---|---|---|---|
+| Client connected to the shm cache | no | no | yes | yes |
+| Cold start + attach (ms) | 1162 | 1138 | 1194 | 1172 |
+| Idle daemon CPU (cores) | 0.0373 | 0.041 | 0.039 | 0.039 |
+| Idle daemon shared memory (MiB) | 3.6 | 3.6 | 131.6 | 131.6 |
+| 1K put p50 / p99 (ms) | 0.46 / 1.88 | 0.47 / 2.70 | 0.44 / 2.07 | 0.49 / 2.03 |
+| 1K get p50 / p99 (ms) | 0.09 / 0.19 | 0.09 / 0.20 | 0.09 / 0.81 | 0.10 / 0.77 |
+| 4K put p50 / p99 (ms) | 0.50 / 2.52 | 0.54 / 2.27 | 0.52 / 2.22 | 0.60 / 2.64 |
+| 4K get p50 / p99 (ms) | 0.10 / 0.38 | 0.09 / 0.20 | 0.11 / 0.47 | 0.12 / 0.68 |
+| 64K put p50 / p99 (ms) | 0.83 / 5.18 | 0.81 / 5.32 | 0.82 / 5.60 | 0.85 / 5.22 |
+| 64K get p50 / p99 (ms) | 0.39 / 1.32 | 0.41 / 1.41 | 0.41 / 0.98 | 0.44 / 1.41 |
+| 1M put p50 / p99 (ms) | 6.37 / 15.61 | 7.48 / 17.00 | 6.56 / 19.08 | 6.93 / 15.90 |
+| 1M get p50 / p99 (ms) | 4.47 / 9.57 | 5.05 / 10.22 | 4.52 / 8.81 | 4.66 / 9.45 |
+| 16M put p50 / p99 (ms) | 109.38 / 128.87 | 114.42 / 146.22 | 114.41 / 133.44 | 115.28 / 131.26 |
+| 16M get p50 / p99 (ms) | 79.50 / 101.55 | 82.21 / 115.78 | 76.78 / 111.36 | 76.74 / 128.72 |
+| 4K x 1 clients: put / get ops/s | 1510 / 7638 | 1143 / 9097 | 1576 / 8503 | 1387 / 7944 |
+| 4K x 4 clients: put / get ops/s | 1082 / 3628 | 1028 / 4174 | 1066 / 7451 | 1013 / 4875 |
+| 4K x 16 clients: put / get ops/s | 811 / 3150 | 790 / 1896 | 689 / 2182 | 624 / 1144 |
+| 1M x 1 clients: put / get ops/s | 116 / 180 | 122 / 181 | 114 / 190 | 105 / 171 |
+| 1M x 4 clients: put / get ops/s | 236 / 388 | 224 / 338 | 204 / 345 | 207 / 365 |
+| 1M x 16 clients: put / get ops/s | 199 / 290 | 156 / 272 | 189 / 237 | 189 / 220 |
+| Errors | 0 | 0 | 0 | 0 |
+| Daemon RSS peak during the bench (MiB) | 232.2 | 209.1 | 331.6 | 331.2 |
+
+| 10-min soak, 4 clients | Ops | p50 / p99 / max (ms) | Over 1 s | Errors | Daemon RSS end (MiB) |
+|---|---|---|---|---|---|
+| default (async) | 237,190 | 6.6 / 53.9 / 1065 | 4 | 0 | 3365 |
+| `blob_calls=sync` | 231,686 | 6.8 / 55.3 / 1003 | 1 | 0 | 3354 |
+| sync + `shm_cache=md_only` | 196,093 | 9.2 / 53.2 / 1260 | 8 | 0 | 3296 |
+
+**Verdict: neither becomes a default.** The synchronous calls are flat to slightly worse
+at 1-4 clients and worse at 16 (4 KiB gets 1,896 vs 3,150 ops/s), give up CLIO's stall
+bound, and lose 2% of soak throughput. The metadata-only cache doubles 4 KiB gets at 4
+clients (its size-probe hit), but is worse at 16 clients, costs 128 MB of shared memory
+from start and 17% of soak throughput. Both stay as tested opt-ins. Durability with the
+cache on: 200 of 200 records across a clean restart (and, per the feature catalogue on
+`claude/clio-core-2.5-features`, 3,000 of 3,000 across SIGKILL).
+
+Declined, with reasons:
+
+- **shm cache data mode, write-back cache:** acknowledge a put before the core's WAL;
+  data mode lost 2,280-2,647 of 3,000 acknowledged puts on SIGKILL (catalogue, live);
+  no Python barrier (`SyncTag` unbound).
+- **`AsyncPutBlobIfVersion` / `AsyncGetBlobVersioned`:** not new (2.4.1), single-blob and
+  never truncating, while CLIO's conditional writes are multi-blob groups (#1341).
+- **Telemetry (`PollTelemetryLog`):** not new, records completed ops only, cannot tell a
+  stalled daemon from an idle one (#1577 needs clio-core#1112).
+- **`client_data_segment_size`:** measured (feedback 3.8): it bounds the largest put
+  (64MB: a 48 MB record fails with rc 21), so the default stays until CLIO's largest
+  record is known or clio-core streams large puts.
+
+Adopted without a flag (correctness and safety on 2.5.0): durability gate before every
+spawn and a required `metadata_log_path`; `durability: persistent` in the fresh seed;
+rc 28 typed; dashboard forced off; stripe settings dropped; anchored tag regex.
+
 
 
 ## 9. Knobs and follow-ups for CLIO
 
-1. **`CLIO_CLIENT_DATA_SEGMENT_SIZE`** (or `runtime.client_data_segment_size`): every
-   CLIO process that attaches maps 512 MB + 32 MB; on Windows that is committed memory.
-   Size it from CLIO's largest single put (segments are chunked) after a large-artifact
-   put test; not changed here.
-2. **Map rc 28** (device ENOSPC) to a typed disk-full reason in the put/lost-write path
-   instead of a generic native refusal.
-3. **State `durability: persistent`** in CLIO's freshly seeded template too (done here
-   only for upgraded older seeds), so a stray volatile device is a loud rc 16 instead
-   of a silent WAL-off core. Growth's `_before_clio_upgrades` already recognizes the
-   line.
-4. **Shm cache:** evaluate composing `core_shm_cache_writethru` in `md_only` mode
-   behind a flag, with a soak; do not compose the write-back cache without a
-   durability design.
-5. Optional: record `clio-run --version` in `clio_core_daemon_version.py` rather than
-   package metadata alone.
+| Knob / follow-up | Status |
+|---|---|
+| `arc.clio_core.blob_calls` (`async`/`sync`) | Added, off; measured (§8.1) |
+| `arc.cte.shm_cache` (`off`/`md_only`) | Added, off; measured (§8.1) |
+| rc 28 typed `clio_core_device_full` | Done |
+| `durability: persistent` in the fresh seed | Done |
+| `client_data_segment_size` | Measured; default kept until CLIO's largest record is known (§8.1) |
+| `metadata_segment_size` (512 MB) | Not lowered: the 2.4 shm metadata mirror is gone in 2.5.0 (catalogue: < 4 MB resident), so the cap is now loose; lower after a large-store measurement |
+| `clio-run --version` in the daemon version record | Not done |
+| Runaway-WAL health row (#1312 kError line) | Not done |
+| `clio-run stop --grace-period` | Not done |
+| Async forms for `GetContainedBlobs` / `SemanticSearch` | Not done (`AsyncGetContainedBlobs`, `AsyncSemanticSearch` exist) |
 
 ## 10. clio-agent issues against 2.5.0
 

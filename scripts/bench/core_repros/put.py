@@ -17,5 +17,5 @@ ok = [
     for i in range(n)
     if cl.AsyncPutBlob(tid, f"k{i}", (f"{i:08d}" * sz)[:sz].encode()).wait(30) == 0
 ]
-json.dump([ok, sz], open(os.path.join(os.environ["H"], "ok.json"), "w"))
+json.dump([ok, sz], open(os.environ.get("OKJSON") or os.path.join(os.environ["H"], "ok.json"), "w"))
 print("acked", len(ok), "of", n)

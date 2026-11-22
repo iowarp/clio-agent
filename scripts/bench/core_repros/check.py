@@ -9,7 +9,7 @@ import clio_cte_core_ext as c  # isort:skip
 c.clio_init(c.RuntimeMode.kClient, False)
 c.initialize_cte(os.environ["CLIO_SERVER_CONF"], c.PoolQuery.Dynamic())
 t = c.Tag("t")
-ok, sz = json.load(open(os.path.join(os.environ["H"], "ok.json")))
+ok, sz = json.load(open(os.environ.get("OKJSON") or os.path.join(os.environ["H"], "ok.json")))
 names = set(t.GetContainedBlobs())
 good = wrong = unreadable = missing = 0
 for i in ok:

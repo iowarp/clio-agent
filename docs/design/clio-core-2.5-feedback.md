@@ -30,7 +30,8 @@ behaviour at v2.5.0 and a minimal reproduction. Source references are `file:line
 | Metadata log: ENOSPC tears it silently | **Not met** | 4.2 |
 | Metadata log: alloc log vs metadata after a torn delete | **Not met** | 4.3 |
 | Metadata amplification for small appends | **Not met** (unchanged: 34 bytes of log per data byte) | 4.4 |
-| New in 2.5.0, found during the upgrade | 6 items | 5 |
+| Daemon memory grows ~6 KiB per stored blob (clio-agent#1846) | **Not met** (unchanged since 2.4.1) | 3.10 |
+| New in 2.5.0, found during the upgrade | 10 items | 5 |
 
 ## 2. What 2.5.0 fixed or improved for CLIO
 
@@ -162,7 +163,21 @@ Verified live (listening sockets of a CLIO daemon with `CLIO_BIND_ADDR=127.0.0.1
 don't commit on Windows and grow on demand are not done; the commit message says so.
 CLIO could not measure the Defender scan from a Linux container.
 
-SEGMENT_SECTION
+Live (`scripts/bench/client_segment_probe.py`, CLIO's store, one client then four
+writers of 4,000 x 64 KiB each): the segment bounds the largest single put, and a put
+that does not fit fails with the generic **rc 21**. CLIO's framing inflates a record
+about 1.65x on the wire (a "48M" record is an 83 MB put).
+
+| `CLIO_CLIENT_DATA_SEGMENT_SIZE` | Largest CLIO record that worked | Daemon `RssShmem`, 4 writers |
+|---|---|---|
+| 512MB (default) | 200 MB (330 MB put) | 366 MB |
+| 128MB | 60 MB; 100 MB fails rc 21 | 113 MB |
+| 64MB | 16 MB; 48 MB fails rc 21 | 34 MB |
+
+CLIO therefore keeps the default for now: a smaller segment would bound memory but turn
+a large record into a lost write. **Request.** Stream a put larger than the client
+segment through it (in segment-sized pieces), or at least fail it with a distinct return
+code that names the limit, so a client can split it.
 
 **Request (unchanged).** Reserve, don't commit, on Windows; grow segments on demand.
 
@@ -253,9 +268,10 @@ result. 33fedf5d's rc 28 covers the data path only.
 the put/delete with rc 28 (and log at kError), and do not acknowledge a mutation whose
 WAL record did not land.
 
-**Reproduction.** Put `metadata_log_path` on a 3 MB tmpfs, keep the data tier on a disk
-with space, and put from four threads until the tmpfs is full. Every `AsyncPutBlob`
-returns 0, the daemon logs nothing, and `metadata.log.blob.0` ends mid-record.
+**Reproduction, live on 2.5.0** (`scripts/bench/core_repros/run.sh <venv> <dir>
+full_wal`, root for the tmpfs, plain clio-core): store on a 6 MB tmpfs filled with a
+filler file, 150 puts of 16 KiB: **150 of 150 return 0 and the daemon log names no
+error**. Remove the filler and restart: 25 good, 1 unreadable, **124 missing**.
 
 ### 4.3 After a torn delete, the allocation log and the metadata disagree: not met
 
@@ -342,7 +358,39 @@ Live: one record, clean stop, restart, get: kept on 2.4.1, **lost** on 2.5.0, ke
 2.5.0 with `durability: persistent`. **Request:** log at kWarning at start when the
 durability is inferred volatile while a durable device is configured.
 
-### 5.6 Smaller items
+### 5.6 A volatile start deletes the existing store
+
+Since 2.5.0 a core that resolves volatile (an unlabelled tier, or one RAM data tier
+beside a file tier) also **deletes** the existing snapshot and metadata-log shards at
+start (`core_runtime.cc:862`, `:8726-8752`), logged at INFO. Live
+(`run.sh ... volatile_wipe`): 50 blobs, stop, remove the tier's `persistence_level`,
+start and stop once: 8 metadata-log files before, **0 after**; restore the label and
+start: **0 of 50 blobs**. CLIO now refuses a non-durable config before every spawn.
+**Request:** refuse to start (or keep the files and log at error) when WAL or snapshot
+files exist and the core resolves volatile.
+
+### 5.7 The dashboard destroys pools on a cross-origin POST
+
+Live (`run.sh ... viz`): with the dashboard on (the default for `clio-run start`
+unless `CLIO_VIZ_ENABLE=0`), a form-encoded POST with `Origin: http://evil.example` to
+`/api/pools/301.0/destroy` answers `{"ok":true,...}` and the pool is gone. CLIO forces
+the dashboard off. **Request:** Origin/Host check or a per-start token on mutating
+routes; dashboard opt-in.
+
+### 5.8 A different stripe layout reads back wrong bytes
+
+Live (`run.sh ... stripe`): written without striping, reopened with
+`CLIO_BDEV_STRIPE_FILES=2`: 100 of 100 blobs read back **wrong**, no error; reopened
+without it, 100 of 100 good. CLIO drops the variables from its daemon's environment.
+**Request:** record the layout with the backing file and refuse on mismatch.
+
+### 5.9 The synchronous calls cannot be bounded
+
+`Client.PutBlob/GetBlob/GetBlobSize` are the only cache path and take no timeout;
+`Tag.PutBlob/GetBlob/GetBlobSize` now call them. A stalled daemon holds the caller.
+**Request:** an optional `max_sec`, or an async form of the cache path.
+
+### 5.10 Smaller items
 
 - `libclio_MOD_NAME_*` template libraries ship in the wheel.
 - The Windows memfd dir is keyed on `USERNAME` (`%TEMP%\clio_%USERNAME%`), the POSIX one
@@ -359,4 +407,321 @@ durability is inferred volatile while a durable device is configured.
 Not posted. The text below is ready to post as written on the named issues; each ends
 with the project's footer.
 
-COMMENTS
+### iowarp/clio-core#1335 (comment): 2.5.0 checked against this request
+
+````markdown
+We upgraded CLIO to iowarp-core 2.5.0, tested it and benchmarked it against 2.4.1 on the same machine. Per item:
+
+- #1336 met (both handlers walk the per-tag index).
+- #1339 met: idle daemon 0.52 -> 0.037 of a core, live.
+- #1355 met: the control channel listens on 127.0.0.1, live.
+- #1312 met in code (FlushMetadata bounded, runaway WAL reported); not reproducible here.
+- #1338 partly met: the deferred API is gone, but Python has no durability barrier (SyncTag/FlushData are not bound).
+- #1359 partly met: the client data segment is configurable; reserve-don't-commit is not done.
+- #1337, #1340, #1341 not met.
+- The 16 Nov metadata-log defects are still present (torn tail followed by appends, a full filesystem under the WAL acknowledging lost puts, alloc log vs metadata after a torn delete), and append amplification is unchanged (34 bytes of log per data byte).
+
+New in 2.5.0, filed separately with reproductions: the volatile-core WAL deletion, the full-filesystem WAL loss, the torn-tail append, the torn-delete block reuse, per-blob daemon memory, append amplification, the dashboard's unauthenticated pool destroy, the stripe-layout mismatch, the late-target `persistence_level`, the long-USER exit and unbounded synchronous calls.
+
+The full report, with file:line evidence and minimal reproductions: `docs/design/clio-core-2.5-feedback.md` on iowarp/clio-agent branch `claude/clio-core-2.5-upgrade`.
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### iowarp/clio-core#1336: met in 2.5.0
+
+````markdown
+Checked at v2.5.0: GetContainedBlobs (core_runtime.cc:11533-11536) and BlobQuery (:11660-11663) iterate `BlobIndexNames(tag_id)`. Two leftovers: BlobQuery still builds an unused `std::regex tag_pattern`, and GetContainedBlobs logs its telemetry as `kGetOrCreateTag`. From CLIO's side this can close.
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### iowarp/clio-core#1337: not met in 2.5.0
+
+````markdown
+None of the requested operations is bound in `wrapper/python/core_bindings.cc` at v2.5.0 (no put flags, TruncateBlob, multi-get, MultiPutBlob with per-put status, DelTag). The C++ client has all of them plus the new kCtePutAppend and SyncTag (core_tasks.h:2395, core_client.h:572/1369/1387/1431/2032). Still needed, as async methods returning a Future with per-item rc for the multi forms. Check: `python -c "import iowarp_core, clio_cte_core_ext as c; print(sorted(m for m in dir(c.Client) if not m.startswith('_')))"`.
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### iowarp/clio-core#1338: partly met in 2.5.0
+
+````markdown
+2.5.0 removes AsyncPutBlobDefer/AwaitPutsUntilSpace/DeferErrorCount from Python (058edeac), which settles the deferred-put question. The underlying need is not met: the replacement design (shm cache + SyncTag) gives Python no durability barrier, because SyncTag, FlushData and FlushMetadata are not bound. Requests: (1) bind SyncTag/AsyncSyncTag returning the per-tag sticky rc; (2) document what AsyncPutBlob completion promises on the task path (data written, WAL record appended, fsynced at the next FlushMetadata); (3) DESIGN.md:370 says Python AsyncPutBlob takes the cache path, but core_client.h:490-504 says task path only.
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### iowarp/clio-core#1339: met in 2.5.0
+
+````markdown
+Measured on a 4-vCPU Linux container with CLIO's config, CPU of every daemon thread over 60 s after a 30 s settle: 2.4.1 0.519 cores, 2.5.0 0.037 cores (0.039 after client writes). Under the acceptance. From CLIO's side this can close.
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### iowarp/clio-core#1340: not met in 2.5.0
+
+````markdown
+PyPI iowarp-core 2.5.0 and 2.5.1 publish `macosx_15_0_arm64` wheels only (cp310-cp315), as 2.4.1 did, so CLIO's macOS floor stays at 15. Still requested: `MACOSX_DEPLOYMENT_TARGET=14.0`, or the macOS 15 API that prevents it. Free-threaded (cp314t) wheels are also absent.
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### iowarp/clio-core#1341: not met in 2.5.0
+
+````markdown
+AsyncPutBlobIfAbsent / AsyncPutBlobIfVersion / AsyncGetBlobVersioned are bound and unchanged since 2.4.1. There is still no batched conditional put (CONDITIONAL_WRITES.md: a batched put "does not honor these conditional flags") and no replacing variant (ConditionalPut sends flags=0; IfVersion "never truncates"). CLIO's conditional writes are groups (a memory document, its search companion and a version record in one multi-put), so the single-blob form cannot be adopted. Both asks stand.
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### iowarp/clio-core#1355: verified fixed in 2.5.0
+
+````markdown
+Live, CLIO daemon with CLIO_BIND_ADDR=127.0.0.1: 2.4.1 listened on 0.0.0.0:<base+2>; 2.5.0 listens on 127.0.0.1 for every port. CLIO removed its port-hold stopgap (iowarp/clio-agent#2038). Thank you.
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### iowarp/clio-core#1359: partly met in 2.5.0
+
+````markdown
+`runtime.client_data_segment_size` / `CLIO_CLIENT_DATA_SEGMENT_SIZE` are parsed in 2.5.0 (20222438). Measured: with 64MB the daemon's shared memory for four writers falls from 366 MB to 34 MB, but a put larger than the segment fails with the generic rc 21 (64MB: a 48 MB record fails; 128MB: 100 MB fails), so CLIO cannot shrink it until a large put is streamed through the segment or fails with a distinct code. Reserve-don't-commit on Windows and grow-on-demand are not done (as the commit says); still requested.
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### iowarp/clio-core#1312: met in code in 2.5.0
+
+````markdown
+00d6ab97 and 3dcab85a are in 2.5.0: the FlushMetadata token wait is bounded (2 s), stuck blobs and a runaway WAL (over 4x transaction_log_capacity) are logged at kError, and the WAL is not truncated in a cycle that skipped a live holder. We could not reproduce the original io_uring stall; in a 30-minute 4-client soak the WAL stayed bounded. Replay memory is not bounded (ask 3).
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### New iowarp/clio-core issue: A core that resolves volatile deletes an existing persistent WAL and snapshot
+
+````markdown
+**What CLIO needs:** a config mistake must not destroy data already on disk.
+
+**v2.5.0:** a core whose file tier has no `persistence_level` resolves volatile (an unlabelled device counts as volatile; 7822175b, core_config.cc:200-222). Create then discards the snapshot and every metadata-log shard (core_runtime.cc:862, :8726-8752), logged at INFO. Restoring the label brings nothing back. Related: a file tier beside a RAM data tier also makes the core volatile, silently, so such a store keeps nothing across a restart (on 2.4.1 the same config kept its records).
+
+**Reproduction** (`scripts/bench/core_repros/run.sh <venv> <dir> volatile_wipe` in iowarp/clio-agent, plain clio-core): put 50 blobs, stop, remove `persistence_level` from the tier, start and stop once, restore the label, start: 8 metadata-log files before, 0 after; 0 of 50 blobs readable.
+
+**Ask:** when WAL or snapshot files exist and the core resolves volatile, refuse to start (error naming the files and the reason), or keep the files and log at error. Log at warning whenever durability is *inferred* volatile while a durable device is configured. (CLIO now refuses such a config before every spawn.)
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### New iowarp/clio-core issue: A full filesystem under the metadata log acknowledges puts it then loses
+
+````markdown
+**What CLIO needs:** a put that returns 0 is durable, or the put returns an error.
+
+**v2.5.0:** `TransactionLog::WriteRecord` (transaction_log.h ~901-905) is void and never checks the stream; `Sync()` (501-507) ignores `FsyncPath`'s result. rc 28 (33fedf5d) covers only the data device. (Defect 2 of the 16 Nov comment on #1335.)
+
+**Reproduction** (root; `run.sh ... full_wal`): metadata log on a 6 MB tmpfs filled with a filler file, data tier capacity 4 MB on the same fs, 150 puts of 16 KiB: 150 of 150 return 0, the daemon log names no error. Remove the filler, restart: 25 good, 1 unreadable, 124 missing.
+
+**Ask:** fail the put/delete (rc 28 or an I/O rc) when its WAL record or fsync fails, log at error, and never acknowledge a mutation whose record did not land. (CLIO keeps a 256 MB free-space reserve in front of every write until then.)
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### New iowarp/clio-core issue: A torn metadata-log record at the tail is skipped, then new records are appended after it
+
+````markdown
+**v2.5.0:** `Open` appends to an existing log as is (transaction_log.h ~285-347); `Load` stops at a torn record and ignores everything after it (586-641, 623-634); nothing truncates the file before the first append. Every record written after a tear is invisible to the next start, at every restart. (Defect 1 of the 16 Nov comment on #1335; unchanged in 2.5.0.)
+
+**Reproduction:** start, put 30 blobs, stop; truncate the largest `metadata.log.blob.<N>` inside its last record; start, put 30 more, stop; start: the second 30 are missing.
+
+**Ask:** after `Load`, truncate each log to the end of its last whole record (keep the cut bytes aside, log at error) before appending.
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### New iowarp/clio-core issue: After a torn delete record, the allocation log hands a live blob's block to a new blob
+
+````markdown
+**v2.5.0:** no change to the alloc-log/metadata ordering (only 4964c577, idle fdatasync); `core/METADATA_RECOVERY_DESIGN.md` is a proposal. (Defect 3 of the 16 Nov comment on #1335.)
+
+**Reproduction:** put K and M, stop; start, delete M, stop; truncate M's delete record mid-record; start (M is back); put N, stop; start, put M with new bytes, stop; start and read N: it holds M's new bytes, no error.
+
+**Ask:** make a blob's frees durable only after its delete record is, or reconcile the alloc log against the restored metadata at start so a block owned by a restored blob is never reused.
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### New iowarp/clio-core issue: Daemon memory grows about 6 KiB per stored blob, for the life of the daemon
+
+````markdown
+**What CLIO needs:** a daemon that runs for days with bounded memory (iowarp/clio-agent#1846: 2.7 GiB).
+
+**v2.4.1 and v2.5.0, live:** anonymous RSS grows 6.07 (2.4.1) / 6.20 (2.5.0) KiB per new blob whatever the payload (256 B, 4 KiB and 64 KiB blobs all cost 6.21 KiB); overwrites of existing blobs cost 0.02-0.07 KiB per op, gets nothing. In a 30-minute 4-client soak the daemon reached 5.0 GB (2.4.1) / 5.3 GB (2.5.0): ~2.2 GB of client data segments (bounded) and the rest per-blob metadata.
+
+**Reproduction** (`scripts/bench/daemon_growth_probe.py` in iowarp/clio-agent): put 40,000 new 4 KiB blobs and read `RssAnon` in `/proc/<daemon>/status` before and after: +240 MB; 40,000 puts over 100 names: +1 MB.
+
+**Ask:** a smaller resident record per blob and/or cold blob metadata kept on disk behind a bounded cache; report resident metadata (blobs, bytes) through a monitor query.
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### New iowarp/clio-core issue: Growing a blob by appends writes O(appends^2) bytes of metadata log
+
+````markdown
+**v2.4.1 and v2.5.0, live:** 600 appends of 700 B to one blob write 14,460,661 B of metadata log (34.4 bytes per data byte); the same data as 600 blobs writes 126,980 B (0.30). Every put logs a full-replacement `kExtendBlob` listing all of the blob's blocks (core_runtime.cc:2789-2817).
+
+**Reproduction:** 600 `AsyncPutBlob(tag, "b", 700 bytes, off=i*700)` and compare the size of `metadata.log*` before and after (`scripts/bench/idle_and_metadata_bench.py`).
+
+**Ask:** a delta record for a put that only adds blocks.
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### New iowarp/clio-core issue: The dashboard destroys pools on an unauthenticated cross-origin POST
+
+````markdown
+**v2.5.0, live:** with the dashboard on (`clio-run start` enables it by default unless `CLIO_VIZ_ENABLE=0`), `curl -X POST -H 'Origin: http://evil.example' -H 'Content-Type: application/x-www-form-urlencoded' --data-binary x=1 http://127.0.0.1:8080/api/pools/301.0/destroy` returns `{"ok":true,...}` and the pool is gone. Form-encoded bodies are accepted, so a web page in the user's browser can do this. (`run.sh ... viz`.)
+
+**Ask:** reject mutating routes whose Origin/Host is not the dashboard's own, or require a per-start token; make the dashboard opt-in. (CLIO forces it off.)
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### New iowarp/clio-core issue: Reopening a file bdev with a different CLIO_BDEV_STRIPE_FILES returns wrong data silently
+
+````markdown
+**v2.5.0, live:** a store written without striping and reopened with `CLIO_BDEV_STRIPE_FILES=2` reads 100 of 100 blobs back with wrong bytes and no error; reopened without the variable, 100 of 100 are good (`run.sh ... stripe`).
+
+**Ask:** record the stripe count and unit with the backing file and refuse (or adopt the recorded layout) on mismatch. (CLIO drops the variables from its daemon's environment.)
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### New iowarp/clio-core issue: AsyncRegisterTarget without persistence_level is refused by a persistent core
+
+````markdown
+**v2.5.0, live:** `AsyncRegisterTarget(..., persistence_level=-1)` (default, e24a48fd) resolves -1 only against devices loaded at start, so a target registered on a running persistent core is volatile and refused with rc 16. Registering a 64 MiB file target on a running daemon: 2.4.1 rc 0; 2.5.0 rc 16 without the argument, rc 0 with `persistence_level=1`. CLIO's capacity growth hit this exactly when its store was full (fixed in CLIO by passing the level).
+
+**Ask:** resolve -1 to the core's own durability (or its devices' level) for a late target, and say "volatile target refused by a persistent core" in the error.
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### New iowarp/clio-core issue: A long USER makes clio-run exit 1 with one line on stdout
+
+````markdown
+**v2.5.0, live:** the IPC socket is `<$CLIO_MEMFD_DIR or /tmp/clio_$USER>/clio_<port>.ipc`; when it does not fit `sun_path` (108 bytes Linux, 104 macOS, where `clio_zmq_<port+3>.ipc` is bound too) the daemon exits 1 after one ERROR line on stdout. With a 5-digit port, a Linux USER of 82 characters starts and 83 exits.
+
+**Reproduction:** `USER=$(python3 -c 'print("u"*83)') clio-run start`.
+
+**Ask:** name the path, its length and the limit in the error, on stderr; consider a socket name that cannot overflow (a short hash under the memfd dir). (CLIO now refuses such a path before spawning, typed.)
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### New iowarp/clio-core issue: The synchronous Python calls cannot be bounded
+
+````markdown
+**v2.5.0:** `Client.PutBlob/GetBlob/GetBlobSize` (core_bindings.cc:746-779) are the only calls that use the shm cache, and `Tag.PutBlob/GetBlob/GetBlobSize` now call them; none takes a timeout, so a stalled daemon holds the caller indefinitely. CLIO's waits are progress-bounded (it uses the Async forms and `Future.wait(max_sec)`), so it cannot use the cache path.
+
+**Ask:** an optional `max_sec` on the synchronous calls (returning a distinct rc on expiry), or an async form of the cache path.
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### New iowarp/clio-core issue: Release notes, and an announced binary rename
+
+````markdown
+2.5.0 has 411 commits over 2.4.1 and no changelog. The wheel's daemon binary was renamed `clio_run` -> `clio-run` (139125d5) with no compatibility name in `bin/`, so a client that locates the launcher by path starts no daemon; the volatile-durability rule (7822175b) and the late-target `persistence_level` (e24a48fd) also break existing deployments. **Ask:** a changelog with a "breaking" section per release, and a compatibility name for one release when a binary is renamed.
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+
+### iowarp/clio-agent#2038: fixed by iowarp-core 2.5.0
+
+````markdown
+iowarp-core 2.5.0 binds the control channel through `DefaultServerBindAddr` (iowarp/clio-core#1355). Live, CLIO daemon with `CLIO_BIND_ADDR=127.0.0.1`: 2.4.1 listened on `0.0.0.0:<base+2>`, 2.5.0 on `127.0.0.1:<base+2>`. Branch `claude/clio-core-2.5-upgrade` deletes `arc/core_control_port.py` and its references. Ready to close once that branch merges.
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### iowarp/clio-agent#1846: checked against iowarp-core 2.5.0: unchanged
+
+````markdown
+30-minute soak, 4 client processes, this issue's mix, CLIO's own store path, same machine: 2.4.1 (develop code) 554k ops, p99 64 -> 113 ms, 0 errors; 2.5.0 594k ops, p99 59 -> 117 ms, 0 errors; no call past 15 s on either. Daemon RSS reached 5.0 / 5.3 GB on both: client data segments (4 x 544 MB, bounded) plus anonymous memory growing ~6 KiB per stored blob on both versions, independent of payload size (`scripts/bench/daemon_growth_probe.py`). Reported upstream as a new clio-core issue. Not ready to close.
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### iowarp/clio-agent#1851: improved
+
+````markdown
+With iowarp-core 2.5.0 an over-long IPC socket path is now refused before the daemon starts, typed `clio_core_ipc_path_too_long`, naming the path, its length and the limit (and an unsafe memfd dir is `clio_core_memfd_dir_unsafe`); the test harness no longer nests USER. The Windows snapshot-path half is untested here (Linux container). Not ready to close.
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### iowarp/clio-agent#1242: improved
+
+````markdown
+On iowarp-core 2.5.0 (and 2.4.1), 16 MiB puts and gets succeed through CLIO's store with 0 errors. A full store now grows again (growth passes `persistence_level`, which 2.5.0 requires), and a full data disk is typed `clio_core_device_full` (rc 28). The ask to bound/chunk the events blob is CLIO-side and still open. Not ready to close.
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### iowarp/clio-agent#1577: checked against iowarp-core 2.5.0: unchanged
+
+````markdown
+2.5.0's telemetry log is unchanged since 2.4.1 and records only completed core ops, so it cannot tell stuck from idle; the runtime's `worker_stats` counts periodic pollers. The progress signal still needs iowarp/clio-core#1112 (requested again with the 2.5.0 feedback). Not ready to close.
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### iowarp/clio-agent#1891: checked against iowarp-core 2.5.0: unchanged
+
+````markdown
+Nothing in 2.5.0 changes this: CLIO keys the store per host (`clio_core_config._default_cte_dir`). Not ready to close.
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+### iowarp/clio-agent#658: already done
+
+````markdown
+`ClioCoreStore` has been CLIO's default ARC store since before iowarp-core 2.5.0, and 2.5.0 changes nothing here. Ready to close, independent of the upgrade.
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
+````
+
+

@@ -9,7 +9,7 @@
 set -uo pipefail
 venv=$(realpath "$1"); work=$(realpath -m "$2"); shift 2
 here=$(cd "$(dirname "$0")" && pwd)
-export PATH="$venv/bin:$PATH" CLIO_BIND_ADDR=127.0.0.1
+export PATH="$venv/bin:$PATH" CLIO_BIND_ADDR=127.0.0.1 CTP_LOG_LEVEL=${CTP_LOG_LEVEL:-error}
 py="$venv/bin/python"
 
 setup() {  # setup <name> <port> [capacity]
@@ -39,13 +39,14 @@ teardown() { stop; rm -rf "$CLIO_MEMFD_DIR"; }
 case_full_wal() {
   mkdir -p "$work/full_wal" && mount -t tmpfs -o size=6m tmpfs "$work/full_wal" || return 1
   setup full_wal 19511 4MB
+  export OKJSON="$work/full_wal.ok.json"  # not on the full file system
   start
   dd if=/dev/zero of="$H/filler" bs=4k 2> /dev/null
   echo "puts on a full metadata-log fs: $($py "$here/put.py" 150 16384)"
   grep -ciE "error|no space|ENOSPC" "$H"/daemon.*.log | sed 's/^/daemon log lines naming an error: /'
-  stop; cp "$H/ok.json" "$work/full_wal.ok.json"; rm -f "$H/filler"; start
+  stop; rm -f "$H/filler"; start
   echo "after restart: $($py "$here/check.py")"
-  teardown; umount "$work/full_wal"
+  teardown; umount "$work/full_wal"; unset OKJSON
 }
 
 case_volatile_wipe() {
