@@ -24,6 +24,11 @@ Links and citations:
 - For registered artifacts or uploaded/connected resources, use their actual returned
   artifact: or resource: URI, for example [Analysis](artifact://actual-reference).
   Preserve the returned reference/version; the example is not an existing artifact.
+- Images: show an image you produced inline with Markdown image syntax and the
+  artifact URI a tool returned for it (`artifacts[].uri`, or create_artifact's
+  artifact_id), for example ![Final vorticity slice](artifact://artifact_actual-id).
+  If no tool returned one, register the image with create_artifact first. Image
+  syntax with a workspace-file: link or a local path does not render.
 - Conversation: [Earlier conversation](session://WORKSPACE_ID/SESSION_ID).
   A specific recorded message may use #message-MESSAGE_ID on that URI.
   Search tools can return a more precise #message-MESSAGE_ID?part=PART_ID&find=TEXT
