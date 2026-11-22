@@ -25,6 +25,13 @@ with Reopen (``gact.mcp_app_fleet``) instead of pointing at a dead service. A fl
 that closes or rebinds a namespace leaves a proxy another open fleet still routes to
 running (:func:`unshared`).
 
+A superseded server that still draws open App views is retained instead (typed
+``mcp_namespace_instance_retained``): setting a connector value must not close the
+person's open view (take 1s, gap 15). The view's own calls keep going to the fleet that
+drew it, while the agent's calls go to the new server. :func:`retire_superseded`
+stops the retained server once its last view has closed, or its session ended (typed
+reason ``superseded_views_closed``).
+
 Within one proxy, the proxy route's kept-alive backend and the direct route are two
 processes of the same server. :func:`may_go_direct` keeps the proxy route while that
 backend has open views or calls in flight (typed ``mcp_namespace_route_switch_deferred``)
@@ -44,11 +51,15 @@ from collections.abc import Awaitable, Callable, Coroutine, Iterable
 from typing import Any
 
 from clio_agent.runtime import trace
+from clio_agent.tools import call_origin
 
 MCP_NAMESPACE_INSTANCE_STOPPED = "mcp_namespace_instance_stopped"
 MCP_NAMESPACE_INSTANCE_SHARED = "mcp_namespace_instance_shared"
 MCP_NAMESPACE_INSTANCE_KEPT = "mcp_namespace_instance_kept"
 MCP_NAMESPACE_ROUTE_SWITCH_DEFERRED = "mcp_namespace_route_switch_deferred"
+MCP_NAMESPACE_INSTANCE_RETAINED = "mcp_namespace_instance_retained"
+#: The stop reason of a retained superseded server once its views have closed.
+SUPERSEDED_VIEWS_CLOSED = "superseded_views_closed"
 
 #: ``stopper(proxies, reason)`` retires what the application keeps open through those
 #: proxies; returns how many connections it matched.
@@ -62,6 +73,12 @@ _STOPPERS: list[tuple[asyncio.AbstractEventLoop, Stopper]] = []
 _PROBES: list[InUseProbe] = []
 #: Every executor that started a namespace through a registered proxy.
 _EXECUTORS: weakref.WeakSet[Any] = weakref.WeakSet()
+#: Superseded proxies kept for their open views, with the loop their stop runs on.
+_RETAINED: weakref.WeakKeyDictionary[Any, asyncio.AbstractEventLoop] = weakref.WeakKeyDictionary()
+#: The proxy the latest :func:`claim` of each (folder, namespace) started.
+_CURRENT: dict[tuple[str, str], weakref.ref[Any]] = {}
+#: Retirement stops scheduled (kept referenced until done).
+_RETIRING: set[Any] = set()
 
 _KEY = "_clio_instance_key"
 _LAUNCH = "_clio_instance_launch"
@@ -282,6 +299,112 @@ def in_use(executor: Any, namespace: str) -> str:
     return ""
 
 
+def _owners(proxy: Any) -> list[Any]:
+    """The open executors routing to ``proxy``, and the one that started it."""
+
+    owners = routers(proxy)
+    owner_ref = getattr(proxy, _OWNER, None)
+    owner = owner_ref() if owner_ref is not None else None
+    if owner is not None and not getattr(owner, "_closed", False) and owner not in owners:
+        owners.append(owner)
+    return owners
+
+
+def _views(proxy: Any, namespace: str) -> str:
+    """Why ``proxy``'s server still draws a view ("" when none): the probes only.
+
+    A call in flight is not a reason to keep a superseded server: it gets the typed
+    stop error and is retried on the new one.
+    """
+
+    with _LOCK:
+        probes = tuple(_PROBES)
+    for executor in _owners(proxy):
+        for probe in probes:
+            try:
+                reason = probe(executor, namespace)
+            except Exception as exc:  # noqa: BLE001 - an unreadable probe keeps nothing
+                trace.event("TOOLS", "mcp_namespace_in_use_probe_failed error=%r", exc)
+                continue
+            if reason:
+                return reason
+    return ""
+
+
+def retained_owners() -> set[str]:
+    """The connection owner tags (``in-process:<id>``) of the retained superseded proxies."""
+
+    with _LOCK:
+        return {f"in-process:{id(proxy):x}" for proxy in _RETAINED}
+
+
+def _is_current(proxy: Any) -> bool:
+    key = getattr(proxy, _KEY, None)
+    with _LOCK:
+        ref = _CURRENT.get(key) if key is not None else None
+    return ref is not None and ref() is proxy
+
+
+def retire_superseded() -> int:
+    """Stop each retained superseded server whose last view has closed.
+
+    Called whenever a view leaves (closed, cleaned up, expired, or its session
+    ended). A retained server that became current again, or whose fleet closed, is
+    forgotten. Returns how many stops were scheduled.
+    """
+
+    with _LOCK:
+        retained = list(_RETAINED.items())
+    scheduled = 0
+    for proxy, loop in retained:
+        key = getattr(proxy, _KEY, ("-", "-"))
+        if _is_current(proxy) or not (_owners(proxy) or backend_live(proxy)):
+            with _LOCK:
+                _RETAINED.pop(proxy, None)
+            continue
+        if _views(proxy, key[1]):
+            continue
+        with _LOCK:
+            if _RETAINED.pop(proxy, None) is None:
+                continue  # another close already scheduled it
+        if loop.is_closed():
+            continue
+        coro = _retire(proxy)
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            future: Any = loop.create_task(coro)
+        else:
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+        _RETIRING.add(future)
+        future.add_done_callback(_RETIRING.discard)
+        scheduled += 1
+    return scheduled
+
+
+async def _retire(proxy: Any) -> int:
+    key = getattr(proxy, _KEY, ("-", "-"))
+    if _is_current(proxy):
+        return 0
+    if _views(proxy, key[1]):  # a view drew on it again before the stop ran
+        with _LOCK:
+            _RETAINED[proxy] = asyncio.get_running_loop()
+        return 0
+    try:
+        return await stop_instance(proxy, SUPERSEDED_VIEWS_CLOSED)
+    except (RuntimeError, OSError) as exc:  # typed: the process may outlive this stop
+        trace.event(
+            "TOOLS",
+            "mcp_namespace_backend_stop_failed namespace=%s reason=%s error=%r",
+            key[1],
+            SUPERSEDED_VIEWS_CLOSED,
+            exc,
+        )
+        return 0
+
+
 async def _on(loop: asyncio.AbstractEventLoop | None, coro: Coroutine[Any, Any, int]) -> int:
     """Run ``coro`` on ``loop`` (where its connections live) and wait for it."""
 
@@ -411,15 +534,25 @@ async def claim(executor: Any, namespace: str, proxy: Any) -> int:
     run has it stopped (:func:`stop_instance`, reason ``superseded``), unless it
     launches the same way and an open fleet still routes to it: that one is the same
     server, shared through :func:`adopt`, and is never stopped for a sibling's change.
-    Returns how many connections were stopped.
+    One whose server still draws open App views is retained instead (typed
+    ``mcp_namespace_instance_retained``) and stopped by :func:`retire_superseded`
+    once those views close. Returns how many connections were stopped.
     """
 
     key = getattr(proxy, _KEY, None)
     if key is None:
         return 0
     _bind(executor, proxy)
+    loop = asyncio.get_running_loop()
     launch = getattr(proxy, _LAUNCH, None)
+    if call_origin.current() == "view":
+        with _LOCK:
+            drawing = proxy in _RETAINED
+        if drawing:  # a view's call on the server that drew it: the current one stays
+            return 0
     with _LOCK:
+        _CURRENT[key] = weakref.ref(proxy)
+        _RETAINED.pop(proxy, None)
         others = [other for other in _PROXIES.get(key, ()) if other is not proxy]
     stopped = 0
     for other in others:
@@ -430,6 +563,23 @@ async def claim(executor: Any, namespace: str, proxy: Any) -> int:
         if (owner is None or getattr(owner, "_closed", False)) and not routers(other):
             if not backend_live(other):
                 continue
+        reason = _views(other, namespace)
+        if reason:
+            with _LOCK:
+                known = other in _RETAINED
+                _RETAINED[other] = loop
+            if not known:
+                trace.event(
+                    "TOOLS",
+                    "%s namespace=%s folder=%s reason=%s",
+                    MCP_NAMESPACE_INSTANCE_RETAINED,
+                    namespace,
+                    key[0],
+                    reason,
+                )
+            continue
+        with _LOCK:
+            _RETAINED.pop(other, None)
         stopped += await stop_instance(other, "superseded")
     return stopped
 
@@ -466,9 +616,11 @@ async def may_go_direct(executor: Any, namespace: str, proxy: Any) -> bool:
 
 __all__ = [
     "MCP_NAMESPACE_INSTANCE_KEPT",
+    "MCP_NAMESPACE_INSTANCE_RETAINED",
     "MCP_NAMESPACE_INSTANCE_SHARED",
     "MCP_NAMESPACE_INSTANCE_STOPPED",
     "MCP_NAMESPACE_ROUTE_SWITCH_DEFERRED",
+    "SUPERSEDED_VIEWS_CLOSED",
     "add_in_use_probe",
     "add_stopper",
     "adopt",
@@ -480,6 +632,8 @@ __all__ = [
     "launch_key",
     "may_go_direct",
     "register",
+    "retained_owners",
+    "retire_superseded",
     "routers",
     "stop_instance",
     "stop_pooled",

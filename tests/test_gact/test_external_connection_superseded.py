@@ -106,3 +106,34 @@ async def test_a_busy_superseded_connection_is_kept_until_its_work_ends(
     assert connections.failure_reason(SimpleNamespace(superseded=False), error) == (
         "Connection closed"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_server_retained_for_open_views_keeps_its_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Take 1s gap 15: the new instance's connection retired the one the view drew on."""
+    retired: list[Any] = []
+
+    async def _retire(self: Any, host: Any, *, shutdown: bool = False) -> None:
+        retired.append(host)
+
+    monkeypatch.setattr(connections, "retire_connection", _retire)
+    monkeypatch.setattr(
+        connections.namespace_instances, "retained_owners", lambda: {"in-process:1"}
+    )
+
+    def host(owner: str) -> Any:
+        return SimpleNamespace(
+            cache_key=("paraview", "scope", owner), rpcs=set(), calls={}, drivers={}
+        )
+
+    drawn, stale, new = host("in-process:1"), host("in-process:2"), host("in-process:3")
+    tasks = SimpleNamespace(connections={h.cache_key: h for h in (drawn, stale, new)})
+
+    await connections._retire_superseded(tasks, new)
+    assert retired == [stale]  # the view's server keeps its connection
+
+    retired.clear()
+    await connections._retire_superseded(tasks, drawn)  # a view's call reopened it
+    assert retired == []  # it never retires the current instance's connection

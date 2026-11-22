@@ -490,16 +490,24 @@ async def abandon_call(
 
 
 async def _retire_superseded(self: ExternalTasks, current: ExternalConnection) -> None:
-    """Retire idle retained connections to a replaced in-process server (typed)."""
+    """Retire idle retained connections to a replaced in-process server (typed).
+
+    A replaced server kept for its open App views (``namespace_instances``
+    retention) keeps its connection, and a view's call opening one to it retires
+    nothing: the views draw on the old server while new calls go to the new one.
+    """
 
     server, auth_scope, owner = current.cache_key
     if not owner.startswith("in-process:"):
+        return
+    retained = namespace_instances.retained_owners()
+    if owner in retained:
         return
     for host in tuple(self.connections.values()):
         stale_server, stale_scope, stale_owner = host.cache_key
         if (stale_server, stale_scope) != (server, auth_scope) or stale_owner == owner:
             continue
-        if not stale_owner.startswith("in-process:"):
+        if not stale_owner.startswith("in-process:") or stale_owner in retained:
             continue
         await _retire_stale(self, host, EXTERNAL_MCP_CONNECTION_SUPERSEDED)
 
