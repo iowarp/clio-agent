@@ -251,7 +251,40 @@ faster for 4 KiB ops (Put 5.8k vs 3.6k IOPS single-threaded) and slower for sing
 threaded 1 MiB puts (285 vs 485 MB/s); `clio_run_thrpt_bench` round-trip latency is
 12.8 -> 17.0 us at one thread and 15.9 -> 13.5 us at four. No errors in any run.
 
-SOAK_AND_MEMORY
+#### Idle CPU and metadata-log bytes (`idle_and_metadata_bench.py`)
+
+| | 2.4.1 (develop code) | 2.5.0 |
+|---|---|---|
+| Idle daemon, 60 s after a 30 s settle | 0.519 cores | **0.037 cores** |
+| Idle after writes | 0.505 cores | 0.039 cores |
+| Metadata log for one blob grown by 600 x 700 B appends | 14,460,661 B (34.4 B per data byte) | 14,460,661 B (34.4) |
+| Metadata log for 600 x 700 B separate blobs / CLIO records | 126,980 / 124,580 B (0.30) | 126,980 / 124,580 B (0.30) |
+
+#### Soak, 30 minutes, 4 client processes (`soak.py`, the clio-agent#1846 mix)
+
+| | 2.4.1 (develop code) | 2.5.0 (this branch) |
+|---|---|---|
+| Operations (small appends) | 554,029 (332,621) | 594,136 (356,653) |
+| Latency p50 / p99 / max | 8.7 / 69.7 / 945 ms | 7.8 / 74.5 / 1,308 ms |
+| p99 first -> last minute | 64 -> 113 ms | 59 -> 117 ms |
+| Ops per minute first -> last | 16,825 -> 17,649 | 19,803 -> 19,663 |
+| Ops over 1 s / over 15 s | 0 / 0 | 8 / 0 |
+| Errors | 0 | 0 |
+| Daemon RSS at 30 min | 5,016 MiB | 5,264 MiB |
+
+A first 2.4.1 soak ran this branch's code on 2.4.1 and is not a valid baseline: at
+minute 12 the store filled, growth passed `persistence_level` (which 2.4.1 does not
+accept), and 9,746 writes failed with `TypeError`. The row above reruns it on develop's
+code.
+
+**Daemon memory.** Shared memory (`RssShmem`) stops at 4 x 544 MB: each client's data
+segment, mapped by the daemon. Anonymous memory grows by **about 6 KiB per stored blob,
+on both versions, whatever the payload size** (`daemon_growth_probe.py`: 6.07 KiB per
+new 4 KiB blob on 2.4.1, 6.20 on 2.5.0, 6.21 for 256 B and for 64 KiB blobs;
+overwrites 0.02-0.07 KiB per op, gets 0). That is the memory half of #1846, and 2.5.0
+does not change it (reported upstream, `clio-core-2.5-feedback.md` 3.10). The #1846
+latency failure (a store call past 15 s) did not reproduce in 30 minutes on either.
+
 
 ADOPTION_RESULTS
 
@@ -274,4 +307,24 @@ ADOPTION_RESULTS
 5. Optional: record `clio-run --version` in `clio_core_daemon_version.py` rather than
    package metadata alone.
 
-ISSUE_VERDICTS
+## 10. clio-agent issues against 2.5.0
+
+Verdicts: **fixed**, **improved**, **unchanged** (by 2.5.0) or **untestable** here (a
+Linux cloud container: no Windows, no macOS, no multi-node).
+
+| Issue | Verdict | Evidence | Ready to close? |
+|---|---|---|---|
+| #2038 remove the port+2 stopgap | **Fixed** | 2.5.0 binds the control channel through `DefaultServerBindAddr` (clio-core#1355). Live listeners with `CLIO_BIND_ADDR=127.0.0.1`: 2.4.1 `0.0.0.0:B+2`, 2.5.0 `127.0.0.1:B+2`. `arc/core_control_port.py` deleted | Yes, once this branch merges |
+| #1846 daemon degrades under sustained load | **Unchanged** | 30-min soak, both versions: no call past 15 s, 0 errors, p99 64->113 / 59->117 ms. Daemon memory grows ~6 KiB per stored blob on both (§8); reported upstream | No |
+| #1851 Windows test runtime paths exceed IPC limits | **Improved** | A path over `sun_path` is now refused before spawn, typed `clio_core_ipc_path_too_long` naming the path, its length and the limit (and an unsafe memfd dir `clio_core_memfd_dir_unsafe`); the harness no longer nests `USER`. The Windows snapshot-path half is CLIO's test layout and untested here | No (Windows half) |
+| #1242 events blob exceeds PutBlob capacity | **Improved** | 16 MiB puts and gets succeed through CLIO's store on both versions (0 errors). A full store now grows (growth passes `persistence_level`) and a full disk is typed (rc 28, `clio_core_device_full`). The ask to bound/chunk the events blob is CLIO-side | No |
+| #1276 large segment blobs wedge clio-core on Windows | **Untestable** | Windows bdev (clio-core#1059). Linux: no failure at any size to 16 MiB | No |
+| #1258 session 404 while ARC degrades (Windows crash) | **Untestable** | Windows crash loop | No |
+| #1858 reload quarantines the task-index client | **Untestable** | Windows; the liveness path is CLIO's (`clio_core_liveness`) | No |
+| #1401 Windows shutdown leaves runtime processes | **Untestable** | 2.5.0 `stop` waits on the process handle and checks the image (50506f2c), which may help | No |
+| #1891 transcripts empty on another node | **Unchanged** | CLIO keys the store per host (`clio_core_config._default_cte_dir`); not a clio-core change | No |
+| #1577 progress-based waits | **Unchanged** | Telemetry is unchanged since 2.4.1 and is not a progress signal; runtime `worker_stats` counts periodic pollers. Needs clio-core#1112 (requested) | No |
+| #697 distributed ARC projections | **Unchanged** | Needs a batch/replace conditional put for a lease (clio-core#1341, not met) | No |
+| #658 clio-core behind the ARCStore seam | **Done before 2.5.0** | `ClioCoreStore` is CLIO's default store; nothing in 2.5.0 changes it | Yes (independent of 2.5.0) |
+| #1783 "clio-core failed to write to session" (beta) | **Improved, unverified** | The report fits a lost write; 2.5.0 + this branch type a full disk and grow a full store. No reproduction available | No |
+
