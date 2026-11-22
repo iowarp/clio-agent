@@ -1058,6 +1058,23 @@ arc.cte.ram_capacity: "1GB"
 # before rolling; raise to cut chunk count, lower to bound re-encode cost.
 arc.events_chunk_segments: 512
 
+# CLIO_ARC_CHUNK_MAX_BYTES  (int)  <- src/clio_agent/arc/lane_chunking.py
+# Stored bytes after which a chunked lane (event log, message parts, task
+# events) rolls to its next chunk, whatever its segment count, so every
+# chunk blob stays well inside what clio-core places in one put.
+arc.chunk_max_bytes: 8388608
+
+# CLIO_ARC_RECORD_LEAF_MAX_BYTES  (int)  <- src/clio_agent/arc/record_budget.py
+# Bytes of one string value in a stored ARC event or tool-result block; a
+# longer value keeps its head, size and SHA-256 and is saved whole in the
+# session's spill folder.
+arc.record_leaf_max_bytes: 65536
+
+# CLIO_ARC_RECORD_MAX_BYTES  (int)  <- src/clio_agent/arc/record_budget.py
+# Bytes of one whole stored ARC event; a larger one is bounded again with a
+# small per-value limit.
+arc.record_max_bytes: 1048576
+
 # CLIO_ARC_HIGHWAY_DEFERRED  (bool)  <- src/clio_agent/gact/highway_writer.py
 # Record highway-only events (tool calls, routing, transforms, model calls)
 # on a writer thread in groups, before the next model request; false records

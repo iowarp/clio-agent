@@ -671,6 +671,12 @@ def _set_app_arc(app: "FastAPI", arc: Any) -> None:
                 else {}
             )
         )
+        from clio_agent.gact.task_result_spill import save_record_leaf  # noqa: PLC0415
+
+        # An oversized value in an ARC record is saved whole beside the session.
+        set_externalizer = getattr(arc, "set_record_externalizer", None)
+        if set_externalizer is not None:
+            set_externalizer(lambda sid, text, digest: save_record_leaf(app, sid, text, digest))
         from clio_agent.gact.resident_ledgers import attach_arc_residency  # noqa: PLC0415
 
         attach_arc_residency(app, arc)  # the one residency owner counts ARC's scopes
