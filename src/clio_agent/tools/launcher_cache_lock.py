@@ -30,8 +30,9 @@ import os
 import time
 import uuid
 from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager, contextmanager, suppress
+from contextlib import ExitStack, asynccontextmanager, contextmanager, suppress
 from pathlib import Path
+from typing import ContextManager
 
 from filelock import FileLock, Timeout
 
@@ -221,6 +222,17 @@ def _break_stale_lock(lock_path: Path, owner_path: Path, server_id: str, holder_
         lock_path.unlink(missing_ok=True)
 
 
+def _queued_in_server_wait() -> ContextManager[None]:
+    """Tell an enclosing MCP connect wait that its server queues behind this lock.
+
+    No process of that server exists until the lock is ours, so the wait's no-progress
+    check must not read the queue as a dead server; this module's holder rules govern it.
+    """
+    from clio_agent.tools.mcp_server_progress import queued_behind  # noqa: PLC0415
+
+    return queued_behind("launcher_cache_lock")
+
+
 def uses_shared_launcher_cache(spec: object) -> bool:
     """True when ``spec`` (an :class:`MCPServerSpec`) spawns onto the SHARED
     dedicated uv cache — the only spawns this lock needs to serialize.
@@ -277,26 +289,28 @@ def acquire_launcher_cache_lock(
     lock = FileLock(str(lock_path), timeout=0)
     clock = _HolderClock(server_id, bound)
     logged_wait = False
-    while True:
-        try:
-            lock.acquire(timeout=0)
-            break
-        except Timeout:
-            pass
-        holder_pid = _read_owner_pid(owner_path)
-        if holder_pid is not None and not _pid_alive(holder_pid):
-            _break_stale_lock(lock_path, owner_path, server_id, holder_pid)
-            continue
-        clock.check(_read_owner_record(owner_path), holder_pid)
-        if not logged_wait:
-            logger.info(
-                "launcher_cache_lock_waiting server=%s holder_pid=%s -- holder is alive, "
-                "waiting (never racing a deadline; #1237)",
-                server_id,
-                holder_pid,
-            )
-            logged_wait = True
-        time.sleep(_POLL_INTERVAL_S)
+    with ExitStack() as queue:
+        while True:
+            try:
+                lock.acquire(timeout=0)
+                break
+            except Timeout:
+                pass
+            holder_pid = _read_owner_pid(owner_path)
+            if holder_pid is not None and not _pid_alive(holder_pid):
+                _break_stale_lock(lock_path, owner_path, server_id, holder_pid)
+                continue
+            clock.check(_read_owner_record(owner_path), holder_pid)
+            if not logged_wait:
+                queue.enter_context(_queued_in_server_wait())
+                logger.info(
+                    "launcher_cache_lock_waiting server=%s holder_pid=%s -- holder is alive, "
+                    "waiting (never racing a deadline; #1237)",
+                    server_id,
+                    holder_pid,
+                )
+                logged_wait = True
+            time.sleep(_POLL_INTERVAL_S)
     try:
         _write_owner_pid(owner_path, os.getpid())
         yield
@@ -341,26 +355,28 @@ async def aacquire_launcher_cache_lock(
     lock = FileLock(str(lock_path), timeout=0, thread_local=False)
     clock = _HolderClock(server_id, bound)
     logged_wait = False
-    while True:
-        try:
-            await asyncio.to_thread(lock.acquire, timeout=0)
-            break
-        except Timeout:
-            pass
-        holder_pid = _read_owner_pid(owner_path)
-        if holder_pid is not None and not _pid_alive(holder_pid):
-            _break_stale_lock(lock_path, owner_path, server_id, holder_pid)
-            continue
-        clock.check(_read_owner_record(owner_path), holder_pid)
-        if not logged_wait:
-            logger.info(
-                "launcher_cache_lock_waiting server=%s holder_pid=%s -- holder is alive, "
-                "waiting (never racing a deadline; #1237)",
-                server_id,
-                holder_pid,
-            )
-            logged_wait = True
-        await asyncio.sleep(_POLL_INTERVAL_S)
+    with ExitStack() as queue:
+        while True:
+            try:
+                await asyncio.to_thread(lock.acquire, timeout=0)
+                break
+            except Timeout:
+                pass
+            holder_pid = _read_owner_pid(owner_path)
+            if holder_pid is not None and not _pid_alive(holder_pid):
+                _break_stale_lock(lock_path, owner_path, server_id, holder_pid)
+                continue
+            clock.check(_read_owner_record(owner_path), holder_pid)
+            if not logged_wait:
+                queue.enter_context(_queued_in_server_wait())
+                logger.info(
+                    "launcher_cache_lock_waiting server=%s holder_pid=%s -- holder is alive, "
+                    "waiting (never racing a deadline; #1237)",
+                    server_id,
+                    holder_pid,
+                )
+                logged_wait = True
+            await asyncio.sleep(_POLL_INTERVAL_S)
     try:
         _write_owner_pid(owner_path, os.getpid())
         yield

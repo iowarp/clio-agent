@@ -8,7 +8,9 @@ Every MCP connect/list wait here measures exactly the awaited server:
   spawned inside that wait as a root of the tree;
 * the wait samples that tree after each no-progress window: work advancing -> the server
   is starting, keep waiting (up to ``tools.mcp.max_wait_s``); flat, or no server process
-  at all -> :class:`NoProgressTimeout`, typed.
+  at all -> :class:`NoProgressTimeout`, typed, unless the server is still queued
+  behind a live holder of the shared launcher cache (:func:`queued_behind`), whose
+  own liveness rules govern that queue.
 
 Nothing else is measured: not the clio-core daemon (a psutil child of this process),
 not another namespace's server, not a shell or a CLI this process also runs.
@@ -20,6 +22,9 @@ import asyncio
 import contextvars
 import logging
 import time
+import weakref
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from clio_agent.arc.daemon_progress import CEILING, NO_PROGRESS
@@ -35,6 +40,9 @@ _SERVER_TREE: contextvars.ContextVar[ProcessTreeWork | None] = contextvars.Conte
     "clio_mcp_server_tree", default=None
 )
 _SPAWN_TRACKING_INSTALLED = False
+#: Trees whose server has not spawned yet because it queues behind a live holder of a
+#: shared resource (:func:`queued_behind`); the count is the number of such queues.
+_QUEUED: weakref.WeakKeyDictionary[ProcessTreeWork, int] = weakref.WeakKeyDictionary()
 
 _PROGRESS_WAITS = (
     "Fixed MCP deadlines were replaced by progress-based waits "
@@ -111,6 +119,31 @@ def server_work() -> float | None:
     return tree.sample() if tree is not None else None
 
 
+@contextmanager
+def queued_behind(resource: str) -> Iterator[None]:
+    """Mark the current wait's server as queued behind ``resource``'s live holder.
+
+    The server cannot spawn until that holder lets go (another server building the
+    shared uv launcher cache, :mod:`clio_agent.tools.launcher_cache_lock`), so no process
+    of its own is alive yet. That is a queue, not a dead server: the holder's own
+    liveness rules govern it, and :func:`wait_while_server_works` keeps waiting.
+    """
+    tree = _SERVER_TREE.get()
+    if tree is None:
+        yield
+        return
+    _QUEUED[tree] = _QUEUED.get(tree, 0) + 1
+    logger.info("mcp_server_queued resource=%s", resource)
+    try:
+        yield
+    finally:
+        remaining = _QUEUED.get(tree, 1) - 1
+        if remaining > 0:
+            _QUEUED[tree] = remaining
+        else:
+            _QUEUED.pop(tree, None)
+
+
 def install_spawn_tracking() -> None:
     """Record every stdio MCP server spawned inside a wait as a root of that wait's tree.
 
@@ -164,6 +197,14 @@ async def wait_while_server_works(
                 return task.result()
             waited = time.monotonic() - started
             work = await asyncio.to_thread(tree.sample)
+            if not progressed(work, last) and _QUEUED.get(tree):
+                logger.info(
+                    "mcp_server_busy op=%s reason=queued_behind_shared_launcher waited_s=%.0f",
+                    op_name,
+                    waited,
+                )
+                last = work
+                continue
             if not progressed(work, last):
                 raise NoProgressTimeout(op_name, NO_PROGRESS, waited, window)
             if waited >= ceiling:
