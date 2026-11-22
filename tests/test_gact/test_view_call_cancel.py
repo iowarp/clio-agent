@@ -9,6 +9,7 @@ plain RPC no task holds is cancelled on the wire. No timer is involved.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import threading
 from types import SimpleNamespace
 from typing import Any
@@ -264,6 +265,40 @@ async def test_a_stopped_turns_plain_call_is_cancelled_on_the_wire(
 
 
 @pytest.mark.asyncio
+async def test_a_stopped_scripts_plain_call_is_cancelled_on_the_wire(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A background script outlives its turn: its stop, not the turn's, cuts the call off.
+    SABOTAGE: drop the ``scope_stopped()`` branch from ``_cut_off_text`` -> the call
+    keeps waiting for a reply that a deleted session never takes -> red."""
+    from clio_agent.runtime.cancellation import bind_scope_stop
+
+    owner, recorded = _owner()
+    owner.history = object()
+    owner.app = _stopped_app("sess_other")  # the script's own turn is not stopped
+    settled: list[tuple[Any, str, str]] = []
+    monkeypatch.setattr(
+        connections.view_call_ledger,
+        "settle_cut_off",
+        lambda history, handle, text: settled.append((history, handle, text)),
+    )
+    stop = threading.Event()
+    stop.set()
+
+    async def abandon(rpc: Any) -> None:
+        bind_scope_stop(stop)
+        await connections.abandon_call(owner, _host(), "task_x", rpc, None, "sess_a")
+
+    rpc = asyncio.ensure_future(asyncio.sleep(60))
+    await asyncio.create_task(abandon(rpc), context=contextvars.copy_context())
+    await asyncio.sleep(0)
+    assert rpc.cancelled()
+    recorded[0][1]()
+    assert settled == [(owner.history, "task_x", connections.SCRIPT_CALL_CANCELLED_TEXT)]
+    assert settled[0][2].startswith(connections.TURN_CALL_CANCELLED + ":")
+
+
+@pytest.mark.asyncio
 async def test_stop_leaves_other_sessions_shutdown_and_accepted_tasks_alone() -> None:
     owner, recorded = _owner()
     owner.app = _stopped_app("sess_a")
@@ -278,3 +313,26 @@ async def test_stop_leaves_other_sessions_shutdown_and_accepted_tasks_alone() ->
     assert recorded == []
     for rpc in (other, accepted, draining):
         rpc.cancel()
+
+
+def test_a_stopped_call_settles_its_parents_cancellation() -> None:
+    """A cut-off plain call is terminal with ``settlement: unknown`` by design; the
+    parent's cancellation must still count it settled or deleting the conversation
+    waits on it forever (409). SABOTAGE: drop the cut-off clause -> red."""
+    from clio_agent.gact.conversation_controls import _member_settled
+
+    def call(**changes: Any) -> Any:
+        fields = {
+            "kind": "MCP",
+            "terminal_at": "2026-01-01T00:00:00Z",
+            "settlement": "unknown",
+            "raw_status": connections.TURN_CALL_CANCELLED,
+            "status": "cancelled",
+            "result": None,
+        }
+        return SimpleNamespace(**(fields | changes))
+
+    assert _member_settled(call())
+    assert not _member_settled(call(terminal_at=None))  # still running
+    assert not _member_settled(call(raw_status="mcp_call_interrupted"))  # restart: unknown
+    assert not _member_settled(call(kind="Code"))  # local work confirms its own retirement

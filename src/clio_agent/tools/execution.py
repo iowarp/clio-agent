@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Iterator, Optional, Protocol, cast
 from clio_agent import conf, injections
 from clio_agent.errors import ClioError
 from clio_agent.runtime import commitment_activity
+from clio_agent.runtime.cancellation import with_scope_stop
 from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools import foreground_cancellation as foreground_cancel
 from clio_agent.tools import harness_notes, mcp_result_media, task_descriptions, tool_presentation
@@ -606,7 +607,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
         permission_gate = self._permission_gate or hooks.permission_gate
         tool_observer = self._tool_observer or hooks.tool_observer
         mcp_app_observer = hooks.mcp_app_observer
-        cancellation_checker = hooks.cancellation_checker
+        cancellation_checker = with_scope_stop(hooks.cancellation_checker)
 
         def raise_if_cancelled(stage: str) -> None:
             if cancellation_checker is not None and cancellation_checker():

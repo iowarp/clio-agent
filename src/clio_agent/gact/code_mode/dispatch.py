@@ -130,6 +130,9 @@ class Dispatcher:
         self.lock = threading.Lock()
         #: The calls sent and not yet ended, which a finished script's close waits for.
         self.pending: set[Future[Any]] = set()
+        #: Set when the script is stopped: its calls in flight end with a cancellation
+        #: (an MCP call cancels on the wire), so the script's task settles promptly.
+        self.stopped = threading.Event()
 
     def submit(self, message: Mapping[str, Any], reply: Callable[[dict[str, Any]], None]) -> None:
         """Start one call; ``reply`` gets the kernel's ``result`` message when it ends."""
@@ -187,7 +190,11 @@ class Dispatcher:
             if tool:  # a tool call counts among the script's calls; a host call does not
                 with self.lock:
                     self.records.append(CallRecord(tool, False, 0, error[:500]))
-        reply({"type": "result", "id": call_id, "ok": ok, "value": value, "error": error})
+        try:
+            reply({"type": "result", "id": call_id, "ok": ok, "value": value, "error": error})
+        except Exception:  # noqa: BLE001 - a stopped script's kernel is gone; none awaits it
+            if not self.stopped.is_set():
+                raise
 
     def _reserved(
         self,
@@ -234,12 +241,14 @@ class Dispatcher:
         from clio_agent.gact.artifacts.observer_bridge import MODEL_CALL_SLOT  # noqa: PLC0415
         from clio_agent.gact.runtime.tool_permission_layers import native_gate  # noqa: PLC0415
         from clio_agent.gact.tool_observation import INLINE_COLLECTION  # noqa: PLC0415
+        from clio_agent.runtime.cancellation import bind_scope_stop  # noqa: PLC0415
         from clio_agent.runtime.fresh_loop import run_in_new_loop  # noqa: PLC0415
         from clio_agent.tools.tool_observation import (  # noqa: PLC0415
             RESULT_SINK,
             call_identity_scope,
         )
 
+        bind_scope_stop(self.stopped)  # this call's own context copy (``submit``)
         target = self.tools[tool]
         group, _ = tool_group(tool, self.servers)
         # A native tool may declare the group it shares a concurrency cap with (the browser).
@@ -307,8 +316,10 @@ class Dispatcher:
         """End the script's calls. A script that finished waits for the calls it sent (a
         call is made when the script makes it, awaited or not); a stopped one drops those
         not yet started. A finished script stopped while it waits (``cancelled``) stops
-        waiting then and drops the calls not yet started, so its task settles."""
+        waiting then and drops the calls not yet started, so its task settles. A stopped
+        script's calls already running are cancelled (``stopped``)."""
         if not finished:
+            self.stopped.set()
             self.pool.shutdown(wait=False, cancel_futures=True)
             return
         self.pool.shutdown(wait=False)  # no new calls; the ones sent keep running
@@ -318,6 +329,7 @@ class Dispatcher:
             if not pending:
                 return
             if cancelled is not None and cancelled():
+                self.stopped.set()
                 self.pool.shutdown(wait=False, cancel_futures=True)
                 return
             wait(pending, timeout=poll_s, return_when=FIRST_COMPLETED)

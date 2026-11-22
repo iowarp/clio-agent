@@ -130,6 +130,8 @@ async def cancel_session_state_async(
             "composer_autostart": composer,
             "children": children,
         }
+        if children == "stop":  # what it started outlives no assignment either
+            effect.update(await _stop_children(app, sid, None), accepted_tasks_continue=False)
         await app.state.task_history.io.run(app.state.sessions.update, sid, status=effect["status"])
 
         async def retire() -> None:

@@ -437,14 +437,24 @@ TURN_CALL_CANCELLED_TEXT = (
     f"{TURN_CALL_CANCELLED}: the turn was stopped before the service answered; "
     "the call was cancelled and whether the service acted on it is not known."
 )
+#: The same for a ``tools.*`` call whose ``run_code`` script was stopped mid-call (a
+#: background script outlives its turn, so the turn's stop does not cover it).
+SCRIPT_CALL_CANCELLED_TEXT = (
+    f"{TURN_CALL_CANCELLED}: the script was stopped before the service answered; "
+    "the call was cancelled and whether the service acted on it is not known."
+)
 
 
 def _cut_off_text(self: ExternalTasks, sid: str) -> str:
-    """Why a plain call is cut off now: its view's request went, or its turn stopped."""
+    """Why a plain call is cut off now: its view's request went, its turn stopped, or
+    the script that made it was stopped."""
     if view_call_cancel.requested():
         return view_call_cancel.VIEW_CALL_CANCELLED_TEXT
     from clio_agent.gact.cancellation_check import turn_stop_requested  # noqa: PLC0415
+    from clio_agent.runtime.cancellation import scope_stopped  # noqa: PLC0415
 
+    if scope_stopped():
+        return SCRIPT_CALL_CANCELLED_TEXT
     if turn_stop_requested(getattr(self, "app", None), sid):
         return TURN_CALL_CANCELLED_TEXT
     return ""
