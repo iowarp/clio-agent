@@ -180,8 +180,10 @@ def _proxy_for_spec(
     if spec.transport == "stdio":
         from clio_agent.tools import namespace_instances  # noqa: PLC0415
 
-        # One live server of this connector per folder (MI1).
-        namespace_instances.register(proxy, spec.name, cwd, transport)
+        # One live server of this connector per folder (MI1); fleets share one launch.
+        namespace_instances.register(
+            proxy, spec.name, cwd, transport, namespace_instances.launch_key(spec, cwd)
+        )
     return proxy
 
 

@@ -399,6 +399,9 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                         return _MCPCallOutcome(json.dumps(value), result, "shell")
                     namespace, _, bare = name.partition("_")
                     proxy = self._namespace_servers.get(namespace)
+                    if proxy is not None:
+                        # MI1: a sibling fleet's server of the same launch serves this one.
+                        proxy = namespace_instances.adopt(self, namespace, proxy)
                     pool_owner = proxy  # the fleet's own proxy, not a builtin fallback
                     proxy_route = False
                     if proxy is None and bare and name in self._mcp_tools:
@@ -439,6 +442,13 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                         if proxy_route
                         else None
                     )
+                    stopped_under = None
+                    if pool_owner is not None:
+                        born = namespace_instances.stops_begun(self, namespace)
+
+                        def stopped_under() -> bool:
+                            return namespace_instances.stops_begun(self, namespace) != born
+
                     try:
                         result = await app.state.external_tasks.call(
                             server,
@@ -447,6 +457,7 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                             dict(args),
                             auth_scope=auth_scope,
                             progress_handler=progress_handler,
+                            stopped_under=stopped_under,
                         )
                     except Exception as error:
                         self._namespace_call_failed(namespace if proxy is not None else None, error)
@@ -541,6 +552,8 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
             getattr(self, "_clio_namespace_direct_factories", None) or {}
         )
         try:
+            # MI1: a sibling fleet's server of the same launch serves this one.
+            proxy = namespace_instances.adopt(self, namespace, proxy)
             direct_client, decision = resolve_and_build_direct_client(namespace, direct_factories)
             record_namespace_route_decision(namespace, decision)
             if direct_client is not None and not await namespace_instances.may_go_direct(
