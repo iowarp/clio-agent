@@ -186,15 +186,10 @@ async def test_a_view_poll_cut_off_ends_unknown_and_wakes_no_one(
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)  # An in-memory MCP session opens and closes.
-async def test_a_large_model_visible_reply_is_recorded_as_its_head_and_a_file(
-    arc: ARCMemory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+async def test_a_large_model_visible_reply_is_recorded_whole(
+    arc: ARCMemory, tmp_path: Path
 ) -> None:
-    """GG-F3: any oversized reply, not only a view's, stays out of the ledger's segment."""
-    monkeypatch.setenv("CLIO_TOOL_RESULT_RECORD_BYTES", "65536")
-    monkeypatch.setattr(
-        "clio_agent.tools.servers.shell_spill_store.spill_directory",
-        lambda _root, session_id=None: tmp_path / "tool-output",
-    )
+    """Every reply the model can see is stored whole in clio-core, whatever its size."""
     app, root = await _environment(arc, tmp_path)
     history = app.state.task_history
     external = ExternalTasks(app)
@@ -213,7 +208,4 @@ async def test_a_large_model_visible_reply_is_recorded_as_its_head_and_a_file(
         return history.read_content(task.result)
 
     result = await asyncio.to_thread(recorded)
-    stored = result["structuredContent"]["stored_result"]
-    assert stored["reason"] == "tool_result_stored_in_file"
-    assert CHUNK in Path(stored["file"]).read_text()
-    assert len(json.dumps(result)) < 20_000
+    assert result["structuredContent"]["bytes"] == CHUNK

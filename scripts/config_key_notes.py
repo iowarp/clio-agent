@@ -870,13 +870,10 @@ KEY_NOTES: dict[str, str] = {
         "ceiling. When set, a call without a timeout runs up to this ceiling."
     ),
     "limits.tool_structured_bytes": (
-        "Byte bound on a tool result's structured content in the transcript and trace (a "
-        "script still receives the whole value); larger payloads are recorded as an envelope "
-        "with reason structured_content_over_wire_cap."
-    ),
-    "limits.tool_result_record_bytes": (
-        "Largest tool result, in JSON bytes, a call's record keeps inline (at least 1024); "
-        "past it the record keeps the result's head and the whole result in a file."
+        "Byte bound on the preview of a tool result's structured content on the wire and in "
+        "the transcript row (a script still receives the whole value); larger payloads show "
+        "an envelope with reason structured_content_over_wire_cap. The call's "
+        "tool.call.completed event in clio-core keeps the whole value."
     ),
     "limits.tool_result_chars": (
         "Character bound on the transcript/evidence-metadata preview of a tool result; raise to "
@@ -1530,10 +1527,6 @@ KEY_NOTES: dict[str, str] = {
     ),
     "code.max_script_chars": (
         "Characters of a run_code script that a permission question shows the person."
-    ),
-    "code.max_output_bytes": (
-        "Bytes of one run_code script's printed output the kernel returns; the rest is cut "
-        "with a note. Read when a kernel starts."
     ),
     "code.start_timeout_s": (
         "Seconds a run_code kernel has to start, or to take its tools, before it counts as failed."

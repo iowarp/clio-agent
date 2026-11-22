@@ -159,14 +159,20 @@ def test_a_call_only_the_view_sees_writes_no_row_and_keeps_a_record(tmp_path: Pa
     assert CHUNK not in str(row)
 
 
-def test_a_large_result_the_model_sees_is_a_row_with_its_head_and_a_file(
+def test_a_large_result_the_model_sees_is_a_row_with_the_whole_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """GG-F3: the row and the trace keep a bounded copy of any oversized result."""
-    monkeypatch.setattr(
-        "clio_agent.tools.servers.shell_spill_store.spill_directory",
-        lambda _root, session_id=None: tmp_path / "tool-output",
-    )
+    """The trace keeps the whole result, whatever its size; the row is a preview naming it."""
+    from clio_agent.gact import tool_observer
+
+    emitted: list[tuple[str, dict[str, Any]]] = []
+    emit = tool_observer._emit_semantic_event
+
+    def capture(app: Any, sid: str, kind: str, **kwargs: Any) -> Any:
+        emitted.append((kind, kwargs.get("payload") or {}))
+        return emit(app, sid, kind, **kwargs)
+
+    monkeypatch.setattr(tool_observer, "_emit_semantic_event", capture)
     client, app = _client(tmp_path)
     with client:
         sid = client.post("/v1/sessions", json={"title": "surface"}).json()["id"]
@@ -183,11 +189,19 @@ def test_a_large_result_the_model_sees_is_a_row_with_its_head_and_a_file(
     assert response.status_code == 200
     assert response.json()["structuredContent"]["rows"][0] == CHUNK  # the view's copy is whole
     result = next(p for p in rows if p.type == "tool_result")
-    assert result.structured_content is None
-    assert "[clio: tool_result_stored_in_file]" in result.content[0].text
-    assert CHUNK not in result.model_dump_json() and CHUNK not in str(ledger)
-    (stored,) = list((tmp_path / "tool-output").iterdir())
-    assert CHUNK in stored.read_text()
+    preview = result.structured_content
+    assert (
+        preview["clio_structured_content_bounded"] is True
+        and preview["whole_value_in"] == "tool.call.completed"
+    )
+    assert preview["original_bytes"] > len(CHUNK)
+    assert ledger
+    (event,) = [
+        payload
+        for kind, payload in emitted
+        if kind == "tool.call.completed" and payload.get("tool") == "clock_table"
+    ]
+    assert event["result"]["structuredContent"]["rows"][0] == CHUNK  # clio-core keeps it whole
 
 
 def test_a_view_only_call_naming_its_view_opens_no_new_view(tmp_path: Path) -> None:

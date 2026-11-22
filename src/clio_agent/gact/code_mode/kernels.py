@@ -3,7 +3,7 @@
 A kernel is started on a script's first call in its scope and kept for the next, so
 variables and imports persist. It runs the execution runtime's Python
 (``CLIO_EXECUTION_PYTHON``, published when the workspace's execution runtime is
-prepared) as ``python -I kernel_main.py <code.max_output_bytes>``, composed by
+prepared) as ``python -I kernel_main.py``, composed by
 :func:`sandbox.wrap_confined` with the shell's profile and write roots and the shell's
 environment scrub (no CLIO tokens or plugin secrets). Without a prepared runtime it runs the server's own Python
 and the trace says so (``code_kernel_server_python``).
@@ -89,26 +89,6 @@ def start_timeout_s() -> float:
     return value
 
 
-def max_output_bytes() -> int:
-    """Bytes of one script's printed output the kernel returns (``code.max_output_bytes``).
-
-    Resolved here and passed to the kernel as its first argument: the kernel is
-    standard library only and does not read CLIO's configuration.
-
-    Raises:
-        ValueError: The configured size is below 1.
-    """
-    value = conf.resolve(
-        "code.max_output_bytes",
-        env="CLIO_CODE_MAX_OUTPUT_BYTES",
-        default=2_000_000,
-        cast=conf.as_int,
-    )
-    if value < 1:
-        raise ValueError(f"code.max_output_bytes must be at least 1, not {value}")
-    return value
-
-
 def _environment(workspace: Path, session_id: str) -> tuple[str, dict[str, str]]:
     from clio_agent.paths import workspace_state_dir  # noqa: PLC0415
     from clio_agent.runtime.execution_environment import shell_environment  # noqa: PLC0415
@@ -179,7 +159,7 @@ class Kernel:
             # -I ignores PYTHONUTF8, so UTF-8 mode is asked for on the command line:
             # otherwise a Windows kernel prints through cp1252 and a script fails on
             # the first non-ASCII character a tool returns.
-            ["-I", "-X", "utf8", str(_MAIN), str(max_output_bytes())],
+            ["-I", "-X", "utf8", str(_MAIN)],
             write_roots=self.write_roots,
             net_policy=sandbox.NET_ALLOW_RECORD,
             profile=sandbox.PROFILE_SHELL,

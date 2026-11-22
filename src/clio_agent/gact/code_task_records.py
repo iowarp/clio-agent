@@ -10,7 +10,8 @@ is a :class:`CallGrouper`. The gate still checks every call; only the record is 
 
 - consecutive successful calls to one tool within ``code.background_record_window_s`` are
   held and recorded once, as a call carrying the last call's arguments and result plus a
-  ``_clio_repeat`` entry (the count and the first and last time);
+  ``_clio_repeat`` entry (the count, the first and last time, and ``calls``: each earlier
+  call's time, arguments and result, oldest first, so every call reaches clio-core whole);
 - a call that failed or asked the person a question is recorded on its own, at once;
 - what is held is recorded when its window passes (at the tool's next call) and when the
   script ends.
@@ -62,6 +63,8 @@ class _Group:
     args: dict[str, Any]
     result: Any
     context: contextvars.Context
+    #: The calls before the last one, oldest first: ``{at, args, result}`` each.
+    calls: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -113,6 +116,9 @@ class CallGrouper:
                     due.append(self._groups.pop(name))
             elif current is not None and now - current.first < self.window_s:
                 current.count += 1
+                current.calls.append(
+                    {"at": _iso(current.last), "args": current.args, "result": current.result}
+                )
                 current.last, current.args, current.result = now, dict(args), result
                 current.context = contextvars.copy_context()
             else:
@@ -160,6 +166,7 @@ class CallGrouper:
                 "count": group.count,
                 "first_at": _iso(group.first),
                 "last_at": _iso(group.last),
+                **({"calls": group.calls} if group.calls else {}),
             },
         }
         group.context.run(self._call, group.observer, group.name, args, None, group.result)

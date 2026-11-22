@@ -1,13 +1,14 @@
-"""Bound a tool result's structured content on its way to the wire and the trace.
+"""Preview a tool result's structured content on the wire and in the transcript.
 
 A server may return a large structured payload that only a program should read: the
 ``hdf5-ptc`` server returns a whole array as ``structuredContent`` when a ``run_code``
 script asks for one. The model never sees it (:func:`clio_agent.tools.mcp_result_text.
 result_to_text` gives the model the text blocks), and the calling script reads the
-full value from the result sink before the observer runs. What remains are the copies
-the observer writes: the live ``tool_result`` part (SSE and the stored transcript) and
-the trace event. Those copies are bounded here, with a typed reason, so one scripted
-read of a 16 MB array does not land in the transcript and the event log.
+full value from the result sink before the observer runs. The live ``tool_result`` part
+(SSE and the transcript row) carries the envelope built here, a preview, so one scripted
+read of a 16 MB array is not streamed to every view. The whole value is stored in
+clio-core: the call's ``tool.call.completed`` event keeps it (:func:`whole_structured`),
+and the live bus does not serve that event unless the call failed.
 
 Config: ``limits.tool_structured_bytes`` / ``CLIO_TOOL_STRUCTURED_BYTES`` (default
 262144 bytes of compact JSON).
@@ -26,6 +27,8 @@ logger = logging.getLogger(__name__)
 STRUCTURED_CONTENT_OVER_WIRE_CAP_REASON = "structured_content_over_wire_cap"
 #: The key a bounded envelope carries, so a reader can tell it from a tool's own payload.
 BOUNDED_MARKER = "clio_structured_content_bounded"
+#: The clio-core event of the same call that holds the whole value.
+WHOLE_VALUE_EVENT = "tool.call.completed"
 
 
 def tool_structured_bytes() -> int:
@@ -51,7 +54,7 @@ def _size(value: Any) -> int:
 
 
 def _envelope(value: Any, size: int, limit: int) -> dict[str, Any]:
-    """The stand-in for an over-cap payload: what it was, never its contents."""
+    """The preview of an over-cap payload: what it was and where it is kept whole."""
 
     keys = sorted(str(key) for key in value)[:20] if isinstance(value, Mapping) else []
     envelope: dict[str, Any] = {
@@ -59,6 +62,7 @@ def _envelope(value: Any, size: int, limit: int) -> dict[str, Any]:
         "reason": STRUCTURED_CONTENT_OVER_WIRE_CAP_REASON,
         "original_bytes": size,
         "limit_bytes": limit,
+        "whole_value_in": WHOLE_VALUE_EVENT,
     }
     if keys:
         envelope["keys"] = keys
@@ -98,6 +102,34 @@ def wire_structured(declared: Any, result: Any) -> tuple[Any, Any]:
     if declared is None and isinstance(result, Mapping):
         declared = result.get("structuredContent")
     return bounded_structured_content(declared), bounded_result_structured(result)
+
+
+def whole_structured(
+    payload: dict[str, Any], declared: Any, whole_result: Any, result: Any
+) -> dict[str, Any]:
+    """The call's clio-core event payload, with every previewed structured value whole.
+
+    ``result`` is the presented (wire) result and ``whole_result`` the one the tool
+    returned; ``declared`` is a native tool's declared payload, before any preview.
+    """
+
+    event = dict(payload)
+    if result is not None:
+        event["result"] = result
+        if (
+            isinstance(result, Mapping)
+            and isinstance(whole_result, Mapping)
+            and result.get("structuredContent") is not whole_result.get("structuredContent")
+            and _is_preview(result.get("structuredContent"))
+        ):
+            event["result"] = {**result, "structuredContent": whole_result["structuredContent"]}
+    if declared is not None and _is_preview(bounded_structured_content(declared)):
+        event["structured_content"] = declared
+    return event
+
+
+def _is_preview(value: Any) -> bool:
+    return isinstance(value, Mapping) and value.get(BOUNDED_MARKER) is True
 
 
 def bounded_result_structured(result: Any, *, limit: int | None = None) -> Any:

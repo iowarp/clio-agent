@@ -36,7 +36,7 @@ from clio_agent.gact.runtime.globals import (
     _new_message_id,
     _resolve_tool_session,
 )
-from clio_agent.gact.structured_wire_bound import wire_structured
+from clio_agent.gact.structured_wire_bound import whole_structured, wire_structured
 from clio_agent.gact.task_wait_presentation import completed_after_cancel_error, completion_status
 from clio_agent.gact.thought_dedup import TOOL_THOUGHT_STAGE, resolve_started_tool_call_thought
 from clio_agent.gact.tool_call_merge import (
@@ -63,6 +63,7 @@ from clio_agent.runtime import trace
 from clio_agent.runtime.lm_activity import in_live_chunk_order
 from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools.mcp_results import content_blocks_for_wire
+from clio_agent.tools.recorded_results import with_whole_streams
 from clio_agent.tools.result_errors import structured_tool_result_error
 from clio_agent.tools.tool_observation import REFUSED_CALL, claim_call_identity
 
@@ -663,8 +664,11 @@ def _make_tool_observer(app: "FastAPI"):
             # A native tool may DECLARE its typed structured payload (P5; the model's
             # return value is unchanged). Read + cleared once per completed call so it
             # never leaks onto a later call; else the MCP-shaped extraction below.
-            # The caller already holds the full value; the wire and trace copies are bounded.
-            structured_content, result = wire_structured(pop_declared_structured_content(), result)
+            # The caller already holds the full value; the wire copies are previews and the
+            # call's clio-core event keeps it whole (``whole_structured`` below).
+            declared = pop_declared_structured_content()
+            whole_result = result
+            structured_content, result = wire_structured(declared, result)
             result, presentation = completed_presentation(
                 name,
                 args,
@@ -733,9 +737,11 @@ def _make_tool_observer(app: "FastAPI"):
                         **cancellation_metadata,
                     }
                 )
-            # Trace keeps the full result; wire/ledger projections are bounded.
-            # SSE redacts `result` through SENSITIVE_KEYS.
-            trace_payload = {**payload, "result": result} if result is not None else payload
+            # The clio-core event keeps the whole result; wire/ledger projections are previews.
+            # The live bus serves this event only when it failed (SSE_UI_EVENT_TYPES).
+            trace_payload = whole_structured(payload, declared, whole_result, result)
+            if "result" in trace_payload:  # a shell stream's spill file, read back whole
+                trace_payload["result"] = with_whole_streams(trace_payload["result"])
             try:
                 with terminal_tool_delivery(app, sid, payload):
                     _emit_semantic_event(
