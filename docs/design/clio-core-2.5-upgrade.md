@@ -2,8 +2,9 @@
 
 **Status:** adopted on branch `claude/clio-core-2.5-upgrade` (from `develop`) · **Pin:**
 `iowarp-core~=2.5.0` · **Upstream:** iowarp/clio-core `v2.4.1..v2.5.0`, 411 commits,
-706 files, +78k/−18k lines. `v2.5.1` (tag only, not on PyPI) changes only Linux
-packaging (32518175).
+706 files, +78k/−18k lines. `v2.5.1` is on PyPI too (24 wheels, uploaded 2026-11-21
+23:47 UTC) and `~=2.5.0` installs it; it changes only Linux packaging and the
+`clio-run` version string (32518175). Everything here was measured on 2.5.0.
 
 Upstream ships **no changelog or release notes** (none in the repo root, `site/pages`
 or `docs/`). Everything below comes from the code and commit messages, read at both
@@ -15,17 +16,20 @@ tags, and from live runs on this machine. Upstream references are `file:line` at
 | # | Change in 2.5.0 | Effect on CLIO | Done here |
 |---|---|---|---|
 | 1 | Daemon binary renamed `clio_run` → `clio-run` (139125d5); wheel ships only `bin/clio-run`; `clio_run` survives as a console-script alias | **Break:** CLIO never found the launcher, so no daemon started | Launcher lookup, process census, process tree and disk-GC markers accept both names |
-| 2 | Daemon refuses to start "half-bound" when it cannot listen on `<memfd dir>/clio_<port>.ipc` (ipc_manager.cc:763-787) | **Break for long `USER`:** exit 1, one ERROR line. The test harness's nested `USER` (90 chars) hit it; real users can via a long account name, `CLIO_CORE_USER` or `CLIO_MEMFD_DIR` | Typed pre-spawn guard `clio_core_ipc_path_too_long`; harness `USER` no longer nests |
+| 2 | A too-long AF_UNIX path now fails with `ENAMETOOLONG` instead of binding a silently truncated name (0586c90b), and the daemon refuses to start "half-bound" (ipc_manager.cc:763-787, older than 2.4.1) | **Break for long `USER`:** exit 1, one ERROR line. The test harness's nested `USER` (90 chars) hit it; real users can via a long account name, `CLIO_CORE_USER` or `CLIO_MEMFD_DIR` | Typed pre-spawn guard `clio_core_ipc_path_too_long`; harness `USER` no longer nests |
 | 3 | `AsyncRegisterTarget(..., persistence_level=-1)` (e24a48fd); −1 resolves only against devices loaded at start | **Break:** live capacity growth refused with rc 16 exactly when the store is full (verified live) | Growth passes the planned tier's level; live test |
-| 4 | Core durability: explicit `durability:` key, else persistent only if *every* device is durable (7822175b, core_config.cc:200-222); a volatile core keeps **no WAL** | **Break (data loss):** CLIO accepted a file tier beside a volatile RAM data tier; under 2.5.0 that core keeps no WAL and a restart loses every record (verified live, §4) | `config_is_durable` follows upstream's rule; the in-place upgrade of an older seed adds `durability: persistent`; growth recognizes the line |
+| 4 | Core durability: explicit `durability:` key, else persistent only if *every* device is durable (7822175b, core_config.cc:200-222); a volatile core keeps **no WAL** and **deletes** an existing snapshot and WAL shards on start (core_runtime.cc:862, :8726-8752); an unlabelled device counts as volatile | **Break (data loss):** CLIO accepted a file tier beside a volatile RAM data tier; under 2.5.0 that core keeps no WAL and a restart loses every record (verified live, §4), and one volatile start wipes an existing store | `config_is_durable` follows upstream's rule and requires a `metadata_log_path`; it runs before **every** spawn; the fresh seed and the in-place upgrade of an older seed state `durability: persistent`; growth recognizes the line |
 | 5 | Per-user memfd dir must be a real dir owned by this user, not group/other-writable (2a6fc440) | Daemon exit 1 otherwise | Typed pre-spawn check `clio_core_memfd_dir_unsafe` |
-| 6 | macOS also binds `<memfd>/clio_zmq_<port+3>.ipc` (ipc_manager.cc:189-206) | 4 bytes less room on a 104-byte `sun_path` | Guard checks every socket |
+| 6 | macOS also binds `<memfd>/clio_zmq_<port+3>.ipc` (ipc_manager.cc:189-206; present in 2.4.1, only the length check is new) | 4 bytes less room on a 104-byte `sun_path` | Guard checks every socket |
 | 7 | Control channel (port+2) binds through `DefaultServerBindAddr` (60cb3df2, clio-core#1355) | CLIO's port-hold stopgap is obsolete and, with it, the channel failed to bind | Stopgap removed (#2038) |
 | 8 | Runtime listens on loopback by default (98bb4eb4) | CLIO already pins `CLIO_BIND_ADDR=127.0.0.1`; now belt and braces | Comment updated |
 | 9 | Crash surfaced as "no daemon log output" | CLIO-side race: the crash watcher read the log before the pump drained the daemon's last line | Watcher waits (≤2 s) for the pump; record carries `log_tail_settled` |
-| 10 | New rc 28 = device ENOSPC (33fedf5d), was generic rc 21 | Reaches CLIO's lost-write record as `native_code=28`; not yet mapped to a disk-full reason | Recommended (§9) |
+| 10 | New rc 28 = device ENOSPC (33fedf5d), was generic rc 21 | Reached CLIO's lost-write record as a generic native refusal | Typed: cause `clio_core_device_full` with a message naming the disk; the metadata-log full-disk case (no rc at all) stays on CLIO's free-space reserve |
 | 11 | `runtime.client_data_segment_size` / `CLIO_CLIENT_DATA_SEGMENT_SIZE` now parsed (20222438, #1359) | Each attaching process maps 512 MB + 32 MB | Recommended knob (§9) |
 | 12 | Shared-memory caches (`core_shm_cache_writethru`, `core_persist_write_back`, `core_persist_write_thru`) | Only active when composed; CLIO's compose does not list them, so CLIO stays on the task path | Not adopted (§5) |
+| 13 | Dashboard (`CLIO_VIZ_ENABLE`) has no authentication or Origin check: a cross-origin POST destroys a pool | Any web page could destroy CLIO's pools while it runs | Forced off for every clio-core child, even when the parent enables it |
+| 14 | `CLIO_BDEV_STRIPE_FILES`/`_UNIT`: a store reopened with another stripe layout reads back wrong bytes, silently | A stray variable in the parent corrupts every read | Dropped from the daemon's environment, logged |
+| 15 | `PoolQuery.Dynamic()` resolves to Local for TagQuery/BlobQuery/GetContainedBlobs (5fb2940b); the core's resident shm metadata mirror is gone (about −300 MB RSS) | Same answers on CLIO's single node | Recorded |
 
 A store written by 2.4.1 reads back under 2.5.0 (flat-name restore, b030f9cd). The
 reverse is unsafe: 2.5.0 writes WAL record types 12/13 that 2.4.1 does not know.
@@ -42,7 +46,7 @@ Binding source: `context-transfer-engine/wrapper/python/core_bindings.cc` (+52/�
 | Added synchronous `Client.PutBlob/GetBlob/GetBlobSize` (GIL released, shm-cache path when bound) | core_bindings.cc:746-779 | CLIO uses `Tag.PutBlob/GetBlob` and `Client.Async*`, unchanged | no; optional |
 | Added `Client.ConnectCache()`, `HasCache()` | core_bindings.cc:796-804 | not used; only meaningful with a composed shm cache | no |
 | `AsyncRegisterTarget(..., attach_existing, growth_unit, persistence_level=-1)` | core_bindings.cc:832-866 (e24a48fd) | `arc/clio_core_growth.py::_register` | **yes**, fixed (§1 #3) |
-| New return codes: rc 16 (volatile target refused by a persistent core), rc 28 (device ENOSPC) | core_tasks.h:2458, :1060 | rc 28 reaches `LostWrite.native_code` | see §9 |
+| New return codes: rc 16 (volatile target refused by a persistent core), rc 28 (device ENOSPC) | core_tasks.h:2458, :1060 | rc 28 is typed `clio_core_device_full` | done |
 | Unchanged and used: `initialize_cte`, `RuntimeMode.kClient`, `PoolQuery`, `PoolId/TagId/BlobId`, `PUT_EXISTS_RC`, `BdevType.kFile`, `Tag`, `GetTagId`, `GetContainedBlobs`, `SemanticSearch`, `AsyncGetBlob[Size]`, `AsyncPutBlob[IfAbsent]`, `AsyncDelBlob`, `AsyncTagQuery`, `AsyncStatTargets`, `AsyncGetCapacity`, `AsyncGetTargetInfo` | | `arc/clio_core_attach.py`, `arc/storage.py`, `arc/clio_core_async_ops.py` | no |
 
 Live check of the growth break (`AsyncRegisterTarget` of a 64 MiB file target on a
@@ -56,8 +60,8 @@ running CLIO home daemon):
 ## 3. Bundled binaries and console scripts
 
 - Wheel `iowarp_core/bin/`: `clio-run`, `clio_cte_bench`, `clio_cte_fuse`,
-  `clio_run_thrpt_bench`. There is **no `bin/clio_run`** and no `clio-cae` (native
-  packages only).
+  `clio_run_thrpt_bench`. There is **no `bin/clio_run`**. The CAE chimod libraries and
+  `clio_cee` ship in the wheel; only the `clio-cae` CLI is native-packages only.
 - `[project.scripts]`: `clio-run` (new) and `clio_run` (alias), both exec
   `bin/clio-run`.
 - New CLI: `clio-run --version`, `viz <start|stop|status>`, `pool <start|stop|rm> <pool>
@@ -135,8 +139,8 @@ synchronous `Client.PutBlob/GetBlob` are the API that takes that path.
 
 - **Flat tag names** (fff3d78e): no hierarchy; a name's binding lives on its hash
   owner, the name list on the tag's home. WAL gains record types `kBindName=12` and
-  `kUnbindName=13`; magic `2LAW`, header `<u8 type><u64 seq><u32 len>` and types 0-7 are
-  unchanged, so `arc/clio_core_wal_repair.py` stays valid.
+  `kUnbindName=13`; magic `2LAW`, header `<u8 type><u64 seq><u32 len>` and types 0-11 (all
+  in 2.4.1) are unchanged, so `arc/clio_core_wal_repair.py` stays valid.
 - **2.4.1 stores restore** (b030f9cd): only legacy hierarchical names (`/` or
   `$tagid{…`) are dropped; CLIO's tags never start with `/`. Verified live: a store
   written by 2.4.1 reads back under 2.5.0 (200 of 200 segment records and a memory
