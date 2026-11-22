@@ -349,6 +349,7 @@ class TaskAwareClient(Client):
         name: str,
         result: mcp_types.CallToolResult,
         raise_on_error: bool = False,
+        pinned_version: str | None = None,
     ) -> CallToolResult:
         if isinstance(result, AcceptedTaskResult):
             return AcceptedCallResult(
@@ -358,7 +359,9 @@ class TaskAwareClient(Client):
                 is_error=result.is_error,
                 meta=result.meta,
             )
-        return await super()._parse_call_tool_result(name, result, raise_on_error)
+        return await super()._parse_call_tool_result(
+            name, result, raise_on_error, pinned_version=pinned_version
+        )
 
     async def close(self) -> None:
         """Retain custody until recording settles, without a hidden cutoff.

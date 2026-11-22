@@ -81,13 +81,25 @@ class ObservedTaskSession(ClientSession):
         return result
 
 
+#: The sessions task observation composes in front of: the plain SDK session and
+#: fastmcp's own default (``TransportOptions().session_class``; fastmcp 4.2 made it
+#: a ``ClientSession`` subclass that skips output-schema checks for version-pinned
+#: calls). Any other session class carries behaviour this adapter has not reviewed.
+_KNOWN_SESSION_BASES = frozenset({ClientSession, TransportOptions().session_class})
+
+
 def _observed_session_class(existing: type[ClientSession]) -> type[ClientSession]:
     """Compose CLIO's cooperative capability override; refuse unknown session behavior."""
     if existing is ClientSession:
         return ObservedTaskSession
+    if existing in _KNOWN_SESSION_BASES:
+        return type("ObservedSdkTaskSession", (ObservedTaskSession, existing), {})
     from clio_agent.tools.mcp_runtime import _DeclaredCapabilityOverride
 
-    if existing.__bases__ != (_DeclaredCapabilityOverride, ClientSession):
+    bases = existing.__bases__
+    if len(bases) != 2 or bases[0] is not _DeclaredCapabilityOverride:
+        raise ValueError("Task observation cannot compose with this SDK session class")
+    if bases[1] not in _KNOWN_SESSION_BASES:
         raise ValueError("Task observation cannot compose with this SDK session class")
     return type("ObservedDeclaredTaskSession", (ObservedTaskSession, existing), {})
 
