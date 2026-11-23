@@ -27,7 +27,7 @@ import sys
 import traceback
 import types
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, Literal
 
 from clio_agent.plugins.commands import read_commands
@@ -95,6 +95,43 @@ def import_module_typed(name: str, label: str) -> types.ModuleType:
 
 
 _ROOT_TOKENS = ("${PLUGIN_ROOT}", "${CLAUDE_PLUGIN_ROOT}")
+#: ``scheme://`` or a pip/uv VCS requirement (``git+…``): a URL, never split on ``:``.
+_URL = re.compile(r"^(?:[A-Za-z][A-Za-z0-9+.\-]*://|git\+)")
+
+
+def _path_pieces(text: str) -> Iterator[str]:
+    """The pieces of a server's command, arg, env or cwd text that may name a path.
+
+    Words split on whitespace and ``=,;``; a word that is not a URL also splits on
+    ``:`` (``PATH``-style lists). A URL names no file, except a local ``file:`` URL.
+    """
+
+    for word in re.split(r"[\s=,;]+", text):
+        if not word:
+            continue
+        if _URL.match(word):
+            if word[:5].lower() == "file:":
+                from urllib.parse import urlsplit  # noqa: PLC0415
+                from urllib.request import url2pathname  # noqa: PLC0415
+
+                parts = urlsplit(word)
+                if parts.netloc in ("", "localhost") and parts.path:
+                    yield url2pathname(parts.path)
+            continue
+        yield from (piece for piece in word.split(":") if piece)
+
+
+def _drive(path: PurePath) -> str:
+    return path.drive.replace("/", "\\").casefold()
+
+
+def _network_share(path: PurePath) -> bool:
+    """Whether ``path`` is on a network share (a UNC drive; only Windows paths have one)."""
+
+    drive = _drive(path)
+    if drive.startswith(("\\\\?\\", "\\\\.\\")):
+        return drive[4:].startswith("unc\\")
+    return drive.startswith("\\\\")
 
 
 def referenced_files(root: Path, servers: Mapping[str, Mapping[str, Any]]) -> set[Path]:
@@ -113,10 +150,12 @@ def referenced_files(root: Path, servers: Mapping[str, Mapping[str, Any]]) -> se
     for text in texts:
         for token in _ROOT_TOKENS:
             text = text.replace(token, str(root))
-        for piece in re.split(r"[\s=:,;]+", text):
-            if not piece:
-                continue
+        for piece in _path_pieces(text):
             candidate = Path(piece) if Path(piece).is_absolute() else root / piece
+            # Resolving another network share asks that host, which can block for many
+            # seconds, and no share names a file inside a local plugin root.
+            if _network_share(candidate) and _drive(candidate) != _drive(root):
+                continue
             if not within(root, candidate):
                 continue
             if candidate.is_file():
