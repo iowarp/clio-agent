@@ -13,6 +13,7 @@ show what it would run.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import contextvars
 import copy
@@ -443,6 +444,319 @@ def _flow_base() -> type | None:
     return getattr(module, "Flow", None)
 
 
+#: Where a flow module may take ``Flow`` from, for :func:`_static_flows`.
+_FLOW_HOMES = frozenset({"clio_agent.sdk", "clio_agent.sdk.flow"})
+#: Names whose use may bind module globals at import: their module is imported instead.
+_DYNAMIC_NAMES = frozenset({"globals", "vars", "locals", "exec", "eval", "setattr", "__import__"})
+#: Builtins an import-time call may not reach: each can make a class of the module.
+_CLASS_MAKERS = frozenset({"type", "__build_class__"})
+_FLOW_FIELDS = frozenset({"id", "description", "shape"})
+#: What a flow class may not bind beyond its fields: each changes what the import reads.
+_FLOW_CLASS_NAMES = frozenset({"__doc__", "__module__"})
+#: What reaches a module's namespace or a class's fields from code: its module is imported.
+_REACHING_ATTRS = frozenset(
+    {
+        "modules",
+        "__dict__",
+        "f_globals",
+        "f_locals",
+        "f_back",
+        "__globals__",
+        "import_module",
+        "getmodule",
+        "reload",
+        "__setattr__",
+        "__delattr__",
+    }
+)
+_REACHING_NAMES = _DYNAMIC_NAMES | {"__loader__", "__spec__", "__builtins__", "delattr"}
+_UNKNOWN = object()
+
+
+def _import_time(node: ast.AST, *, classes: bool = True) -> Iterator[ast.AST]:
+    """``node`` and what in it runs when its module is imported: no function or lambda body.
+
+    With ``classes=False`` a nested class contributes only its name, decorators, bases
+    and keywords, the parts that run in the enclosing namespace.
+    """
+
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            arguments = current.args
+            stack.extend(arguments.defaults)
+            stack.extend(default for default in arguments.kw_defaults if default is not None)
+            if not isinstance(current, ast.Lambda):
+                stack.extend(current.decorator_list)
+            continue
+        if isinstance(current, ast.ClassDef) and current is not node and not classes:
+            stack.extend(current.decorator_list)
+            stack.extend(current.bases)
+            stack.extend(keyword.value for keyword in current.keywords)
+            continue
+        stack.extend(ast.iter_child_nodes(current))
+
+
+def _bound_names(nodes: Iterable[ast.AST]) -> Iterator[str]:
+    """Every name ``nodes`` bind or delete in the namespace they run in."""
+
+    for node in nodes:
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            yield node.id
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            yield node.name
+        elif isinstance(node, ast.alias):
+            yield node.asname or node.name.partition(".")[0]
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            yield node.name
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            yield node.name
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            yield node.rest
+
+
+def _class_fields(node: ast.ClassDef) -> dict[str, str] | None:
+    """The literal ``id``/``description``/``shape`` a flow class sets, ``None`` if unprovable."""
+
+    fields: dict[str, str] = {}
+    for item in node.body:
+        simple: list[str] = []
+        if isinstance(item, ast.Assign) and all(isinstance(t, ast.Name) for t in item.targets):
+            simple = [t.id for t in item.targets if isinstance(t, ast.Name)]
+            checked: Iterable[ast.AST] = _import_time(item.value, classes=False)
+        elif isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+            simple = [item.target.id] if item.value is not None else []
+            checked = _import_time(item.value, classes=False) if item.value is not None else ()
+        else:
+            checked = _import_time(item, classes=False)
+        if any(name in _FLOW_FIELDS | _FLOW_CLASS_NAMES for name in _bound_names(checked)):
+            return None
+        for name in simple:
+            if name in _FLOW_CLASS_NAMES:
+                return None
+            if name not in _FLOW_FIELDS:
+                continue
+            value = item.value
+            try:
+                literal = ast.literal_eval(value) if value is not None else None
+            except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+                return None
+            if not isinstance(literal, str):
+                return None
+            fields[name] = literal
+    return fields
+
+
+def _class_doc(node: ast.ClassDef) -> str | None:
+    """``__doc__`` of the class ``node`` defines, as the compiler stores it."""
+
+    first = node.body[0] if node.body else None
+    if not (
+        isinstance(first, ast.Expr)
+        and isinstance(first.value, ast.Constant)
+        and isinstance(first.value.value, str)
+    ):
+        return None
+    # The compiler cleans a docstring's indentation; compiling only the docstring into an
+    # empty class gives exactly what it stores, with none of the module's code run.
+    probe = ast.Module(
+        body=[ast.ClassDef(name="_Doc", bases=[], keywords=[], body=[first], decorator_list=[])],
+        type_ignores=[],
+    )
+    namespace: dict[str, Any] = {}
+    exec(compile(ast.fix_missing_locations(probe), "<flow-doc>", "exec"), namespace)  # noqa: S102
+    return namespace["_Doc"].__doc__
+
+
+def _call_root(func: ast.expr) -> ast.expr:
+    while isinstance(func, (ast.Attribute, ast.Subscript, ast.Call)):
+        func = func.func if isinstance(func, ast.Call) else func.value
+    return func
+
+
+def _static_flows(path: Path, relative: str, plugin: str) -> _PythonParts | None:
+    """The flows module ``path`` declares, read from its source without importing it.
+
+    Importing a flows module runs its imports (DSPy and the flow engine, through
+    ``clio_agent.sdk.flow``) only to read each flow's ``id``, ``description`` and
+    ``shape``; the class itself is imported when the flow runs (``flows.runner``).
+    Only a module whose flows its source states plainly is read here:
+
+    * flows are top-level classes, bound once, extending ``Flow`` (imported from
+      ``clio_agent.sdk``) or one such class of the module, with no decorator or
+      keyword, and literal fields;
+    * no code reaches a module namespace (``global``, ``globals()``,
+      ``sys.modules``, ``f_globals``...) or assigns a flow field as an attribute;
+    * module-level code calls only builtins other than ``type`` and names imported
+      from outside ``clio_agent``, and names neither ``Flow``, a flow class (except
+      as a base) nor a function of the module.
+
+    Anything else returns ``None`` and the module is imported as before, so the
+    records are the import's own. Packages outside ``clio_agent`` are taken not to
+    define classes into the module they are called from.
+    """
+
+    try:
+        tree = ast.parse(path.read_bytes(), filename=str(path))
+    except (OSError, SyntaxError, ValueError):
+        return None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Global):
+            return None
+        if isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names):
+            return None
+        if isinstance(node, ast.Name) and node.id in _REACHING_NAMES:
+            return None
+        if isinstance(node, ast.Attribute) and (
+            node.attr in _REACHING_ATTRS
+            or (
+                isinstance(node.ctx, (ast.Store, ast.Del))
+                and node.attr in _FLOW_FIELDS | _FLOW_CLASS_NAMES
+            )
+        ):
+            return None
+    import builtins  # noqa: PLC0415
+
+    # What each module-level name is bound to: "flow" (Flow itself), "other" (imported
+    # from outside clio_agent), "function", a ClassDef of this module, or _UNKNOWN.
+    bound: dict[str, Any] = {}
+    counts: dict[str, int] = {}
+    classes: list[ast.ClassDef] = []
+
+    def bind(name: str, value: Any) -> None:
+        counts[name] = counts.get(name, 0) + 1
+        bound[name] = value if counts[name] == 1 else _UNKNOWN
+
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Import):
+            for alias in stmt.names:
+                local = alias.asname or alias.name.partition(".")[0]
+                external = alias.name.partition(".")[0] != "clio_agent"
+                bind(local, "other" if external else _UNKNOWN)
+        elif isinstance(stmt, ast.ImportFrom):
+            source = stmt.module or ""
+            external = not stmt.level and source.partition(".")[0] != "clio_agent"
+            for alias in stmt.names:
+                local = alias.asname or alias.name
+                if not stmt.level and source in _FLOW_HOMES and alias.name == "Flow":
+                    bind(local, "flow")
+                else:
+                    bind(local, "other" if external else _UNKNOWN)
+        elif isinstance(stmt, ast.ClassDef):
+            bind(stmt.name, stmt)
+            classes.append(stmt)
+        elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            bind(stmt.name, "function")
+        else:
+            nodes = list(_import_time(stmt, classes=False))
+            if any(isinstance(node, ast.ClassDef) for node in nodes):
+                return None  # a class bound under a condition: the import decides
+            for name in _bound_names(nodes):
+                bind(name, _UNKNOWN)
+
+    kinds: dict[str, str] = {}  # class name -> "flow" | "other"
+
+    def base_kind(base: ast.expr) -> str:
+        if isinstance(base, ast.Subscript):
+            base = base.value
+        if isinstance(base, ast.Attribute):
+            root = _call_root(base)
+            return "other" if isinstance(root, ast.Name) and bound.get(root.id) == "other" else ""
+        if not isinstance(base, ast.Name):
+            return ""
+        if base.id not in bound:
+            return "other" if isinstance(getattr(builtins, base.id, None), type) else ""
+        target = bound[base.id]
+        if target in ("flow", "other"):
+            return target
+        if isinstance(target, ast.ClassDef):
+            return kinds.get(target.name, "")
+        return ""
+
+    fields_of: dict[str, dict[str, str]] = {}
+    found: list[tuple[ast.ClassDef, dict[str, str]]] = []
+    for node in classes:
+        if bound.get(node.name) is not node:
+            return None  # rebound after its definition
+        bases = [base_kind(base) for base in node.bases]
+        if "" in bases:
+            return None
+        if "flow" not in bases:
+            kinds[node.name] = "other"
+            continue
+        if node.decorator_list or node.keywords or len(node.bases) != 1:
+            return None
+        own = _class_fields(node)
+        if own is None:
+            return None
+        parent = node.bases[0]
+        inherited = (
+            fields_of[bound[parent.id].name]
+            if isinstance(parent, ast.Name) and isinstance(bound.get(parent.id), ast.ClassDef)
+            else {}
+        )
+        kinds[node.name] = "flow"
+        fields_of[node.name] = {**inherited, **own}
+        if not node.name.startswith("_"):
+            found.append((node, fields_of[node.name]))
+
+    # Module-level code may bind a module global to anything it can reach, so it may not
+    # reach a flow class, Flow or a function of the module (which could make one).
+    hidden = {name for name, kind in kinds.items() if kind == "flow"}
+    hidden |= {name for name, target in bound.items() if target in ("flow", "function")}
+
+    def callable_at_import(func: ast.expr) -> bool:
+        root = _call_root(func)
+        if isinstance(root, ast.Constant):
+            return True
+        if not isinstance(root, ast.Name):
+            return False
+        if root.id not in bound:
+            return root.id not in _CLASS_MAKERS and hasattr(builtins, root.id)
+        return bound[root.id] == "other"
+
+    for stmt in tree.body:
+        if isinstance(stmt, ast.ClassDef):
+            bases = {id(base) for base in stmt.bases}
+            nodes: list[ast.AST] = [*stmt.decorator_list, *stmt.bases]
+            nodes += [keyword.value for keyword in stmt.keywords]
+            nodes = [n for top in nodes for n in _import_time(top)]
+            callees = [*stmt.decorator_list, *(keyword.value for keyword in stmt.keywords)]
+        else:
+            bases = set()
+            nodes = list(_import_time(stmt, classes=False))
+            callees = []
+        for node in nodes:
+            if isinstance(node, ast.Name) and node.id in hidden and id(node) not in bases:
+                return None
+            if isinstance(node, ast.Call):
+                callees.append(node.func)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                callees.extend(node.decorator_list)
+        if not all(callable_at_import(callee) for callee in callees):
+            return None
+    parts = _PythonParts()
+    for node, fields in found:
+        flow_id = fields.get("id", "")
+        if not flow_id:
+            parts.diagnostics.append(
+                Diagnostic("error", "flow_invalid", f"{relative}:{node.name} has no id", plugin)
+            )
+            continue
+        parts.flows.append(
+            FlowRecord(
+                id=flow_id,
+                module=relative,
+                attr=node.name,
+                description=fields.get("description", "") or (_class_doc(node) or "").strip(),
+                shape=fields.get("shape", ""),
+            )
+        )
+    return parts
+
+
 def _python_parts(root: Path, plugin: str, texts: dict[str, str]) -> _PythonParts:
     parts = _PythonParts()
     clio_dir = root / NAMESPACE
@@ -470,6 +784,11 @@ def _python_parts(root: Path, plugin: str, texts: dict[str, str]) -> _PythonPart
     for folder in _PYTHON_DIRS:
         for path in _python_files(clio_dir, folder):
             relative = path.relative_to(clio_dir).as_posix()
+            static = _static_flows(path, relative, plugin) if folder == "flows" else None
+            if static is not None:
+                parts.flows.extend(static.flows)
+                parts.diagnostics.extend(static.diagnostics)
+                continue
             module = _import(root, relative, plugin, parts)
             if module is None:
                 continue
