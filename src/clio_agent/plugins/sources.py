@@ -377,6 +377,40 @@ def _inner_members(bundle: tarfile.TarFile) -> Iterator[tarfile.TarInfo]:
         yield member
 
 
+def _plain_name(name: str) -> bool:
+    """Whether ``name`` joins below a destination exactly as ``realpath`` resolves it there.
+
+    True for a relative ``/``-separated name whose every part is an ordinary file name: no
+    empty, ``.`` or ``..`` part, no drive, and nothing the platform reserves (on Windows a
+    device name, a stream ``:``, a trailing dot or space, which ``realpath`` rewrites).
+    Below a folder holding no link, such a name cannot leave it.
+    """
+    if not name or os.path.isabs(name) or os.path.splitdrive(name)[0]:
+        return False
+    if os.sep != "/" and os.sep in name:
+        return False
+    if any(part in ("", ".", "..") for part in name.split("/")):
+        return False
+    reserved = getattr(os.path, "isreserved", None)
+    return not (callable(reserved) and reserved(name))
+
+
+def _data_view(member: tarfile.TarInfo) -> tarfile.TarInfo:
+    """``tarfile.data_filter``'s result for a regular file or folder with a plain name
+    below a link-free destination: its containment check holds by construction, so only
+    the attributes are rewritten (the same safe modes, no ownership)."""
+    mode = member.mode
+    if mode is not None:
+        if member.isdir():
+            mode = None
+        else:
+            mode &= 0o755
+            if not mode & 0o100:
+                mode &= ~0o111
+            mode |= 0o600
+    return member.replace(mode=mode, uid=None, gid=None, uname=None, gname=None, deep=False)
+
+
 def _unpack(bundle: tarfile.TarFile, staging: Path) -> None:
     """``bundle.extractall(staging, filter="data")``, its regular files written in parallel.
 
@@ -384,12 +418,24 @@ def _unpack(bundle: tarfile.TarFile, staging: Path) -> None:
     first, overlapped (each waits on the disk, which on a network or scanned file system is
     most of an unpack); links, directories and the directories' times follow through
     ``extractall`` itself, as a serial unpack leaves them.
+
+    ``staging`` is new and empty, and no link is made in it before the regular files are
+    written, so a plain-named file (:func:`_plain_name`) is filtered without the per-member
+    ``realpath`` (a system call per path part, slow on Windows). So is a plain-named folder
+    until the first link member: once a link may exist, a plain name can lead through it,
+    and every later member is resolved by ``tarfile.data_filter`` itself.
     """
+    destination = str(staging)
     files: dict[str, tuple[tarfile.TarInfo, tarfile.TarInfo]] = {}
     rest: list[tarfile.TarInfo] = []
     for member in _inner_members(bundle):
         if member.isreg():
-            files[member.name] = (member, tarfile.data_filter(member, str(staging)))
+            filtered = (
+                _data_view(member)
+                if _plain_name(member.name)
+                else tarfile.data_filter(member, destination)
+            )
+            files[member.name] = (member, filtered)
         else:
             rest.append(member)
     if files:
@@ -418,7 +464,16 @@ def _unpack(bundle: tarfile.TarFile, staging: Path) -> None:
                 futures.append(pool.submit(write, path, data, filtered))
             for future in futures:
                 future.result()
-    bundle.extractall(staging, members=rest, filter="data")
+    linked = False
+
+    def resolve(member: tarfile.TarInfo, path: str) -> tarfile.TarInfo:
+        nonlocal linked
+        linked = linked or member.islnk() or member.issym()
+        if not linked and member.isdir() and _plain_name(member.name):
+            return _data_view(member)
+        return tarfile.data_filter(member, path)
+
+    bundle.extractall(staging, members=rest, filter=resolve)
 
 
 def _discard(staging: Path) -> None:
