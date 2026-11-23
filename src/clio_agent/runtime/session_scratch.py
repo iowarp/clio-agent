@@ -340,8 +340,11 @@ def short_root(target: Path, role: ShortRootRole) -> Path:
     used only while ``paths.allow_system_temp`` grants it to fenced children. A name that
     exists but is not this user's root for ``target`` is never used: ``target`` is.
     Roots are removed with the session's scratch folder (:func:`remove_session_scratch`).
+    A :data:`STAND_IN` judges ``target``'s real path: it exists for loaders that resolve
+    links, so a short name through a link is still as deep as where it leads.
     """
 
+    target = _role_target(target, role)
     if len(str(target)) <= short_root_budget(role):
         return target
     in_system_temp = role.mechanism == STAND_IN or _host_os() == "windows"
@@ -360,7 +363,15 @@ def short_root(target: Path, role: ShortRootRole) -> Path:
     return short if _owns_short_root(short, target, role) else target
 
 
+def _role_target(target: Path, role: ShortRootRole) -> Path:
+    if role.mechanism != STAND_IN:
+        return target
+    real = os.path.realpath(target)
+    return Path(real[4:] if real.startswith("\\\\?\\") else real)
+
+
 def _remove_short_root(target: Path, role: ShortRootRole) -> None:
+    target = _role_target(target, role)
     short = _short_path(target, role)
     if not _owns_short_root(short, target, role):
         return

@@ -117,8 +117,9 @@ def shell_environment(workspace: Path, *, session_id: str | None = None) -> dict
     environment.update(_session_temp(session_id))
     from clio_agent.runtime import session_scratch  # noqa: PLC0415
 
-    environment.update(session_scratch.socket_safe_temp(environment))
+    # The uv cache comes from the real scratch folder, before TMPDIR takes its socket link.
     environment.update(_clio_tools(environment, workspace))
+    environment.update(session_scratch.socket_safe_temp(environment))
     if cache := environment.get("UV_CACHE_DIR"):
         short = session_scratch.short_uv_cache(Path(cache))
         if short != Path(cache):

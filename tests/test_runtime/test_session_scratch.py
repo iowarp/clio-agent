@@ -283,6 +283,30 @@ def test_a_deep_scratch_folder_gets_a_short_junction_on_windows(
     assert session_scratch.socket_safe_dir(deep) == deep  # the fence would not grant it
 
 
+@pytest.mark.skipif(os.name != "nt", reason="a Windows junction in the system temp")
+def test_a_uv_cache_through_the_socket_junction_still_gets_a_stand_in(
+    tmp_path: Path, short_temp: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A DLL load resolves the junction, so the cache is as deep as its real folder."""
+
+    deep = tmp_path / ("d" * 40) / "sess_deep"
+    deep.mkdir(parents=True)
+    alias = session_scratch.socket_safe_dir(deep)
+    assert alias.is_junction()
+    through_link = alias / "uv-cache"
+    limits = {
+        session_scratch.SOCKET_LIMIT: 108,
+        session_scratch.PATH_LIMIT: len(str(through_link)) + 212,  # the link name fits
+    }
+    monkeypatch.setattr(session_scratch, "_os_limits", lambda: limits)
+    short = session_scratch.short_uv_cache(through_link)
+    assert short not in (through_link, deep / "uv-cache") and not short.is_junction()
+    assert short == session_scratch.short_uv_cache(deep / "uv-cache")  # one root per folder
+    session_scratch._remove_short_root(deep / "uv-cache", session_scratch.UV_CACHE_ROLE)
+    session_scratch._remove_short_root(deep, session_scratch.SOCKET_ROLE)
+    assert not short.exists()
+
+
 @pytest.mark.skipif(os.name != "posix", reason="a POSIX symlink in /tmp")
 def test_a_socket_link_never_follows_a_name_it_does_not_own(tmp_path: Path) -> None:
     deep = tmp_path.joinpath(*(["e" * 20] * 6), "sess_squat")
