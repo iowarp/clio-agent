@@ -308,6 +308,7 @@ class BuiltinBoundary:
         """Route task-capable built-ins to their own native root without a gateway queue."""
         from clio_agent.gact.native_work import SUBMISSION_ARGUMENT
         from clio_agent.gact.permission_gate import _invoke_permission_gate
+        from clio_agent.gact.spawn_invocation import spawn_invocation_id
         from clio_agent.gact.tool_dispatch import run_owned_callable
         from clio_agent.tools.result_room import result_room, room_limits
         from clio_agent.tools.task_call_context import safe_description
@@ -453,7 +454,7 @@ class BuiltinBoundary:
                 assignment_id=assignment.handle,
                 parent_handle=assignment.handle,
             ),
-            invocation_id=call.invocation_id or uuid4().hex,
+            invocation_id=call.invocation_id or captured.run(spawn_invocation_id),
             workspace=workspace.root_path,
             permissions=permission_snapshot(self.app, sid),
             # An isolated workflow node's shell writes only its folder (node_folders.py).
