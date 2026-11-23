@@ -117,3 +117,39 @@ def test_the_running_servers_failure_is_the_checks_outcome(started: list[Any]) -
     assert started == []
     assert result["status"] == "unreachable"
     assert "server went away" in result["reason"]
+
+
+def test_a_fleet_being_built_does_not_block_the_loop(started: list[Any]) -> None:
+    """Live run 2a: a fleet built after a restart holds the workspace-fleet lock while
+    it waits for the app loop to start its servers; a check that took that lock on the
+    loop deadlocked the whole app.
+
+    SABOTAGE: call ``live_owners`` on the loop in ``_live_tools`` -> the loop never
+    runs the fleet's start, and this times out.
+    """
+    import threading
+
+    lock = threading.Lock()
+    app = _app(_running_spec(), _Client(), object())
+    app.state.agent._workspace_state = lambda: (lock, {}, {})
+
+    async def main() -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        holding, built = threading.Event(), threading.Event()
+
+        def build() -> None:
+            with lock:  # the fleet resolve, waiting on the loop with the lock held
+                holding.set()
+                asyncio.run_coroutine_threadsafe(asyncio.sleep(0.2), loop).result()
+                built.set()
+
+        holder = threading.Thread(target=build)
+        holder.start()
+        await asyncio.to_thread(holding.wait, 10)
+        checked = service.probe(app, service.entry(NAME), state.choice(NAME), force=True)
+        result = await asyncio.wait_for(checked, 10)
+        holder.join(10)
+        assert built.is_set()
+        return result
+
+    assert asyncio.run(main())["tool_count"] == 2
