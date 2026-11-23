@@ -362,6 +362,47 @@ def test_a_uv_cache_past_its_os_budget_gets_a_short_owned_stand_in(
     assert session_scratch.short_uv_cache(cache) == cache  # temp not granted: stays put
 
 
+@pytest.mark.parametrize("host", ["windows", "darwin", "linux"])
+def test_clio_core_ipc_past_the_socket_limit_gets_a_short_owned_folder(
+    tmp_path: Path, short_temp: Path, monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    """clio-core binds ``clio_zmq_<port>.ipc`` in its per-user folder; a deep Windows temp
+    or a long ``USER`` puts it past sun_path, so the daemon is pointed at a short folder."""
+
+    from clio_agent.arc import clio_core_config
+
+    monkeypatch.setattr(session_scratch, "_host_os", lambda: host)
+    monkeypatch.setattr(session_scratch, "_kernel_release", lambda: (5, 15))
+    budget = session_scratch.short_root_budget(session_scratch.CORE_IPC_ROLE)
+    assert budget == (84 if host == "darwin" else 88)
+    monkeypatch.setattr(
+        session_scratch,
+        "_base_dir",
+        lambda kind: short_temp if kind == session_scratch.SYSTEM_TEMP else None,
+    )
+    limit = len(str(short_temp)) + 60  # a test temp can be deep itself; scale sun_path to it
+    limits = {session_scratch.SOCKET_LIMIT: limit, session_scratch.PATH_LIMIT: 4096}
+    monkeypatch.setattr(session_scratch, "_os_limits", lambda: limits)
+    budget = limit - 20
+    fits = tmp_path / ("f" * max(1, budget - len(str(tmp_path)) - 1))
+    assert session_scratch.short_core_ipc_dir(fits) is None  # clio-core's own folder stays
+    deep = tmp_path / ("d" * 100) / "clio_someone"
+    short = session_scratch.short_core_ipc_dir(deep)
+    assert short is not None and short.parent == short_temp and short.is_dir()
+    assert not short.is_symlink() and len(str(short / "clio_zmq_29934.ipc")) < limit - 1
+    assert session_scratch.short_core_ipc_dir(deep) == short  # daemon and client agree
+    monkeypatch.setenv("CLIO_ALLOW_SYSTEM_TEMP", "0")
+    assert session_scratch.short_core_ipc_dir(deep) == short  # not a fenced child's root
+
+    monkeypatch.setattr(clio_core_config, "core_default_memfd_dir", lambda env: deep)
+    env: dict[str, str] = {}
+    clio_core_config.pin_core_memfd_dir(env)
+    assert env == {"CLIO_MEMFD_DIR": str(short)}
+    explicit = {"CLIO_MEMFD_DIR": "/srv/mine"}
+    clio_core_config.pin_core_memfd_dir(explicit)
+    assert explicit == {"CLIO_MEMFD_DIR": "/srv/mine"}  # an explicit value is respected
+
+
 def test_a_short_uv_cache_never_takes_a_folder_it_does_not_own(
     tmp_path: Path, short_temp: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

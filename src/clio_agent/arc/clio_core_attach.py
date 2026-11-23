@@ -292,6 +292,28 @@ def export_client_config(config_path: str) -> None:
     """
     if config_path:
         os.environ["CLIO_SERVER_CONF"] = config_path
+    export_client_memfd_dir()
+
+
+def export_client_memfd_dir() -> None:
+    """Point this process's native client at the daemon's IPC folder (``CLIO_MEMFD_DIR``).
+
+    The daemon's folder is pinned from its child environment
+    (:func:`clio_core_config.pin_core_memfd_dir`); this pins it the same way, with the
+    ``USER`` the client initializes under, and exports it process-wide because clio-core
+    names the folder again on every segment and socket it opens.
+    """
+    from clio_agent.arc import clio_core_config  # noqa: PLC0415 - cycle
+    from clio_agent.arc.home_runtime import core_user  # noqa: PLC0415 - cycle
+
+    env = dict(os.environ)
+    user = core_user()
+    if user is not None:
+        env["USER"] = user
+    clio_core_config.pin_core_memfd_dir(env)
+    pinned = env.get(clio_core_config.CORE_MEMFD_DIR_ENV)
+    if pinned:
+        os.environ[clio_core_config.CORE_MEMFD_DIR_ENV] = pinned
 
 
 def attach_native_client(

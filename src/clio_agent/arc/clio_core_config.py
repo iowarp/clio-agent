@@ -218,7 +218,8 @@ CORE_VIZ_ENABLE_ENV = "CLIO_VIZ_ENABLE"
 def pin_core_child_env(env: MutableMapping[str, str]) -> None:
     """Prepare ``env`` for a clio-core child.
 
-    Loopback bind, a CLIO-owned storage root, and no runtime dashboard.
+    Loopback bind, a CLIO-owned storage root, no runtime dashboard, and IPC sockets that
+    fit the OS socket limit.
     """
     pin_loopback_bind(env)
     if not env.get(CORE_STORAGE_ROOT_ENV):
@@ -230,6 +231,51 @@ def pin_core_child_env(env: MutableMapping[str, str]) -> None:
     user = core_user()
     if user is not None:
         env["USER"] = user
+    pin_core_memfd_dir(env)
+
+
+# clio-core keeps its per-user bookkeeping, its IPC sockets ``clio_<port>.ipc`` and
+# ``clio_zmq_<port + 3>.ipc`` among it, in the folder ``SystemInfo::GetMemfdDir`` names:
+# ``$CLIO_MEMFD_DIR``, else ``/tmp/clio_$USER`` on POSIX and
+# ``<temp_directory_path()>\clio_%USERNAME%`` on Windows. A deep Windows temp or a long user
+# name puts the socket past ``sun_path`` (108 bytes, 104 on macOS) and the daemon exits 1.
+# An explicit value is respected.
+CORE_MEMFD_DIR_ENV = "CLIO_MEMFD_DIR"
+
+
+def _windows_temp_dir(env: Mapping[str, str]) -> str:
+    # GetTempPathW's order, which std::filesystem::temp_directory_path uses on Windows.
+    for key in ("TMP", "TEMP", "USERPROFILE"):
+        value = (env.get(key) or "").strip()
+        if value:
+            return os.path.abspath(value)
+    return env.get("SystemRoot") or env.get("SYSTEMROOT") or r"C:\Windows"
+
+
+def core_default_memfd_dir(env: Mapping[str, str]) -> Path:
+    """The per-user folder clio-core picks itself under ``env`` (no ``CLIO_MEMFD_DIR``)."""
+    if os.name == "nt":
+        return Path(_windows_temp_dir(env)) / f"clio_{env.get('USERNAME') or 'unknown'}"
+    return Path("/tmp") / f"clio_{env.get('USER') or 'unknown'}"
+
+
+def pin_core_memfd_dir(env: MutableMapping[str, str]) -> None:
+    """Point clio-core at a short folder of this user's when its own would not fit.
+
+    One code path for every OS (:data:`clio_agent.runtime.session_scratch.CORE_IPC_ROLE`):
+    a default that fits is left to clio-core, so a running daemon keeps its folder. The
+    daemon, its stop and preflight children, and this process's native client all pin
+    from the same ``env`` shape, so they agree on the folder.
+    """
+    if env.get(CORE_MEMFD_DIR_ENV):
+        return
+    from clio_agent.runtime import session_scratch  # noqa: PLC0415 - keep arc a leaf
+
+    default = core_default_memfd_dir(env)
+    short = session_scratch.short_core_ipc_dir(default)
+    if short is not None:
+        env[CORE_MEMFD_DIR_ENV] = str(short)
+        logger.info("clio-core IPC folder %s stands in for %s", short, default)
 
 
 # The path suffix identifying a ram data tier (hand-authored or older configs; the
