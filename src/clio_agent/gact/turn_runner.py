@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import threading
 import time
@@ -105,6 +106,12 @@ class TurnRunner:
         self.app, self.admit = app, admit
         self.revision_gate = TurnRevisionGate()
         self._loop: asyncio.AbstractEventLoop | None = None
+        # The application's own context, captured where the loop is bound. Every turn
+        # starts from a copy of it, never from the producer that signalled: a task's
+        # settlement wakes the next turn from inside that task's call, and its
+        # call-scoped state (``TASK_CALL``, the observer call id, grants, write scope)
+        # would otherwise become the ambient state of every tool the new turn runs.
+        self._baseline: contextvars.Context | None = None
         self._lock = threading.RLock()
         self._turns: dict[str, _TurnResources] = {}
         self._pumps: dict[str, asyncio.Task[None]] = {}
@@ -142,6 +149,8 @@ class TurnRunner:
         """Bind application-owned admission before producers can signal work."""
         if self._loop is not None and self._loop is not loop:
             raise RuntimeError("TurnRunner cannot move to another event loop")
+        if self._baseline is None:
+            self._baseline = contextvars.copy_context()
         self._loop = loop
 
     def signal(self, sid: str) -> None:
@@ -156,7 +165,9 @@ class TurnRunner:
             return
         pump = self._pumps.get(sid)
         if pump is None or pump.done():
-            self._pumps[sid] = asyncio.create_task(self._pump(sid))
+            # ``call_soon_threadsafe`` runs this callback in the signalling thread's context.
+            baseline = self._baseline.copy() if self._baseline is not None else None
+            self._pumps[sid] = asyncio.create_task(self._pump(sid), context=baseline)
 
     async def run_pending(self, sid: str) -> None:
         """Admit ``sid``'s pending input now and wait until its turns settle (app loop only).
