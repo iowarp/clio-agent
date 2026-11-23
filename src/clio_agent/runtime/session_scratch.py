@@ -203,6 +203,14 @@ _OWNER_FILE = "owner.txt"
 SOCKET_ALIAS_FAILED_REASON = "session_scratch_socket_alias_failed"
 #: Typed reason: the short stand-in for a deep uv cache could not be made; the cache stays.
 SHORT_UV_CACHE_FAILED_REASON = "session_scratch_short_uv_cache_failed"
+#: Typed reason: the short folder for clio-core's IPC sockets could not be made.
+SHORT_CORE_IPC_FAILED_REASON = "session_scratch_short_core_ipc_failed"
+
+#: Where a short root may sit, tried in order: ``/tmp`` (POSIX only), the system temp, and
+#: ``%LOCALAPPDATA%`` (Windows only, for when the system temp is itself deep).
+POSIX_TMP = "tmp"
+SYSTEM_TEMP = "system-temp"
+LOCAL_APP_DATA = "local-app-data"
 
 
 @dataclass(frozen=True)
@@ -214,12 +222,20 @@ class ShortRootRole:
     limits: tuple[tuple[str, int], ...]
     mechanism: str
     failed_reason: str
+    #: The bases tried in order; the first whose root fits the budget is used.
+    bases: tuple[str, ...] = (SYSTEM_TEMP,)
+    #: Used by fenced children: a root in the system temp only while the fence grants it.
+    fenced: bool = True
 
 
 #: ``TMPDIR``/``TEMP``/``TMP``: a ``mkdtemp`` folder and a socket name need about 44 bytes
 #: below it (ssh's ``ControlPath`` adds about 35), so ssh's ControlMaster socket, munge,
-#: ``multiprocessing`` and Chromium-style singletons fit.
-SOCKET_ROLE = ShortRootRole("socket", ((SOCKET_LIMIT, 44),), LINK, SOCKET_ALIAS_FAILED_REASON)
+#: ``multiprocessing`` and Chromium-style singletons fit. A POSIX link may sit in /tmp, the
+#: shortest place every user can write and traverse; what is written through it lands in
+#: its target.
+SOCKET_ROLE = ShortRootRole(
+    "socket", ((SOCKET_LIMIT, 44),), LINK, SOCKET_ALIAS_FAILED_REASON, (POSIX_TMP, SYSTEM_TEMP)
+)
 #: ``UV_CACHE_DIR``: ``uv run --with`` imports packages from the cache itself
 #: (``archive-v0/<id>/.../site-packages/...``); CadQuery's deepest native library sits 115
 #: characters below it (136 on Linux), so 212 leaves room for deeper wheels. Its entry
@@ -232,6 +248,19 @@ UV_CACHE_ROLE = ShortRootRole(
     ((PATH_LIMIT, 212), (SHEBANG_LIMIT, 64)),
     STAND_IN,
     SHORT_UV_CACHE_FAILED_REASON,
+)
+#: ``CLIO_MEMFD_DIR``: clio-core's per-user folder holds its IPC sockets, the longest
+#: ``clio_zmq_<port + 3>.ipc`` (18 bytes for any port); 20 adds the separator and the NUL.
+#: clio-core refuses a link there (``SystemInfo::CheckMemfdDir`` lstats it), so it gets a
+#: real folder. The daemon and its clients are not fenced. Its default sits under the
+#: system temp on Windows, so ``%LOCALAPPDATA%`` follows when that temp is itself deep.
+CORE_IPC_ROLE = ShortRootRole(
+    "core-ipc",
+    ((SOCKET_LIMIT, 20),),
+    STAND_IN,
+    SHORT_CORE_IPC_FAILED_REASON,
+    (POSIX_TMP, SYSTEM_TEMP, LOCAL_APP_DATA),
+    fenced=False,
 )
 
 
@@ -266,12 +295,13 @@ def short_root_budget(role: ShortRootRole) -> int:
     return min(limits[name] - room for name, room in role.limits if name in limits)
 
 
-def _short_base(role: ShortRootRole) -> Path:
-    # A POSIX link may sit in /tmp, the shortest place every user can write and traverse;
-    # what is written through it lands in its target. Everything else sits in the system
-    # temp, the one short place a fenced child is granted (``paths.allow_system_temp``).
-    if role.mechanism == LINK and _host_os() != "windows" and Path("/tmp").is_dir():
-        return Path("/tmp")
+def _base_dir(kind: str) -> Path | None:
+    windows = _host_os() == "windows"
+    if kind == POSIX_TMP:
+        return Path("/tmp") if not windows and Path("/tmp").is_dir() else None
+    if kind == LOCAL_APP_DATA:
+        local = os.environ.get("LOCALAPPDATA", "").strip() if windows else ""
+        return Path(local) if local else None
     return Path(tempfile.gettempdir())
 
 
@@ -280,7 +310,10 @@ def _short_path(target: Path, role: ShortRootRole) -> Path:
 
     digest = hashlib.sha256(os.path.normcase(str(target)).encode("utf-8")).hexdigest()[:16]
     owner = os.getuid() if hasattr(os, "getuid") else "w"
-    return _short_base(role) / f"clio-{owner}-{digest}"
+    bases = [base for kind in role.bases if (base := _base_dir(kind)) is not None]
+    shorts = [base / f"clio-{owner}-{digest}" for base in bases or [Path(tempfile.gettempdir())]]
+    budget = short_root_budget(role)
+    return next((short for short in shorts if len(str(short)) <= budget), shorts[0])
 
 
 def _same_path(left: str, right: Path) -> bool:
@@ -333,13 +366,14 @@ def short_root(target: Path, role: ShortRootRole) -> Path:
     """``target``, or a short root of this user's standing in for it when it is too deep.
 
     One code path for every OS: a ``target`` longer than :func:`short_root_budget` gets
-    ``<base>/clio-<uid>-<hash of target>``, one per target, so sessions stay apart. A
-    :data:`LINK` role gets a symlink (POSIX, in ``/tmp``) or a junction (Windows) to
-    ``target``, so its files stay in ``target``; a :data:`STAND_IN` role gets a real folder
-    in the system temp whose ``owner.txt`` names ``target``. Anything in the system temp is
-    used only while ``paths.allow_system_temp`` grants it to fenced children. A name that
-    exists but is not this user's root for ``target`` is never used: ``target`` is.
-    Roots are removed with the session's scratch folder (:func:`remove_session_scratch`).
+    ``<base>/clio-<uid>-<hash of target>``, one per target, so sessions stay apart; the base
+    is the first of the role's bases whose root fits. A :data:`LINK` role gets a symlink
+    (POSIX, in ``/tmp``) or a junction (Windows) to ``target``, so its files stay in
+    ``target``; a :data:`STAND_IN` role gets a real folder whose ``owner.txt`` names
+    ``target``. For a fenced role, anything in the system temp is used only while
+    ``paths.allow_system_temp`` grants it to fenced children. A name that exists but is not
+    this user's root for ``target`` is never used: ``target`` is. Session roots are removed
+    with the session's scratch folder (:func:`remove_session_scratch`).
     A :data:`STAND_IN` judges ``target``'s real path: it exists for loaders that resolve
     links, so a short name through a link is still as deep as where it leads.
     """
@@ -348,7 +382,7 @@ def short_root(target: Path, role: ShortRootRole) -> Path:
     if len(str(target)) <= short_root_budget(role):
         return target
     in_system_temp = role.mechanism == STAND_IN or _host_os() == "windows"
-    if in_system_temp and not allow_system_temp():
+    if role.fenced and in_system_temp and not allow_system_temp():
         return target
     short = _short_path(target, role)
     if len(str(short)) >= len(str(target)):
@@ -413,6 +447,30 @@ def short_uv_cache(cache: Path) -> Path:
     """``cache``, or a short stand-in for it when it is too deep for uv's native packages."""
 
     return short_root(cache, UV_CACHE_ROLE)
+
+
+def short_core_ipc_dir(folder: Path) -> Path | None:
+    """A short folder of this user's for clio-core's IPC sockets, ``None`` when ``folder`` fits.
+
+    ``folder`` is the per-user folder clio-core would pick itself. ``None`` also when it is
+    too deep and no short folder could be made; that is logged, and ``folder`` stays.
+    ``folder`` is judged as written: a socket's ``sun_path`` is the name clio-core binds, so
+    a short name through a link (macOS ``/tmp``) fits and a running daemon keeps it.
+    """
+
+    budget = short_root_budget(CORE_IPC_ROLE)
+    if len(str(folder)) <= budget:
+        return None
+    short = short_root(folder, CORE_IPC_ROLE)
+    if len(str(short)) <= budget:
+        return short
+    logger.warning(
+        "clio-core IPC folder too deep reason=%s path=%s budget=%d",
+        SHORT_CORE_IPC_FAILED_REASON,
+        folder,
+        budget,
+    )
+    return None
 
 
 def remove_session_scratch(session_id: str, *, why: str) -> bool:
