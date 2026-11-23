@@ -99,6 +99,12 @@ class _ReplayCapture:
 _REPLAY: ContextVar[_ReplayCapture | None] = ContextVar("mcp_app_replay", default=None)
 
 
+def replaying() -> bool:
+    """Whether this call is a person's reopen from a card (MA19)."""
+
+    return _REPLAY.get() is not None
+
+
 class ReopenFailure(Exception):
     """A reopen that cannot proceed, with its typed reason."""
 
