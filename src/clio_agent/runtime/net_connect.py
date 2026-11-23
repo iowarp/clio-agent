@@ -573,10 +573,104 @@ def _bind_to_launcher() -> object | None:
         return None
 
 
-def _run(argv: list[str]) -> int:
+# Win32-OpenSSH reads this variable at start-up to learn how its stdio handles were opened.
+_WIN32_FD_STATE = "c28fc6f98a2c44abbbd89d6a3037d0d9_POSIX_FD_STATE"
+# struct std_fd_state {int num_inherited; char in_type, out_type, err_type, padding;}:
+# stdin is NONSOCK_FD (2, overlapped I/O), stdout and stderr stay NONSOCK_SYNC_FD (3).
+_ASYNC_STDIN_STATE = base64.b64encode((0).to_bytes(4, "little") + bytes((2, 3, 3, 0))).decode(
+    "ascii"
+)
+
+
+def _speaks_fd_state(program: str) -> bool:
+    """Whether ``program`` is a Win32-OpenSSH build that honours ``_WIN32_FD_STATE``."""
+    try:
+        with open(program, "rb") as handle:
+            return _WIN32_FD_STATE.encode("ascii") in handle.read()
+    except OSError:
+        return False
+
+
+def _feed(source: int, sink: int) -> None:
+    try:
+        while chunk := os.read(source, _CHUNK):
+            view = memoryview(chunk)
+            while view:
+                view = view[os.write(sink, view) :]
+    except OSError:
+        pass
+    finally:
+        os.close(sink)
+
+
+def _call_with_async_stdin(argv: list[str]) -> int | None:
+    """Run Win32-OpenSSH ``ssh`` with its stdin on an overlapped pipe this launcher feeds.
+
+    Win32-OpenSSH reads a piped stdin with a blocking ``ReadFile`` on a helper thread. When
+    the session ends it cancels that read and then waits, without a timeout, for the thread.
+    If the read has not reached the kernel when the cancel runs, the cancel misses it and
+    ``ssh`` hangs forever with the command's output still buffered: a held-open stdin, as a
+    caller that keeps stdin open for the remote command's lifetime does, triggers it. An
+    overlapped stdin is cancelled and closed without that wait. The caller's stdin is copied
+    across unchanged, and its EOF closes ``ssh``'s stdin. Returns None when stdin is not a
+    pipe or the pipe cannot be made, so the caller runs ``ssh`` with plain inherited stdio.
+    """
+    import _winapi
+    import msvcrt
+
+    try:
+        if _winapi.GetFileType(msvcrt.get_osfhandle(0)) != _winapi.FILE_TYPE_PIPE:
+            return None
+        name = rf"\\.\pipe\clio-ssh-stdin-{os.getpid()}-{os.urandom(8).hex()}"
+        reader = _winapi.CreateNamedPipe(
+            name,
+            _winapi.PIPE_ACCESS_INBOUND
+            | _winapi.FILE_FLAG_OVERLAPPED
+            | _winapi.FILE_FLAG_FIRST_PIPE_INSTANCE,
+            0x8,  # PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS
+            1,
+            _CHUNK,
+            _CHUNK,
+            _winapi.NMPWAIT_WAIT_FOREVER,
+            _winapi.NULL,
+        )
+    except OSError:
+        return None
+    try:
+        writer = _winapi.CreateFile(
+            name, _winapi.GENERIC_WRITE, 0, _winapi.NULL, _winapi.OPEN_EXISTING, 0, _winapi.NULL
+        )
+    except OSError:
+        _winapi.CloseHandle(reader)
+        return None
+    try:
+        _winapi.ConnectNamedPipe(reader, overlapped=True).GetOverlappedResult(True)
+    except OSError:
+        _winapi.CloseHandle(writer)
+        _winapi.CloseHandle(reader)
+        return None
+    read_fd = msvcrt.open_osfhandle(reader, os.O_RDONLY)
+    write_fd = msvcrt.open_osfhandle(writer, 0)
+    env = {**os.environ, _WIN32_FD_STATE: _ASYNC_STDIN_STATE}
+    try:
+        proc = subprocess.Popen(argv, stdin=read_fd, env=env)
+    except OSError:
+        os.close(write_fd)
+        raise
+    finally:
+        os.close(read_fd)
+    threading.Thread(target=_feed, args=(0, write_fd), daemon=True).start()
+    return proc.wait()
+
+
+def _run(argv: list[str], *, async_stdin: bool = False) -> int:
     if os.name == "nt":
         _bind_to_launcher()
         try:
+            if async_stdin and _speaks_fd_state(argv[0]):
+                code = _call_with_async_stdin(argv)
+                if code is not None:
+                    return code
             return subprocess.call(argv)
         except KeyboardInterrupt:
             return 130
@@ -607,7 +701,7 @@ def main(argv: list[str]) -> int:
         _say(f"{tool} is not installed on this machine")
         return 127
     if tool == "ssh":
-        return _run(ssh_argv(real, shim_dir, args))
+        return _run(ssh_argv(real, shim_dir, args), async_stdin=True)
     return _run(copy_argv(real, shim_dir, args, tool))
 
 
