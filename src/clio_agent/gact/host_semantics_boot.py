@@ -14,15 +14,19 @@ from typing import Any
 
 
 def install(app: Any) -> None:
-    """Install the server-surface observer and register the plugin tab and page routes."""
+    """Install the server-surface observer and the plugin tab, page and resource routes."""
 
     from clio_agent.gact.routes.plugin_pages import register_plugin_page_routes  # noqa: PLC0415
     from clio_agent.gact.routes.plugin_tabs import register_plugin_tab_routes  # noqa: PLC0415
+    from clio_agent.gact.routes.server_resources import (  # noqa: PLC0415
+        register_server_resource_routes,
+    )
     from clio_agent.gact.server_surfaces import install_server_surfaces  # noqa: PLC0415
 
     install_server_surfaces(app)
     register_plugin_tab_routes(app)
     register_plugin_page_routes(app)
+    register_server_resource_routes(app)
 
 
 def start(app: Any) -> asyncio.Task[None]:
@@ -37,6 +41,9 @@ def start(app: Any) -> asyncio.Task[None]:
 async def stop(app: Any) -> None:
     """Stop the grant file sync and the plugin update follow, and wait for them to end."""
 
+    resources = getattr(app.state, "server_resources", None)
+    if resources is not None:
+        resources.shutdown()
     tasks = [
         task
         for task in (
