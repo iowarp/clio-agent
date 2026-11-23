@@ -34,6 +34,7 @@ import logging
 import os
 import shutil
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,7 @@ from clio_agent.plugins.loader import (
     carry_digests,
     hashing_once,
     load_plugin,
+    loading_once,
     tree_digests,
 )
 from clio_agent.plugins.manifest import within
@@ -55,6 +57,7 @@ from clio_agent.plugins.marketplace import (
     GitPin,
     MarketplaceContents,
     load_agent_specs,
+    probe_marketplace,
     read_marketplace,
 )
 from clio_agent.plugins.package_files import ignored_package_names, source_stamp
@@ -105,18 +108,83 @@ def _copy_tree(source: Path, target: Path) -> None:
         return
     staging = target.with_name(f"{target.name}.partial-{uuid.uuid4().hex[:12]}")
     try:
-        shutil.copytree(
-            win_extended_path(source.absolute()),
-            win_extended_path(staging.absolute()),
-            symlinks=False,
-            ignore=ignored_package_names,
-        )
+        _copy_files(win_extended_path(source.absolute()), win_extended_path(staging.absolute()))
         rename_extended(staging, target)
     except OSError:
         rmtree_extended(staging, ignore_errors=True)
         if not target.is_dir():
             raise
         # Another install of the same content finished first: its copy is identical.
+
+
+def _copy_files(source: str, target: str) -> None:
+    """``shutil.copytree(source, target, ignore=ignored_package_names)``, files copied in parallel.
+
+    The same tree and metadata (symlinks followed, ``copy2`` times kept, directory stats
+    last). Each file copy waits on the disk, so overlapping them is what makes a marketplace
+    of thousands of small files quick on a network or scanned file system.
+    """
+
+    files: list[tuple[str, str]] = []
+    directories: list[tuple[str, str]] = []
+    for directory, subdirs, names in os.walk(source, followlinks=True, onerror=_raise):
+        ignored = ignored_package_names(directory, [*subdirs, *names])
+        subdirs[:] = [name for name in subdirs if name not in ignored]
+        relative = os.path.relpath(directory, source)
+        destination = target if relative == os.curdir else os.path.join(target, relative)
+        os.makedirs(destination)
+        directories.append((directory, destination))
+        files.extend(
+            (os.path.join(directory, name), os.path.join(destination, name))
+            for name in names
+            if name not in ignored
+        )
+    if files:
+        workers = min(32, (os.cpu_count() or 1) * 4, len(files))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="clio-snapshot") as pool:
+            for future in [pool.submit(shutil.copy2, src, dst) for src, dst in files]:
+                future.result()
+    for directory, destination in reversed(directories):
+        shutil.copystat(directory, destination)
+
+
+def _raise(error: OSError) -> None:
+    raise error
+
+
+class _Prefetch:
+    """A marketplace's pinned git plugins, fetched in parallel while its snapshot is made.
+
+    Started from the marketplace's index, before the copy and the read; each fetch is the
+    one :meth:`PluginStore._git_plugins` would make, and a pin not started here is fetched
+    there as before.
+    """
+
+    def __init__(self, pins: list[GitPin], cache: Path) -> None:
+        self._cache = cache
+        wanted = list(dict.fromkeys((pin.url, pin.commit) for pin in pins))
+        self._pool = (
+            ThreadPoolExecutor(
+                max_workers=min(16, len(wanted)), thread_name_prefix="clio-plugin-fetch"
+            )
+            if wanted
+            else None
+        )
+        self._futures: dict[tuple[str, str], Future[FetchedSource]] = {
+            key: self._pool.submit(fetch, key[0], cache=cache, commit=key[1], declared=True)
+            for key in wanted
+            if self._pool is not None
+        }
+
+    def get(self, pin: GitPin) -> FetchedSource:
+        future = self._futures.get((pin.url, pin.commit))
+        if future is None:
+            return fetch(pin.url, cache=self._cache, commit=pin.commit, declared=True)
+        return future.result()
+
+    def close(self) -> None:
+        if self._pool is not None:
+            self._pool.shutdown(wait=True, cancel_futures=True)
 
 
 @dataclass
@@ -290,7 +358,7 @@ class PluginStore:
         source waits for :meth:`trust`.
         """
 
-        with hashing_once():
+        with hashing_once(), loading_once(self.root / "snapshots"):
             return self._install(
                 source, ref=ref, commit=commit, name=name, default=default, parent=parent
             )
@@ -309,7 +377,10 @@ class PluginStore:
             )
         except SourceError as exc:
             raise StoreError("source_unavailable", str(exc)) from exc
-        probe = self._read(fetched.path, trusted=False, name=name)
+        try:
+            probe = probe_marketplace(fetched.path, name)
+        except (PluginLoadError, OSError, json.JSONDecodeError) as exc:
+            raise StoreError("marketplace_invalid", str(exc)) from exc
         market = name or probe.name
         if not valid_plugin_id(market):
             raise StoreError(
@@ -317,24 +388,58 @@ class PluginStore:
             )
         if market in (BUILTIN_MARKETPLACE, USER_MARKETPLACE):
             raise StoreError("marketplace_name_reserved", f"{market!r} is reserved")
+        if not default:
+            # Checked again under the lock; this only spares a refused install its fetches.
+            self._check_name_free(self.read_state(), market, fetched.url, parent)
+        prefetch = _Prefetch(probe.git_plugins, self.root / "sources")
+        try:
+            return self._install_snapshot(
+                fetched,
+                probe,
+                prefetch,
+                source=source,
+                market=market,
+                ref=ref,
+                commit=commit,
+                default=default,
+                parent=parent,
+            )
+        finally:
+            prefetch.close()
+
+    @staticmethod
+    def _check_name_free(state: dict[str, Any], market: str, url: str, parent: str) -> None:
+        previous = state["marketplaces"].get(market) or {}
+        if previous and (previous.get("url") != url or previous.get("parent", "") != parent):
+            # A name is the marketplace's identity and carries its trust: another
+            # source (or another federating parent) never takes it over.
+            raise StoreError(
+                "marketplace_name_taken",
+                f"a marketplace named {market!r} is already installed from "
+                f"{previous.get('url')}; remove it before installing {url}",
+            )
+
+    def _install_snapshot(
+        self,
+        fetched: FetchedSource,
+        probe: MarketplaceContents,
+        prefetch: _Prefetch,
+        *,
+        source: str,
+        market: str,
+        ref: str,
+        commit: str,
+        default: bool,
+        parent: str,
+    ) -> dict[str, Any]:
         # Stamped before the copy: a change racing the copy shows as a mismatch next start.
         stamp = source_stamp(fetched.path) if fetched.local else ""
         snapshot = self._snapshot(market, fetched.path)
         with self.lock:
             state = self.read_state()
             previous = state["marketplaces"].get(market) or {}
-            if (
-                previous
-                and not default
-                and (previous.get("url") != fetched.url or previous.get("parent", "") != parent)
-            ):
-                # A name is the marketplace's identity and carries its trust: another
-                # source (or another federating parent) never takes it over.
-                raise StoreError(
-                    "marketplace_name_taken",
-                    f"a marketplace named {market!r} is already installed from "
-                    f"{previous.get('url')}; remove it before installing {fetched.url}",
-                )
+            if not default:
+                self._check_name_free(state, market, fetched.url, parent)
             entry: dict[str, Any] = {
                 "id": market,
                 "source": fetched.url if fetched.local else source,
@@ -361,7 +466,7 @@ class PluginStore:
                 "fetch_cache": [name] if (name := self._cache_name(fetched)) else [],
             }
             state["marketplaces"][market] = entry
-            summary = self._apply(state, market, snapshot, entry)
+            summary = self._apply(state, market, snapshot, entry, prefetch=prefetch)
             self._write_state(state)
         for pin in summary.pop("federated_pins", []):
             try:
@@ -381,16 +486,15 @@ class PluginStore:
         return "" if fetched.local or fetched.path.parent != cache else fetched.path.name
 
     def _git_plugins(
-        self, pins: list[GitPin], market: str
+        self, pins: list[GitPin], market: str, prefetch: _Prefetch | None = None
     ) -> tuple[list[PluginRecord], list[Diagnostic], list[str]]:
         records: list[PluginRecord] = []
         diagnostics: list[Diagnostic] = []
         cached: list[str] = []
+        prefetch = prefetch or _Prefetch([], self.root / "sources")
         for pin in pins:
             try:
-                fetched = fetch(
-                    pin.url, cache=self.root / "sources", commit=pin.commit, declared=True
-                )
+                fetched = prefetch.get(pin)
             except SourceError as exc:
                 diagnostics.append(
                     Diagnostic("error", "plugin_source_unavailable", str(exc), pin.name)
@@ -429,6 +533,7 @@ class PluginStore:
         entry: dict[str, Any],
         *,
         approve: bool = False,
+        prefetch: _Prefetch | None = None,
     ) -> dict[str, Any]:
         """Apply ``snapshot`` as ``market``'s content.
 
@@ -448,7 +553,9 @@ class PluginStore:
         # The detected layout decides how to read it: a Claude Code marketplace, a
         # single Claude Code plugin, a folder of skills, or an Agent Plugins tree.
         contents = self._read(snapshot, trusted=False, name=market)
-        git_records, git_diags, git_cached = self._git_plugins(contents.git_plugins, market)
+        git_records, git_diags, git_cached = self._git_plugins(
+            contents.git_plugins, market, prefetch
+        )
         entry["fetch_cache"] = sorted({*(entry.get("fetch_cache") or []), *git_cached})
         diagnostics = [*contents.diagnostics, *git_diags]
         records: list[PluginRecord] = []

@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import copy
+import dataclasses
 import hashlib
 import importlib
 import importlib.util
@@ -432,10 +434,18 @@ def _defined_here(module: types.ModuleType) -> list[tuple[str, Any]]:
     return [(name, value) for name, value in vars(module).items() if not name.startswith("_")]
 
 
-def _python_parts(root: Path, plugin: str, texts: dict[str, str]) -> _PythonParts:
-    # A Flow is a dspy.Module: loading a trusted plugin's Python parts loads the engine.
-    from clio_agent.sdk.flow import Flow  # noqa: PLC0415
+def _flow_base() -> type | None:
+    """``Flow``, once some flow module has imported it; ``None`` while none has.
 
+    A flow subclasses ``Flow``, so a module defining one has imported
+    ``clio_agent.sdk.flow`` (and its engine) itself: a plugin without flows never loads it.
+    """
+
+    module = sys.modules.get("clio_agent.sdk.flow")
+    return getattr(module, "Flow", None)
+
+
+def _python_parts(root: Path, plugin: str, texts: dict[str, str]) -> _PythonParts:
     parts = _PythonParts()
     clio_dir = root / NAMESPACE
     if (clio_dir / "plugin.py").is_file():
@@ -465,6 +475,7 @@ def _python_parts(root: Path, plugin: str, texts: dict[str, str]) -> _PythonPart
             module = _import(root, relative, plugin, parts)
             if module is None:
                 continue
+            flow = _flow_base() if folder == "flows" else None
             for attr, value in _defined_here(module):
                 if folder == "tools" and isinstance(value, ToolSpec):
                     parts.tools.append(
@@ -509,10 +520,10 @@ def _python_parts(root: Path, plugin: str, texts: dict[str, str]) -> _PythonPart
                     if record is not None:
                         parts.subagents.append(record)
                 elif (
-                    folder == "flows"
+                    flow is not None
                     and isinstance(value, type)
-                    and issubclass(value, Flow)
-                    and value is not Flow
+                    and issubclass(value, flow)
+                    and value is not flow
                     and value.__module__ == module.__name__
                 ):
                     if not value.id:
@@ -618,10 +629,62 @@ def _merge_refs(
     return (lists[0] if lists else ()), []
 
 
-def load_plugin(root: Path, *, marketplace: str = "", trusted: bool) -> PluginRecord:
-    """Load the native plugin at ``root``. Raises :class:`PluginLoadError` if fatal."""
+@dataclasses.dataclass(frozen=True)
+class _StaticParts:
+    """What a package's files say without importing its Python (the same trusted or not)."""
 
-    root = root.resolve()
+    manifest: dict[str, Any]
+    plugin: str
+    ext: dict[str, Any]
+    servers: dict[str, Any]
+    exec_digest: str
+    text_digest: str
+    skills: tuple[SkillRecord, ...]
+    fragments: tuple[FragmentRecord, ...]
+    texts: dict[str, str]
+    commands: tuple[Any, ...]
+    workflows: tuple[Any, ...]
+    file_hooks: tuple[HookRecord, ...]
+    diagnostics: tuple[Diagnostic, ...]
+    has_python: bool
+
+
+#: Within :func:`loading_once`, the folder holding immutable packages and their static parts.
+_STATIC_LOADS: contextvars.ContextVar[tuple[str, dict[str, _StaticParts]] | None] = (
+    contextvars.ContextVar("clio_plugin_static_loads", default=None)
+)
+
+
+@contextlib.contextmanager
+def loading_once(immutable: Path) -> Iterator[None]:
+    """Read each package below ``immutable`` once, however many times it loads.
+
+    An install loads a package untrusted, then trusted once the digests allow; only the
+    Python parts differ. Below ``immutable`` (the store's content-addressed snapshots,
+    never written after their copy) the files read the first time are reused.
+    """
+
+    prefix = os.path.join(os.path.abspath(immutable), "")
+    token = _STATIC_LOADS.set((prefix, {})) if _STATIC_LOADS.get() is None else None
+    try:
+        yield
+    finally:
+        if token is not None:
+            _STATIC_LOADS.reset(token)
+
+
+def _static_parts(root: Path) -> _StaticParts:
+    memo = _STATIC_LOADS.get()
+    key = str(root)
+    if memo is not None and key.startswith(memo[0]) and key in memo[1]:
+        return memo[1][key]
+    static = _read_static_parts(root)
+    if memo is not None and key.startswith(memo[0]):
+        memo[1][key] = static
+    return static
+
+
+def _read_static_parts(root: Path) -> _StaticParts:
     try:
         manifest, diagnostics = read_manifest(root)
         plugin = manifest["name"]
@@ -658,6 +721,39 @@ def load_plugin(root: Path, *, marketplace: str = "", trusted: bool) -> PluginRe
         any((clio_dir / name).is_dir() for name in _PYTHON_DIRS)
         or (clio_dir / "plugin.py").is_file()
     )
+    return _StaticParts(
+        manifest=manifest,
+        plugin=plugin,
+        ext=ext,
+        servers=servers,
+        exec_digest=exec_digest,
+        text_digest=text_digest,
+        skills=tuple(skills),
+        fragments=tuple(fragments),
+        texts=texts,
+        commands=tuple(commands),
+        workflows=tuple(workflows),
+        file_hooks=tuple(file_hooks),
+        diagnostics=tuple(diagnostics),
+        has_python=has_python,
+    )
+
+
+def load_plugin(root: Path, *, marketplace: str = "", trusted: bool) -> PluginRecord:
+    """Load the native plugin at ``root``. Raises :class:`PluginLoadError` if fatal."""
+
+    root = root.resolve()
+    static = _static_parts(root)
+    manifest, plugin = static.manifest, static.plugin
+    # Each record owns its tables: a record's consumers may adjust them in place.
+    ext = copy.deepcopy(static.ext)
+    servers = copy.deepcopy(static.servers)
+    exec_digest, text_digest = static.exec_digest, static.text_digest
+    skills, fragments, texts = static.skills, static.fragments, dict(static.texts)
+    commands, workflows, file_hooks = static.commands, static.workflows, static.file_hooks
+    diagnostics = list(static.diagnostics)
+    has_python = static.has_python
+    clio_dir = root / NAMESPACE
     parts = _PythonParts()
     if trusted:
         parts = _python_parts(root, plugin, texts)
