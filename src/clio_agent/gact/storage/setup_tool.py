@@ -444,4 +444,7 @@ def build_connected_data_write_tool() -> Any:
         domain="resources",
         title="Save linked file",
         read_only=False,
+        # A write_through save changes the original (a GitHub save is a commit): it
+        # follows the approval mode as an MCP tool does, and plan mode refuses it.
+        outside=True,
     )

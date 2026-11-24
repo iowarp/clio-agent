@@ -36,6 +36,10 @@ TUI/HTTP surface aren't tracked here.
 
 ### Changed
 
+- `connected_data_write` follows the session's approval mode, as an MCP tool does:
+  plan mode refuses it, `ask` and `auto-edits` ask, `bypass` runs it. A
+  `write_through` save changes the original (a GitHub save is a commit), and it had
+  run unasked in every mode, plan mode included.
 - A path argument an MCP server declares as a `local` file (`ai.iowarp.clio/paths`)
   meets folder access as `fs_read_file`'s does: outside the workspace and approved
   folders, the call asks for the folder first, read-only tools included. URLs and

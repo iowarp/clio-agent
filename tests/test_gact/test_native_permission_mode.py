@@ -308,3 +308,29 @@ class TestTheBrowserFollowsTheMode:
             pending = _call(app, sid, BUILDERS["browser_act"](), "browser_act")
             _answer(client, app, pending, "deny")
             assert "was not run" in pending["refused"]
+
+
+@pytest.mark.usefixtures("host_agent_executor")
+class TestALinkedSaveFollowsTheMode:
+    """``connected_data_write`` can change the person's originals: it follows the mode."""
+
+    def test_it_is_declared_outside(self) -> None:
+        from clio_agent.gact.storage.setup_tool import build_connected_data_write_tool
+
+        assert acts_outside(build_connected_data_write_tool())
+
+    def test_plan_mode_refuses_and_ask_asks(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        from clio_agent.gact.app import build_app
+        from clio_agent.gact.storage.setup_tool import build_connected_data_write_tool
+
+        tool, name = build_connected_data_write_tool(), "connected_data_write"
+        app = build_app(sessions_path=tmp_path / "s.json")
+        with TestClient(app) as client:
+            plan = client.post("/v1/sessions", json={"title": "t", "mode": "plan"}).json()["id"]
+            assert _settle(_call(app, plan, tool, name))["refused"]
+            assert not [r for r in app.state.permissions.values() if r["status"] == "pending"]
+            asked = _call(app, _session(client, "ask"), tool, name)
+            _answer(client, app, asked, "deny")
+            assert "was not run" in asked["refused"]
