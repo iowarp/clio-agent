@@ -49,6 +49,30 @@ class CatalogSelection:
         return self.catalog_id is not None
 
 
+def _named_catalog_id(entries: Any, preferred: str) -> str:
+    """The producible catalog id a caller named, by its full id or its short name.
+
+    An agent often names a catalog the way its skill and instructions do
+    (``clio-workspace``) rather than by its full id
+    (``https://iowarp.ai/a2ui/catalogs/clio-workspace/v1``). A short name means
+    the one producible catalog whose installed name, or whose id's
+    ``<name>/<version>`` tail, it is; anything else (an unknown or ambiguous
+    name) is returned unchanged, so it still meets the typed refusal.
+    """
+
+    ids = [entry.catalog_id for entry in entries]
+    if preferred in ids or "/" in preferred.strip("/"):
+        return preferred
+    wanted = preferred.strip().lower()
+    matches = set()
+    for entry in entries:
+        parts = entry.catalog_id.rstrip("/").split("/")
+        tail = parts[-2].lower() if len(parts) >= 2 else ""
+        if wanted in {(entry.name or "").lower(), tail}:
+            matches.add(entry.catalog_id)
+    return matches.pop() if len(matches) == 1 else preferred
+
+
 def select_catalog(
     app: "FastAPI", session_id: str, preferred: str | None = None, *, record: bool = True
 ) -> CatalogSelection:
@@ -58,8 +82,9 @@ def select_catalog(
     list" (protocol). The best match is decided by the AGENT's declared
     preference order (v15 S8 owner ruling: the agent's ``a2ui_catalogs`` is
     its complete, ordered allowlist) -- the first declared catalog the client
-    advertises. ``preferred`` (e.g. an explicit tool argument) wins ONLY when
-    it is itself in both sets; it never bypasses either. The choice is not
+    advertises. ``preferred`` (e.g. an explicit tool argument, by full id or by
+    the short name of exactly one producible catalog) wins ONLY when it is
+    itself in both sets; it never bypasses either. The choice is not
     persisted here -- "locked per surface" is a surface-record concern the
     producer tool (S4) owns at ``createSurface`` time.
 
@@ -107,6 +132,7 @@ def select_catalog(
     supported = tuple(caps.v0_9.supportedCatalogIds)
     producible_set = set(producible)
     if preferred is not None:
+        preferred = _named_catalog_id(resolved.entries, preferred)
         if preferred in supported and preferred in producible_set:
             return CatalogSelection(
                 catalog_id=preferred,

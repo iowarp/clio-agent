@@ -327,6 +327,24 @@ def test_select_catalog_preferred_wins_only_when_in_both_sets(tmp_path: Path) ->
     )
 
 
+def test_select_catalog_preferred_by_short_name(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="t")
+    bind_builtin_catalogs(app, session.id)
+    caps = parse_client_capabilities(
+        {"a2uiClientCapabilities": {"v0.9": {"supportedCatalogIds": [WORKSPACE_ID, BASIC_ID]}}}
+    )
+    assert caps is not None
+    remember_client_capabilities(app, session.id, caps)
+    # The name the skills use means the one producible catalog it names.
+    assert select_catalog(app, session.id, preferred="clio-workspace").catalog_id == WORKSPACE_ID
+    assert select_catalog(app, session.id, preferred="basic").catalog_id == BASIC_ID
+    # A name that names nothing is still the typed refusal.
+    selection = select_catalog(app, session.id, preferred="no-such-catalog")
+    assert selection.catalog_id is None
+    assert selection.reason == "a2ui_preferred_catalog_not_selectable"
+
+
 # --------------------------------------------------------------------------- #
 # strip_renderer_metadata                                                     #
 # --------------------------------------------------------------------------- #
