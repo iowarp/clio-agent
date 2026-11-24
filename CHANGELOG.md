@@ -36,6 +36,12 @@ TUI/HTTP surface aren't tracked here.
 
 ### Changed
 
+- Every door that accepts an A2UI message (the producer tools, `POST` to a surface,
+  replay) now bounds its nesting before the catalog's JSON Schema runs, and runs the
+  chart guard (`check_chart_spec`) on each `clio.chart.v1` spec. Deep nesting had
+  raised an untyped `RecursionError`, and a spec the guard refuses reached the
+  schema's slow recursive rules. A theme's `iconUrl` is checked like every other URL
+  slot.
 - Installing a marketplace refuses one that contains a link to a folder, or to a file
   outside the marketplace (`marketplace_invalid`). The snapshot copied each link's
   target, so a marketplace could copy a file of this computer into itself. A link to
