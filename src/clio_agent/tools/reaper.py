@@ -20,6 +20,11 @@ enforces an LRU cap on how many stay resident, with three hard guarantees:
   ~220s jarvis dispatch). :meth:`WorkspaceExecutorReaper.note_resolved` closes
   it: resolving a root for use counts as activity for one TTL window, exactly
   like an in-flight call or a live-turn lease.
+- **Work-aware**: a fleet whose server still runs work it accepted (an MCP task, or a
+  call waiting on its reply, on a connection the application kept beyond the turn) is
+  in use like one with a call in flight, however long the work takes
+  (:func:`~clio_agent.tools.fleet_close_listeners.fleet_held`, typed
+  ``workspace_fleet_held``). Closing it would kill the process doing that work.
 - **Typed, never silent**: every reap emits a structured trace reason
   (``workspace_fleet_reaped reason=idle_ttl|lru_cap``) to the process
   log/trace plane. A reaped fleet is not a degradation — the next tool call
@@ -40,7 +45,7 @@ from typing import Any, Callable
 
 from clio_agent import conf
 from clio_agent.runtime import trace
-from clio_agent.tools.fleet_close_listeners import fleet_closed
+from clio_agent.tools.fleet_close_listeners import fleet_closed, fleet_held
 from clio_agent.tools.fleet_key import fleet_root, fleet_variant, keys_at
 
 _DEFAULT_TTL_S = 120.0
@@ -125,6 +130,9 @@ class WorkspaceExecutorReaper:
         # Bounded by the registry: a root is dropped here the instant it is
         # reaped/evicted (below), so this can never grow past resident roots.
         self._resolved_at: dict[str, float] = {}
+        # Roots kept only because their server still runs accepted work; the typed
+        # ``workspace_fleet_held`` is emitted once each time a root becomes held.
+        self._held: set[str] = set()
         # The net-channel stop step (#1033): closes a workspace's per-child
         # chokepoint listeners when its fleet is torn down (reap OR restart), so
         # the previously-unwired ``close_child_channel`` seam stops leaking.
@@ -173,7 +181,10 @@ class WorkspaceExecutorReaper:
                         self._pending_restarts.discard(root)
                         continue
                     try:
-                        busy = bool(executor.busy) or self._leases.get(fleet_root(root), 0) > 0
+                        busy = (
+                            self._in_use(root, executor)
+                            or self._leases.get(fleet_root(root), 0) > 0
+                        )
                     except Exception as exc:  # noqa: BLE001 - can't prove idle → keep deferred
                         trace.event(
                             "TOOLS",
@@ -192,10 +203,10 @@ class WorkspaceExecutorReaper:
                 for root, executor in list(self._registry.items()):
                     try:
                         expired = (
-                            not executor.busy
-                            and self._leases.get(fleet_root(root), 0) == 0
+                            self._leases.get(fleet_root(root), 0) == 0
                             and not self._recently_resolved(root, now)
                             and executor.idle_for() >= self._ttl_s
+                            and not self._in_use(root, executor)
                         )
                     except Exception as exc:  # noqa: BLE001 - typed skip, never abort
                         trace.event(
@@ -213,9 +224,9 @@ class WorkspaceExecutorReaper:
                     for root, ex in self._registry.items():
                         try:
                             if (
-                                not ex.busy
-                                and self._leases.get(fleet_root(root), 0) == 0
+                                self._leases.get(fleet_root(root), 0) == 0
                                 and not self._recently_resolved(root, now)
+                                and not self._in_use(root, ex)
                             ):
                                 candidates.append((root, ex, ex.idle_for()))
                         except Exception as exc:  # noqa: BLE001 - typed skip, never abort
@@ -237,6 +248,7 @@ class WorkspaceExecutorReaper:
                 # #1230: a torn-down root's resolve-activity marker goes with it —
                 # never left to protect a FUTURE (unrelated) resident at this root.
                 self._resolved_at.pop(root, None)
+                self._held.discard(root)
                 # CV-N2: the application's connections retained on its proxies go too.
                 fleet_closed(root, executor, reason)
                 try:
@@ -267,6 +279,23 @@ class WorkspaceExecutorReaper:
                     len(self._registry),
                 )
         return reaped
+
+    def _in_use(self, root: str, executor: Any) -> bool:
+        """Whether ``root``'s fleet has a call in flight or its server runs accepted work.
+
+        MUST be called with the shared registry lock held.
+        """
+
+        if bool(getattr(executor, "busy", False)):
+            return True
+        held = fleet_held(executor)
+        if held and root not in self._held:
+            trace.event("TOOLS", "workspace_fleet_held root=%s reason=accepted_work", root)
+        if held:
+            self._held.add(root)
+        else:
+            self._held.discard(root)
+        return held
 
     def _close_channels(self, root: str) -> int:
         """Close the workspace's per-child net channels (guarded, typed) — #1033."""
@@ -323,7 +352,7 @@ class WorkspaceExecutorReaper:
         """
 
         try:
-            active = bool(getattr(executor, "busy", False)) or leases.get(fleet_root(root), 0) > 0
+            active = self._in_use(root, executor) or leases.get(fleet_root(root), 0) > 0
         except Exception:  # noqa: BLE001 - can't prove idle -> never close inline
             active = True
         if not active:
@@ -394,7 +423,7 @@ class WorkspaceExecutorReaper:
                 self._pending_restarts.discard(root)
                 return RESTART_NO_RESIDENT
             try:
-                busy = bool(executor.busy) or self.turn_leased(root)
+                busy = self._in_use(root, executor) or self.turn_leased(root)
             except Exception as exc:  # noqa: BLE001 - can't prove idle → defer, never close busy
                 trace.event(
                     "TOOLS",
