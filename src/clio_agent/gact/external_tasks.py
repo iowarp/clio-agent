@@ -40,6 +40,7 @@ from clio_agent.gact.task_publication import publish_task_notice
 from clio_agent.tools import recorded_results, view_only_results
 from clio_agent.tools.caller_scope import caller_meta
 from clio_agent.tools.mcp_runtime import enter_connection
+from clio_agent.tools.server_exit import MCP_STDIO_SERVER_EXITED, server_exited
 from clio_agent.tools.task_call_context import permission_snapshot, safe_description
 from clio_agent.tools.task_client import (
     AcceptedNativeCall,
@@ -50,6 +51,35 @@ from clio_agent.tools.task_client import (
 from clio_agent.tools.task_receipt import accepted_result
 
 logger = logging.getLogger(__name__)
+
+#: A task's stdio server was relaunched and the new process has no record of the task.
+RELAUNCHED_SERVER_UNKNOWN = "mcp_relaunched_server_unknown_task"
+RELAUNCHED_SERVER_UNKNOWN_TEXT = (
+    f"{RELAUNCHED_SERVER_UNKNOWN}: the server was started again after its process exited, "
+    "and the new process has no record of this work. Nothing was resubmitted; inspect its "
+    "effects before deliberately retrying."
+)
+
+
+def relaunching_text(server: str, attempt: int) -> str:
+    """What a task's card says while its exited stdio server is started again."""
+    return (
+        f"{MCP_STDIO_SERVER_EXITED}: the {server} server's process exited. Starting it again "
+        f"to reattach this work (attempt {attempt}); nothing was resubmitted. Retries continue "
+        "until the server answers for it; cancel the task to stop them."
+    )
+
+
+def _unknown_task(error: BaseException) -> bool:
+    """Whether ``error`` is the server's own answer that it does not know the task."""
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if getattr(current, "code", None) == mcp_types.INVALID_PARAMS:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 @dataclass
@@ -73,6 +103,10 @@ class ExternalConnection:
     superseded: bool = False  # replaced while busy (EXTERNAL_MCP_CONNECTION_SUPERSEDED)
     #: This connection's tool listing, read once per connected client (reset on reconnect).
     tools: dict[str, Any] | None = None
+    #: How often its stdio server was started again after its process exited (server_exit).
+    relaunches: int = 0
+    #: Accepted tasks rebound to a relaunched process, whose ``tasks/get`` decides them.
+    relaunched: set[str] = field(default_factory=set)
 
 
 class ExternalTasks:
@@ -546,18 +580,25 @@ class ExternalTasks:
                     "Task boundary reason=external_observation_failed error_type=%s",
                     type(error).__name__,
                 )
+                handle = call.submission.handle
+                if call.task.task_id in host.relaunched and _unknown_task(error):
+                    # The relaunched server answered for itself: it has no record of
+                    # this work. Asking again cannot change that, so retries end here.
+                    await self._record_or_defer(
+                        "external-attention:" + handle,
+                        lambda: self._attention(handle, RELAUNCHED_SERVER_UNKNOWN_TEXT),
+                    )
+                    return
                 reason = str(error)
                 await self._record_or_defer(
-                    "external-attention:" + call.submission.handle,
-                    lambda: self._attention(call.submission.handle, reason),
+                    "external-attention:" + handle,
+                    lambda: self._attention(handle, reason),
                 )
 
                 async def reconnect() -> bool:
                     if self._closing:
                         return True  # confirmed Core visibility is retained for startup recovery
-                    task = await self.history.io.run(
-                        self.history.task_snapshot, call.submission.handle
-                    )
+                    task = await self.history.io.run(self.history.task_snapshot, handle)
                     if task is not None and (
                         task.terminal_at is not None or task.connection_freshness == "fresh"
                     ):
@@ -567,20 +608,33 @@ class ExternalTasks:
                         return False
                     async with host.reconnect_lock:
                         assert host.client is not None
-                        if not host.client.is_connected():
-                            if "stdio" in host.backend.transport.casefold():
-                                # The attention record remains durable. This identity
-                                # cannot reconnect, so retrying cannot establish custody.
-                                return True
+                        stdio = "stdio" in host.backend.transport.casefold()
+                        if stdio and (host.closing or host.superseded):
+                            # Stopped on purpose; the attention record remains durable.
+                            return True
+                        if stdio and (server_exited(host.client) or not host.client.is_connected()):
+                            # Its process exited: start it again through its launch path,
+                            # on this connection, and ask the new process for this task.
+                            await self.history.io.run(
+                                partial(
+                                    self._attention,
+                                    handle,
+                                    relaunching_text(host.backend.server, host.relaunches + 1),
+                                )
+                            )
+                            await external_task_connections.revive_locked(host, by="task")
+                        elif not host.client.is_connected():
                             await host.client.close()
                             await enter_connection(host.client)
                         await host.client.check_health()
                         rebound = call.reconnected(host.client)
+                        if host.relaunches:
+                            host.relaunched.add(call.task.task_id)
                         host.calls[call.task.task_id] = rebound
                         self._drive(host, rebound)  # original identity/schema; never tools/call
                     return False  # only an actual persisted tasks/get reply clears lost visibility
 
-                self.recovery.defer("external-reconnect:" + call.submission.handle, reconnect)
+                self.recovery.defer("external-reconnect:" + handle, reconnect)
 
         driver = asyncio.create_task(result())
         host.drivers[call.task.task_id] = driver

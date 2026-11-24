@@ -13,6 +13,7 @@ from clio_agent.tools.mcp_task_routing import (
     record_route_healed,
     resolve_namespace_route,
 )
+from clio_agent.tools.server_exit import MCP_STDIO_SERVER_EXITED, server_exited
 
 
 class AsyncNamespacePreparationMixin:
@@ -298,6 +299,13 @@ class AsyncNamespacePreparationMixin:
 
         client = self._namespace_clients.get(namespace)
         if client is None:
+            return await self._connect_namespace(namespace, proxy)
+        if server_exited(client):
+            # Its stdio process exited under a live-looking session (a crash, a kill, or
+            # a snapshot update that stopped it): start it again through the normal
+            # launch path instead of failing every call with "Connection closed".
+            trace.event("TOOLS", "%s namespace=%s", MCP_STDIO_SERVER_EXITED, namespace)
+            await self._evict_namespace_client(namespace)
             return await self._connect_namespace(namespace, proxy)
         if self._namespace_direct_routes.get(namespace, False):
             return client

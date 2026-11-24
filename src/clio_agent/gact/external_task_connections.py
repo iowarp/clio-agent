@@ -17,6 +17,7 @@ from clio_agent.arc.task_types import BackendReference
 from clio_agent.gact import view_call_cancel, view_call_ledger
 from clio_agent.tools import fleet_close_listeners
 from clio_agent.tools.mcp_runtime import enter_connection
+from clio_agent.tools.server_exit import MCP_STDIO_SERVER_EXITED, relaunch, server_exited
 from clio_agent.tools.task_client import AcceptedNativeCall, TaskAwareClient
 from clio_agent.tools.task_transport import TaskObservationTransport
 
@@ -181,6 +182,34 @@ async def connection(
 def accepted_call(host: ExternalConnection, handle: str) -> bool:
     """Whether the server accepted submission ``handle`` as a task on ``host``."""
     return any(call.submission.handle == handle for call in host.calls.values())
+
+
+async def revive_locked(host: ExternalConnection, *, by: str) -> bool:
+    """Start ``host``'s stdio server again in place when its process exited, under
+    ``host.reconnect_lock``; a client whose earlier relaunch failed (closed, not exited)
+    is started again too. Returns whether it relaunched.
+
+    The drivers of the connection's accepted tasks all use its one client, so the
+    server is relaunched on it (:func:`~clio_agent.tools.server_exit.relaunch`) rather
+    than beside it, and the connection never has two processes of one server.
+    """
+    client = host.client
+    if client is None or host.closing or host.superseded:
+        return False
+    if not server_exited(client) and client.is_connected():
+        return False
+    host.relaunches += 1
+    logger.warning(
+        "%s server=%s by=%s attempt=%d",
+        MCP_STDIO_SERVER_EXITED,
+        host.backend.server,
+        by,
+        host.relaunches,
+    )
+    await relaunch(client)
+    host.tools = None  # the new process lists its own tools
+    logger.info("%s_relaunched server=%s by=%s", MCP_STDIO_SERVER_EXITED, host.backend.server, by)
+    return True
 
 
 async def abandon_view_call(
