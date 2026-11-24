@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, cast
 
 from clio_agent.runtime import trace
 
@@ -164,12 +164,71 @@ def follow_session(
     return updated
 
 
+def stale_fleets(app: Any, records: Iterable[Any]) -> list[str]:
+    """The resident fleets still running a plugin copy other than the installed one.
+
+    A fleet's stdio servers carry ``PLUGIN_ROOT`` and ``PLUGIN_DATA``; the data folder
+    names the plugin. A fleet nobody watches (warmed at start, a child's) is not reached
+    by :func:`follow_session`, yet its server shares that plugin's data with the current
+    copy, so it is restarted too, and its next start takes the installed copy
+    (:mod:`clio_agent.plugins.installed_servers`).
+    """
+
+    from pathlib import Path  # noqa: PLC0415
+
+    from clio_agent.plugins.service import plugin_store_root  # noqa: PLC0415
+
+    agent = getattr(getattr(app, "state", None), "agent", None)
+    state = getattr(agent, "_workspace_state", None)
+    if not callable(state):
+        return []
+    installed: dict[str, set[str]] = {}
+    for record in records:
+        installed.setdefault(str(record.id), set()).add(str(record.root))
+    data_root = plugin_store_root() / "data"
+    lock, executors, _leases = cast(tuple[Any, dict[str, Any], Any], state())
+    with lock:
+        fleets = list(executors.items())
+    stale: list[str] = []
+    for key, executor in fleets:
+        for spec in (getattr(executor, "_clio_namespace_specs", None) or {}).values():
+            env = getattr(spec, "env", None) or {}
+            root, data = str(env.get("PLUGIN_ROOT") or ""), str(env.get("PLUGIN_DATA") or "")
+            if not root or not data:
+                continue
+            try:
+                plugin = Path(data).relative_to(data_root).as_posix()
+            except ValueError:
+                continue
+            if installed.get(plugin) and root not in installed[plugin]:
+                stale.append(str(key))
+                break
+    return stale
+
+
+def _restart_stale_fleets(app: Any, store: Any) -> None:
+    from clio_agent.tools.reaper import restart_every_fleet_at  # noqa: PLC0415
+
+    agent = getattr(getattr(app, "state", None), "agent", None)
+    reaper = getattr(agent, "_workspace_reaper", None)
+    if reaper is None:
+        return
+    for key in stale_fleets(app, store.installed_records()):
+        try:
+            outcome = restart_every_fleet_at(agent, reaper, key)
+        except Exception:  # noqa: BLE001 - the next store change looks again
+            logger.exception("plugin update stale fleet restart failed fleet=%s", key)
+            continue
+        trace.event("PLUGINS", "plugin_update_stale_fleet fleet=%s outcome=%s", key, outcome)
+
+
 def follow_open_sessions(app: Any, last: Any = None) -> tuple[Any, dict[str, list[str]]]:
     """Bring each open conversation onto the plugins installed now.
 
     Looks again only when the plugin store or the set of open conversations changed
     since ``last`` (the first value returned). Returns that key and, per session moved,
-    the plugins whose update reached it.
+    the plugins whose update reached it. When the store changed, a resident fleet still
+    running an older copy restarts as well (:func:`stale_fleets`).
     """
 
     from clio_agent.gact.agents.resolution import plugin_service  # noqa: PLC0415
@@ -178,7 +237,12 @@ def follow_open_sessions(app: Any, last: Any = None) -> tuple[Any, dict[str, lis
     store = plugin_service(app).store
     sessions = open_session_ids(app)
     key = (store.revision(), tuple(sessions))
-    if key == last or not sessions:
+    if key == last:
+        return key, {}
+    store_changed = not isinstance(last, tuple) or last[:1] != key[:1]
+    if not sessions:
+        if store_changed:
+            _restart_stale_fleets(app, store)
         return key, {}
     records = store.records()
     moved: dict[str, list[str]] = {}
@@ -191,6 +255,8 @@ def follow_open_sessions(app: Any, last: Any = None) -> tuple[Any, dict[str, lis
             continue
         if updated:
             moved[session_id] = updated
+    if store_changed:
+        _restart_stale_fleets(app, store)
     return key, moved
 
 

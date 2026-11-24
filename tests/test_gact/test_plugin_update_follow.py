@@ -221,3 +221,56 @@ def test_open_sessions_are_looked_at_again_only_when_something_changed(
 
 def test_an_app_without_plugins_follows_nothing() -> None:
     assert follow.start(SimpleNamespace(state=SimpleNamespace())) is None
+
+
+def _fleet_app(tmp_path: Any, fleets: dict[str, dict[str, Any]], restarts: list[str]) -> Any:
+    import threading  # noqa: PLC0415
+
+    executors = {
+        key: SimpleNamespace(
+            _clio_namespace_specs={
+                name: SimpleNamespace(
+                    env={"PLUGIN_ROOT": root, "PLUGIN_DATA": str(tmp_path / "data" / plugin)}
+                )
+                for name, (plugin, root) in specs.items()
+            }
+        )
+        for key, specs in fleets.items()
+    }
+    agent = SimpleNamespace(
+        _workspace_state=lambda: (threading.Lock(), executors, {}),
+        _workspace_reaper=SimpleNamespace(
+            request_restart=lambda key: restarts.append(key) or "restarted_live"
+        ),
+    )
+    return SimpleNamespace(state=SimpleNamespace(agent=agent))
+
+
+def test_a_fleet_nobody_watches_still_running_an_older_copy_restarts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    from clio_agent.plugins import service  # noqa: PLC0415
+
+    monkeypatch.setattr(service, "plugin_store_root", lambda: tmp_path)
+    restarts: list[str] = []
+    app = _fleet_app(
+        tmp_path,
+        {
+            "/old-work": {"relay": ("relay", "/snap/old"), "files": ("files", "/snap/f")},
+            "/new-work": {"relay": ("relay", "/snap/new")},
+            "/other": {"gone": ("gone", "/snap/g"), "plain": ("", "")},
+        },
+        restarts,
+    )
+    records = [_record("relay", "d2", root="/snap/new"), _record("files", "d1", root="/snap/f")]
+
+    assert follow.stale_fleets(app, records) == ["/old-work"]
+
+    store = SimpleNamespace(rev=1, revision=lambda: store.rev, installed_records=lambda: records)
+    monkeypatch.setattr(resolution, "plugin_service", lambda _app: SimpleNamespace(store=store))
+    monkeypatch.setattr(connector_follow, "open_session_ids", lambda _app: [])
+    key, moved_now = follow.follow_open_sessions(app)
+    assert moved_now == {}
+    assert restarts == ["/old-work"], "no open session, yet the older copy stops"
+    follow.follow_open_sessions(app, key)
+    assert restarts == ["/old-work"], "an unchanged store looks again at nothing"

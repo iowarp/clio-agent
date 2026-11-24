@@ -12,7 +12,8 @@ session holds moves an open session onto it once it resolves
 (:mod:`clio_agent.gact.plugin_update_follow`); a session not open moves when opened.
 Adding or removing a plugin inside a live session reruns stage 2 and pins the
 new result (:func:`pin_session_agent`). A defined subagent's child session pins
-its own resolution, computed from the parent's.
+its own resolution, computed from the parent's. A pin's MCP servers start from each
+plugin's installed copy, never an older one (:mod:`clio_agent.plugins.installed_servers`).
 
 Every function here is a query or an explicit pin; nothing falls back silently.
 A session whose agent cannot resolve fails with the typed resolution errors.
@@ -501,6 +502,10 @@ def session_server_set(app: Any, session_id: str) -> str:
         servers = mounted_servers(app, session_id, session_resolution(app, session_id))
     except SessionAgentUnavailable:
         return ""
+    from clio_agent.plugins.installed_servers import follow_installed  # noqa: PLC0415
+
+    store = plugin_service(app).store
+    servers = follow_installed(servers, store.installed_records(), store.trusted)
     if not servers:
         return ""
     supplied = supplied_server_values(
