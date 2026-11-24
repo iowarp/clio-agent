@@ -566,6 +566,11 @@ async def _retire_superseded(self: ExternalTasks, current: ExternalConnection) -
         await _retire_stale(self, host, EXTERNAL_MCP_CONNECTION_SUPERSEDED)
 
 
+def _working(host: ExternalConnection) -> bool:
+    """Whether ``host`` carries work: a call waiting on its reply or an accepted task."""
+    return bool(host.rpcs or host.calls or any(not d.done() for d in host.drivers.values()))
+
+
 async def _retire_stale(
     self: ExternalTasks, host: ExternalConnection, reason: str, **why: str
 ) -> None:
@@ -577,7 +582,7 @@ async def _retire_stale(
     remote (http) server is not ours to stop: its calls finish, and it retires after.
     """
 
-    idle = not (host.rpcs or host.calls or any(not d.done() for d in host.drivers.values()))
+    idle = not _working(host)
     detail = "".join(f" {key}={value}" for key, value in why.items())
     logger.warning("%s server=%s retired=%s%s", reason, host.cache_key[0], idle, detail)
     if idle:
@@ -608,6 +613,10 @@ def watch_fleets(self: ExternalTasks) -> None:
     a namespace to a new proxy, on whichever thread does it; the retirement runs on the
     application's loop. Registered once per application, removed by
     :func:`close_connections`.
+
+    The other way round, a fleet whose proxy still carries a retained connection's
+    accepted work is held: the reaper keeps it (and so the server process doing that
+    work) until the work ends, as it keeps a fleet with a call in flight.
     """
 
     try:
@@ -624,7 +633,24 @@ def watch_fleets(self: ExternalTasks) -> None:
         owners = {f"in-process:{id(proxy):x}" for proxy in proxies}
         asyncio.run_coroutine_threadsafe(retire_owned(tasks, owners, root, reason), loop)
 
-    self._unwatch_fleets = fleet_close_listeners.listen(dropped)
+    def held(proxies: tuple[Any, ...]) -> bool:  # on the reaper's thread: reads only
+        tasks = owner()
+        if tasks is None or tasks._closing:
+            return False
+        owners = {f"in-process:{id(proxy):x}" for proxy in proxies}
+        return any(
+            host.cache_key[2] in owners and _working(host)
+            for host in tuple(tasks.connections.values())
+        )
+
+    unlisten = fleet_close_listeners.listen(dropped)
+    unhold = fleet_close_listeners.hold(held)
+
+    def unwatch_fleet() -> None:
+        unlisten()
+        unhold()
+
+    self._unwatch_fleets = unwatch_fleet
 
     async def stop(proxies: tuple[Any, ...], reason: str) -> int:
         tasks = owner()
