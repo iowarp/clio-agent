@@ -430,3 +430,32 @@ def test_a2ui_catalogs_follow_a_write_made_through_another_store(
     PluginStore(tmp_path / "store").install(str(_market(tmp_path / "m")))
     registry.installed()
     assert len(seen) == 2 and registry.generation == generation + 1
+
+
+@pytest.mark.parametrize("kind", ["outside", "up", "folder"])
+def test_a_link_out_of_the_marketplace_is_refused(tmp_path: Path, kind: str) -> None:
+    secret = tmp_path / "victim" / "secret.txt"
+    write(secret, "not for the snapshot")
+    source = _market(tmp_path / "m")
+    skill = source / "plugins" / "pdf"
+    if kind == "outside":
+        (skill / "data.md").symlink_to(secret)
+    elif kind == "up":
+        (skill / "data.md").symlink_to(Path("../../..") / "victim" / "secret.txt")
+    else:
+        (skill / "shared").symlink_to(source / "plugins" / "xlsx", target_is_directory=True)
+    service = _service(tmp_path)
+    with pytest.raises(StoreError) as caught:
+        service.store.install(str(source))
+    assert caught.value.code == "marketplace_invalid"
+    store = tmp_path / "store"
+    copied = list(store.rglob("data.md")) if store.exists() else []
+    assert copied == []
+
+
+def test_a_link_to_a_file_inside_the_marketplace_installs(tmp_path: Path) -> None:
+    source = _market(tmp_path / "m")
+    write(source / "plugins" / "pdf" / "notes.md", "shared notes")
+    (source / "plugins" / "xlsx" / "notes.md").symlink_to(Path("../pdf/notes.md"))
+    summary = _service(tmp_path).store.install(str(source))
+    assert summary["trusted"] is False

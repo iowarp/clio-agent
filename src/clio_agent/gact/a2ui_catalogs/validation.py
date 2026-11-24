@@ -130,6 +130,7 @@ A2UI_URL_KEYS = frozenset(
         "recordinguri",
         "sectionuri",
         "griduri",
+        "iconurl",
     }
 )
 
@@ -168,6 +169,27 @@ def _most_specific_error(errors: list[ValidationError]) -> ValidationError:
     return candidates[0] if len(candidates) == 1 else best_match(candidates)
 
 
+def _check_chart_specs(components: list[Any]) -> None:
+    """Run the chart guard on every ``clio.chart.v1`` spec, on every door.
+
+    ``check_chart_spec`` walks a spec iteratively and bounds its size, views and depth,
+    so a spec it refuses never reaches the catalog's recursive JSON Schema rules.
+    """
+    from clio_schemas.a2ui.chart_spec import check_chart_spec  # noqa: PLC0415
+
+    for component in components:
+        if not isinstance(component, Mapping) or component.get("component") != "clio.chart.v1":
+            continue
+        spec = component.get("spec")
+        violations = check_chart_spec(dict(spec)) if isinstance(spec, Mapping) else []
+        if violations:
+            codes = ", ".join(sorted({violation.code for violation in violations}))
+            raise A2UIValidationError(
+                f"A2UI component id={component.get('id')!s} spec failed the chart guard "
+                f"({codes}): {'; '.join(str(violation) for violation in violations)}"
+            )
+
+
 def validate_components(entry: "CatalogEntry", components: Any) -> None:
     """Validate a full ``updateComponents`` list against one catalog's schemas.
 
@@ -185,6 +207,7 @@ def validate_components(entry: "CatalogEntry", components: Any) -> None:
 
     if not isinstance(components, list) or not components:
         raise A2UIValidationError("A2UI components must be a non-empty list")
+    _check_chart_specs(components)
     for component in components:
         if not isinstance(component, Mapping):
             raise A2UIValidationError("A2UI component must be an object")
