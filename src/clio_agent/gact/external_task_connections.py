@@ -571,6 +571,15 @@ def _working(host: ExternalConnection) -> bool:
     return bool(host.rpcs or host.calls or any(not d.done() for d in host.drivers.values()))
 
 
+def _owned(host: ExternalConnection, owners: set[str]) -> bool:
+    """Whether ``host`` belongs to one of ``owners``' fleets.
+
+    An in-process connection is keyed on its proxy; a pooled direct (stdio or SSE) one
+    has a key of its own and names the proxy that keeps it in its pool key.
+    """
+    return host.cache_key[2] in owners or (getattr(host, "pool", None) or ("", "", ""))[2] in owners
+
+
 async def _retire_stale(
     self: ExternalTasks, host: ExternalConnection, reason: str, **why: str
 ) -> None:
@@ -639,8 +648,7 @@ def watch_fleets(self: ExternalTasks) -> None:
             return False
         owners = {f"in-process:{id(proxy):x}" for proxy in proxies}
         return any(
-            host.cache_key[2] in owners and _working(host)
-            for host in tuple(tasks.connections.values())
+            _owned(host, owners) and _working(host) for host in tuple(tasks.connections.values())
         )
 
     unlisten = fleet_close_listeners.listen(dropped)
@@ -702,11 +710,7 @@ def share_direct_connections(self: ExternalTasks) -> None:
 async def retire_owned(self: ExternalTasks, owners: set[str], root: str, reason: str) -> int:
     """Retire every retained connection to one of ``owners``; return how many matched."""
 
-    matched = [
-        host
-        for host in tuple(self.connections.values())
-        if host.cache_key[2] in owners or (getattr(host, "pool", None) or ("", "", ""))[2] in owners
-    ]
+    matched = [host for host in tuple(self.connections.values()) if _owned(host, owners)]
     for host in matched:
         await _retire_stale(
             self, host, EXTERNAL_MCP_CONNECTION_FLEET_CLOSED, fleet=root or "-", because=reason
