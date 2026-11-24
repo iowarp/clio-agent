@@ -192,10 +192,9 @@ class AppToolTable:
         server = str(record.source_namespace or "")
         sid, app_id = record.session_id, record.app_instance_id
         with self._lock:
-            self._listed.add((sid, app_id))
-            self._changed.notify_all()
             current = self._holders.get((sid, app_id), "")
             if not tools and holder and current and current != holder:
+                self._mark_listed(sid, app_id)
                 return [], []
             if tools and holder:
                 self._holders[(sid, app_id)] = holder
@@ -204,10 +203,21 @@ class AppToolTable:
         try:
             accepted, skipped = _validated(server, record, tools)
         except AppToolsRejected:
-            self.set_offered(sid, app_id, [])
+            with self._lock:
+                self.set_offered(sid, app_id, [])
+                self._mark_listed(sid, app_id)
             raise
-        self.set_offered(sid, app_id, accepted)
+        # The view counts as listed only once its tools are on offer: a call waiting for
+        # this list reads the offer as soon as it wakes.
+        with self._lock:
+            self.set_offered(sid, app_id, accepted)
+            self._mark_listed(sid, app_id)
         return [tool.agent_name for tool in accepted], skipped
+
+    def _mark_listed(self, sid: str, app_id: str) -> None:
+        with self._lock:
+            self._listed.add((sid, app_id))
+            self._changed.notify_all()
 
     def set_offered(self, sid: str, app_id: str, tools: list[AppTool]) -> None:
         with self._lock:
