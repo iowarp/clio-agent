@@ -33,6 +33,7 @@ from typing import Any
 from clio_agent.arc.daemon_progress import NO_PROGRESS
 from clio_agent.runtime import trace
 from clio_agent.runtime.progress import ProcessTreeWork, progressed
+from clio_agent.tools.preparation_threads import run_preparation_step
 
 logger = logging.getLogger(__name__)
 
@@ -242,7 +243,7 @@ async def wait_while_server_works(
             if done:
                 return task.result()
             waited = time.monotonic() - started
-            work = await asyncio.to_thread(tree.sample)
+            work = await run_preparation_step(tree.sample)
             if progressed(work, last):
                 logger.info(
                     "mcp_server_busy op=%s reason=server_working waited_s=%.0f roots=%s",
@@ -260,7 +261,7 @@ async def wait_while_server_works(
                 )
                 last = work
                 continue
-            if not await asyncio.to_thread(tree.alive):
+            if not await run_preparation_step(tree.alive):
                 raise NoProgressTimeout(op_name, NO_PROGRESS, waited, window)
             logger.warning(
                 "%s op=%s reason=no_answer_no_measured_work waited_s=%.0f roots=%s "

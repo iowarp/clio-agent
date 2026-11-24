@@ -46,6 +46,7 @@ from typing import ContextManager
 from filelock import FileLock, Timeout
 
 from clio_agent.errors import LAUNCHER_CACHE_LOCK_STALE_BROKEN, LAUNCHER_CACHE_LOCK_TIMEOUT
+from clio_agent.tools.preparation_threads import run_preparation_step
 
 logger = logging.getLogger(__name__)
 
@@ -418,13 +419,14 @@ async def aacquire_launcher_cache_lock(
     tool call, as opposed to the discovery/listing pass) -- the identical
     liveness-driven wait, but polling via ``await asyncio.sleep`` and
     running the (fast, non-blocking-in-practice since ``timeout=0``, but
-    still real file I/O) ``FileLock.acquire`` off the event loop via
-    :func:`asyncio.to_thread` so a long wait here never stalls this
-    executor's event loop (other executors/sessions are unaffected either
-    way -- each has its own loop).
+    still real file I/O) ``FileLock.acquire`` off the event loop on the
+    preparation pool (:mod:`clio_agent.tools.preparation_threads`) so a long
+    wait here never stalls this executor's event loop. Not the loop's default
+    executor: the callers waiting for this very server can fill that pool, and
+    the acquire would then never run.
 
     ``thread_local=False`` is LOAD-BEARING: ``acquire`` runs on a worker
-    thread (via ``to_thread``) but ``release`` runs directly on the event
+    thread (the preparation pool) but ``release`` runs directly on the event
     loop thread in the ``finally`` below -- filelock's default
     ``thread_local=True`` tracks acquisition per-thread, so a release from a
     DIFFERENT thread than the one that acquired silently fails to free the
@@ -446,7 +448,7 @@ async def aacquire_launcher_cache_lock(
     with ExitStack() as queue:
         while True:
             try:
-                await asyncio.to_thread(lock.acquire, timeout=0)
+                await run_preparation_step(lock.acquire, timeout=0)
                 break
             except Timeout:
                 pass

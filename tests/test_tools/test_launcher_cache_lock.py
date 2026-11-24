@@ -359,6 +359,49 @@ def test_a_connect_queued_on_the_lock_is_not_read_as_a_dead_server(
     assert not holder.is_alive()
 
 
+def test_a_connect_takes_the_lock_while_its_waiters_fill_the_default_pool(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The callers that wait for a server (page reads) block threads of the loop's
+    default executor until it is up. The server's own connect must still take the lock
+    and be watched for progress with that whole pool busy.
+
+    **Sabotage:** take the lock (or sample the server) with ``asyncio.to_thread`` -> the
+    connect never runs (found live: 15 page reads and a warm-up filled the 16-thread
+    pool on a cold install, and relay's first start waited forever).
+    """
+    import asyncio  # noqa: PLC0415
+    import concurrent.futures  # noqa: PLC0415
+
+    from clio_agent.tools import mcp_config  # noqa: PLC0415
+    from clio_agent.tools.launcher_cache_lock import aacquire_launcher_cache_lock  # noqa: PLC0415
+    from clio_agent.tools.mcp_server_progress import wait_while_server_works  # noqa: PLC0415
+
+    monkeypatch.setattr(mcp_config, "_mcp_uv_cache_dir", lambda: tmp_path)
+    connected = threading.Event()
+
+    async def _connect() -> str:
+        async with aacquire_launcher_cache_lock("relay", timeout_s=30.0):
+            connected.set()
+            return "connected"
+
+    async def _main() -> str:
+        loop = asyncio.get_running_loop()
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        loop.set_default_executor(pool)
+        waiters = [asyncio.ensure_future(asyncio.to_thread(connected.wait, 10.0)) for _ in range(2)]
+        await asyncio.sleep(0.1)  # both default threads now wait for the connect
+        try:
+            return await asyncio.wait_for(
+                wait_while_server_works(_connect(), slice_s=0.2), timeout=5.0
+            )
+        finally:
+            connected.set()
+            await asyncio.gather(*waiters)
+
+    assert asyncio.run(_main()) == "connected"
+
+
 def test_pid_alive_true_for_own_process() -> None:
     assert lcl._pid_alive(os.getpid()) is True
 
