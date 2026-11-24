@@ -15,6 +15,7 @@ from clio_agent.tools.mcp_task_routing import (
     record_route_healed,
     resolve_namespace_route,
 )
+from clio_agent.tools.server_exit import MCP_STDIO_SERVER_EXITED, server_exited
 
 
 def _report_connect_stall(namespace: str, waited_s: float, roots: tuple[int, ...]) -> None:
@@ -213,7 +214,9 @@ class AsyncNamespacePreparationMixin:
             proxy = self._namespace_servers.get(namespace)  # the mounted server, not a stale one
             if proxy is None:
                 raise LookupError(f"MCP namespace {namespace!r} is no longer mounted")
-            return await self._namespace_client(namespace, proxy)
+            # Shielded: a reconnect that evicts the namespace cancels this watch, and the
+            # reconnect (which starts the watch again) must still finish.
+            return await asyncio.shield(self._namespace_client(namespace, proxy))
 
         try:
             await watch_resource(connect, namespace, uri, catch_up=catch_up)
@@ -535,6 +538,13 @@ class AsyncNamespacePreparationMixin:
 
         client = self._namespace_clients.get(namespace)
         if client is None:
+            return await self._connect_namespace(namespace, proxy)
+        if server_exited(client):
+            # Its stdio process exited under a live-looking session (a crash, a kill, or
+            # a snapshot update that stopped it): start it again through the normal
+            # launch path, with its watches, instead of failing "Connection closed".
+            trace.event("TOOLS", "%s namespace=%s", MCP_STDIO_SERVER_EXITED, namespace)
+            await self._evict_namespace_client(namespace)
             return await self._connect_namespace(namespace, proxy)
         if self._namespace_direct_routes.get(namespace, False):
             return client
