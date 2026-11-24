@@ -36,6 +36,10 @@ TUI/HTTP surface aren't tracked here.
 
 ### Changed
 
+- Installing a marketplace refuses one that contains a link to a folder, or to a file
+  outside the marketplace (`marketplace_invalid`). The snapshot copied each link's
+  target, so a marketplace could copy a file of this computer into itself. A link to
+  a file inside the marketplace still installs.
 - `metadata` on session create and update refuses server-owned keys (`agent_flow`,
   `unattended`, `run_limits`, ...) with `metadata_reserved`.
 - A flow refuses options it does not declare (`flow_options_invalid`).
