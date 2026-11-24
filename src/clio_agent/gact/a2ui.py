@@ -268,9 +268,16 @@ def validate_server_message(
         if producible is not None and catalog_id not in producible:
             raise A2UICatalogNotProducibleError(catalog_id)
         catalog_entry = resolved
-    if operation == "updateComponents":
-        if catalog_entry is None:
-            raise A2UIValidationError("A2UI updateComponents requires a resolved surface catalog")
+    if operation == "updateComponents" and catalog_entry is None:
+        raise A2UIValidationError("A2UI updateComponents requires a resolved surface catalog")
+    # The bounded walk runs before the catalog's JSON Schema, which recurses per level.
+    validate_value(
+        payload,
+        entry=catalog_entry,
+        max_depth=MAX_A2UI_DEPTH,
+        max_string=max_a2ui_string_chars(),
+    )
+    if operation == "updateComponents" and catalog_entry is not None:
         validate_components(catalog_entry, payload.get("components"))
     if operation == "updateDataModel":
         # Optional per the official schema: omitted (or "/") means the WHOLE
@@ -278,12 +285,6 @@ def validate_server_message(
         path = payload.get("path")
         if path is not None and (not isinstance(path, str) or not path.startswith("/")):
             raise A2UIValidationError("A2UI updateDataModel path must be a JSON Pointer")
-    validate_value(
-        payload,
-        entry=catalog_entry,
-        max_depth=MAX_A2UI_DEPTH,
-        max_string=max_a2ui_string_chars(),
-    )
     return operation, surface_id
 
 
