@@ -168,18 +168,23 @@ class ExternalTasks:
                     ),
                 )
                 continue
-            if "stdio" in current.backend.transport.casefold():
+            stdio = "stdio" in current.backend.transport.casefold()
+            if stdio:
+                # The earlier agent process's stdio server ended with it. Opening the
+                # original server's client below starts it again through its launch
+                # path, and the new process's tasks/get decides custody, as when the
+                # server exits mid-task; nothing is resubmitted.
                 await self._record_or_defer(
-                    "external-recovery:" + handle,
-                    lambda handle=handle: self._attention(
-                        handle,
-                        "The original stdio runtime is unavailable. Restarting it would not reconnect the same work.",
+                    "external-relaunch:" + handle,
+                    lambda handle=handle, server=current.backend.server: self._attention(
+                        handle, relaunching_text(server, 1)
                     ),
                 )
-                continue
 
             async def recover(
-                handle: str = handle, submission: SubmissionContext = submission
+                handle: str = handle,
+                submission: SubmissionContext = submission,
+                stdio: bool = stdio,
             ) -> bool:
                 if self._closing:
                     return True
@@ -196,6 +201,14 @@ class ExternalTasks:
                         task.backend.auth_scope,
                         original=task.backend,
                     )
+                    if stdio:  # the new process answers for itself: an unknown task is final
+                        host.relaunched.add(task.backend.task_id)
+                        logger.warning(
+                            "%s server=%s by=restore task=%s",
+                            MCP_STDIO_SERVER_EXITED,
+                            task.backend.server,
+                            task.backend.task_id,
+                        )
                     existing = host.calls.get(task.backend.task_id)
                     if existing is None:
                         creation = ClientCreateTaskResult.model_validate(
