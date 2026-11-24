@@ -14,7 +14,10 @@ it (a process in its tree, or in the AppContainer the fence started it in, which
 detached port forward whose launcher has exited stays attributed to it), opens a host listener
 on a fresh loopback port, and the address is
 rewritten to it. Each connection to that port is spliced to a connection the agent makes to
-the server's listener from inside the container. CLIO itself reaches a declared MCP App
+the server's listener from inside the container. The host port belongs to the server's spawn
+plan, not one process: when the server dies and is started again (same token), the relaunch
+takes the port over once it listens on it again, so an address it gave out, such as a
+pvserver forward a viewer holds, keeps working. CLIO itself reaches a declared MCP App
 service the same way without a host listener (:func:`connect`). Only ports the server's
 launch listens on are ever published or dialed, and only on loopback. Linux and macOS are
 unchanged.
@@ -41,6 +44,10 @@ AGENT = Path(__file__).with_name("fence_loopback_agent.py")
 
 _HELLO_S = 10.0
 _LISTEN_WAIT_S = 2.0
+#: How long a relaunched server has to listen again on a port it published before.
+_ADOPT_S = 30.0
+#: How long a gone server's published ports stay open with no relaunch of it started.
+_RELAUNCH_WAIT_S = 120.0
 _DIAL_S = 10.0
 _QUERY_LIMITED = 0x1000
 _TOKEN_QUERY = 0x0008
@@ -72,11 +79,32 @@ class _Server:
     #: The AppContainer SID of the server's launch ("" when it has none).
     container: str = ""
     lock: threading.Lock = field(default_factory=threading.Lock)
-    published: dict[int, list[socket.socket]] = field(default_factory=dict)
+    started: float = field(default_factory=time.monotonic)
 
     def send(self, line: str) -> None:
         with self.lock:
             self.control.sendall(line.encode("ascii") + b"\n")
+
+
+@dataclass
+class _Published:
+    """One published port of a server's spawn plan, kept across relaunches of the server.
+
+    ``server`` is the running agent it is dialed through, or ``None`` while the server is
+    gone (its process died and the same spawn plan, holding the same token, starts it again).
+    """
+
+    token: str
+    port: int
+    listeners: list[socket.socket]
+    address: str
+    server: _Server | None
+    #: When the server went (``time.monotonic``), while it is gone.
+    gone: float | None = None
+
+    @property
+    def host_port(self) -> tuple[int, bool]:
+        return self.listeners[0].getsockname()[1], len(self.listeners) > 1
 
 
 def _is_loopback(ip: str) -> bool:
@@ -198,8 +226,11 @@ class LoopbackPublisher:
         self._listener = socket.create_server(("127.0.0.1", 0))
         self.port: int = self._listener.getsockname()[1]
         self._lock = threading.Lock()
+        #: Told when a server starts or goes, or a published port changes hands.
+        self._changed = threading.Condition(self._lock)
         self._tokens: dict[str, str] = {}
         self._servers: dict[str, _Server] = {}
+        self._published: dict[tuple[str, int], _Published] = {}
         self._dials: dict[str, tuple[str, threading.Event, list[socket.socket]]] = {}
         threading.Thread(target=self._accept, name="fence-loopback", daemon=True).start()
 
@@ -262,6 +293,7 @@ class LoopbackPublisher:
         key = secrets.token_hex(8)
         with self._lock:
             self._servers[key] = server
+            self._changed.notify_all()
         try:
             with conn.makefile("rb") as lines:
                 for raw in lines:
@@ -269,11 +301,16 @@ class LoopbackPublisher:
         except OSError as exc:
             logger.debug("fence loopback agent gone reason=control_closed error=%r", exc)
         finally:
+            # Its published ports stay open: a relaunch of the same server (the same spawn
+            # plan, so the same token) takes them over, so the addresses it gave out keep
+            # working. Connections made meanwhile wait for it (:meth:`_target`).
             with self._lock:
                 self._servers.pop(key, None)
-            for listeners in list(server.published.values()):
-                for listener in listeners:
-                    listener.close()
+                for entry in self._published.values():
+                    if entry.server is server:
+                        entry.server = None
+                        entry.gone = time.monotonic()
+                self._changed.notify_all()
             conn.close()
 
     def _command(self, server: _Server, parts: list[str]) -> None:
@@ -290,10 +327,11 @@ class LoopbackPublisher:
     def _publish(self, server: _Server, port: int) -> tuple[int, bool] | None:
         """``(host port, same port on [::1])`` for the server's ``port``, or ``None``."""
 
-        if port in server.published:
-            listeners = server.published[port]
-            return listeners[0].getsockname()[1], len(listeners) > 1
-        if self._owns(port):
+        with self._lock:
+            entry = self._published.get((server.token, port))
+        if entry is not None and entry.server is server:
+            return entry.host_port
+        if entry is None and self._owns(port):
             # Another server's published address (e.g. a pvserver handed to a client).
             return None
         deadline = time.monotonic() + _LISTEN_WAIT_S
@@ -305,19 +343,23 @@ class LoopbackPublisher:
         if address is None:
             logger.info("fence loopback not published reason=not_listening port=%s", port)
             return None
+        if entry is not None:
+            self._adopt(entry, server, address)
+            return entry.host_port
         listeners = [socket.create_server(("127.0.0.1", 0))]
         try:
             listeners.append(socket.create_server(("::1", port), family=socket.AF_INET6))
         except OSError as exc:
             # The server holds [::1] or the IPv6 wildcard itself; its URLs take the host port.
             logger.info("fence loopback same port unavailable port=%s error=%r", port, exc)
-        server.published[port] = listeners
+        entry = _Published(
+            token=server.token, port=port, listeners=listeners, address=address, server=server
+        )
+        with self._lock:
+            self._published[(server.token, port)] = entry
         for listener in listeners:
-            threading.Thread(
-                target=self._relay, args=(server, listener, address, port), daemon=True
-            ).start()
-        outer = listeners[0].getsockname()[1]
-        same = len(listeners) > 1
+            threading.Thread(target=self._relay, args=(entry, listener), daemon=True).start()
+        outer, same = entry.host_port
         logger.info(
             "fence loopback published port=%s host_port=%s same_port_v6=%s pid=%s",
             port,
@@ -327,40 +369,104 @@ class LoopbackPublisher:
         )
         return outer, same
 
+    def _adopt(self, entry: _Published, server: _Server, address: str) -> None:
+        """Hand ``entry``'s host listeners to ``server``, a relaunch of the server it was for."""
+
+        with self._lock:
+            entry.server = server
+            entry.address = address
+            entry.gone = None
+            self._changed.notify_all()
+        logger.info(
+            "fence loopback kept port=%s host_port=%s pid=%s",
+            entry.port,
+            entry.host_port[0],
+            server.pid,
+        )
+
     def _owns(self, port: int) -> bool:
         """Whether ``port`` is one of this publisher's own host listeners."""
 
         if port == self.port:
             return True
         with self._lock:
-            servers = list(self._servers.values())
-        for other in servers:
-            for listeners in list(other.published.values()):
-                for listener in listeners:
-                    if listener.fileno() != -1 and listener.getsockname()[1] == port:
-                        return True
+            entries = list(self._published.values())
+        for entry in entries:
+            for listener in entry.listeners:
+                if listener.fileno() != -1 and listener.getsockname()[1] == port:
+                    return True
         return False
 
-    def _relay(self, server: _Server, listener: socket.socket, address: str, port: int) -> None:
+    def _relay(self, entry: _Published, listener: socket.socket) -> None:
         while True:
             try:
                 conn, _peer = listener.accept()
             except OSError:
-                return  # closed with the server's control connection
-            threading.Thread(
-                target=self._bridge, args=(server, conn, address, port), daemon=True
-            ).start()
+                return
+            threading.Thread(target=self._bridge, args=(entry, conn), daemon=True).start()
 
-    def _bridge(self, server: _Server, conn: socket.socket, address: str, port: int) -> None:
+    def _bridge(self, entry: _Published, conn: socket.socket) -> None:
+        target = self._target(entry)
+        if target is None:
+            conn.close()
+            return
+        server, address = target
         try:
-            inner = self.dial(server, address, port, _DIAL_S)
+            inner = self.dial(server, address, entry.port, _DIAL_S)
         except OSError as exc:
             logger.warning(
-                "fence loopback dial failed reason=dial_error port=%s error=%r", port, exc
+                "fence loopback dial failed reason=dial_error port=%s error=%r", entry.port, exc
             )
             conn.close()
             return
         splice(conn, inner)
+
+    def _target(self, entry: _Published) -> tuple[_Server, str] | None:
+        """The running server and address to dial for ``entry``, or ``None`` to refuse.
+
+        While the server is gone the connection waits for its relaunch, which the person
+        sees and can stop. A relaunched server that has not listened on the port for
+        :data:`_ADOPT_S` since it started has dropped it (the forward ended with its job,
+        say), so the connection is refused, as a closed port would be. With no relaunch
+        started :data:`_RELAUNCH_WAIT_S` after the server went (its connector was turned
+        off, say), the published port is closed and the connection refused.
+        """
+
+        while True:
+            with self._lock:
+                if entry.server is not None:
+                    return entry.server, entry.address
+                relaunched = [s for s in self._servers.values() if s.token == entry.token]
+                gone = entry.gone
+                if (
+                    not relaunched
+                    and gone is not None
+                    and time.monotonic() - gone > _RELAUNCH_WAIT_S
+                ):
+                    host_port = entry.host_port[0]
+                    self._published.pop((entry.token, entry.port), None)
+                    for listener in entry.listeners:
+                        listener.close()
+                    logger.info(
+                        "fence loopback closed reason=no_relaunch port=%s host_port=%s",
+                        entry.port,
+                        host_port,
+                    )
+                    return None
+            for server in relaunched:
+                address = _listener_address(server.pid, entry.port, self._container(server))
+                if address is not None:
+                    self._adopt(entry, server, address)
+                    return server, address
+            now = time.monotonic()
+            if relaunched and all(now - s.started > _ADOPT_S for s in relaunched):
+                logger.info(
+                    "fence loopback refused reason=not_listening_after_relaunch port=%s",
+                    entry.port,
+                )
+                return None
+            with self._lock:
+                self._changed.wait(0.5)
 
     def dial(self, server: _Server, address: str, port: int, timeout: float) -> socket.socket:
         """A connection to ``address:port`` made by ``server``'s agent inside the container.
