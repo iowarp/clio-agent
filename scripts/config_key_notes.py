@@ -1657,6 +1657,11 @@ KEY_NOTES: dict[str, str] = {
         "Ceiling (seconds) on building one MCP server's environment before it starts (uv sync, "
         "clio-kit --prepare); a build that stops making progress fails sooner, typed."
     ),
+    "tools.mcp.install_prebuild": (
+        "Build a trusted plugin's MCP server environments (byte-compiled) in the background when "
+        "it is installed, updated or trusted, so its first page or tool call does not wait; set "
+        "false to build them only when a server first starts."
+    ),
     "tools.mcp.probe_timeout_retries": (
         "Retries of the era-negotiation probe after a client-side timeout before giving up; raise "
         "for a slow-starting server."

@@ -209,14 +209,20 @@ class PluginPages:
                 return row
         raise PluginTabError(404, "plugin_page_not_found", f"no page {plugin}/{page}")
 
-    async def context(self, plugin: str, page: str, *, create: bool) -> str:
-        """The page's context session id; created on first open when ``create``."""
+    async def context(
+        self, plugin: str, page: str, *, create: bool, row: Mapping[str, Any] | None = None
+    ) -> str:
+        """The page's context session id; created on first open when ``create``.
+
+        ``row`` is the page's declared row when the caller already looked it up.
+        """
 
         from clio_agent.gact import session_warmup  # noqa: PLC0415
         from clio_agent.gact.agents.resolution import SessionAgentUnavailable  # noqa: PLC0415
         from clio_agent.gact.off_loop import run_off_loop  # noqa: PLC0415
 
-        row = await self._row(plugin, page)
+        if row is None:
+            row = await self._row(plugin, page)
         async with _lock(self._app):
             found = (await run_off_loop(page_contexts, self._app)).get((plugin, page))
             if found or not create:
@@ -237,9 +243,32 @@ class PluginPages:
         return context
 
     async def open(self, plugin: str, page: str) -> dict[str, Any]:
-        context = await self.context(plugin, page, create=True)
-        opened = await plugin_tabs(self._app).open(context, plugin, page)
+        from clio_agent.gact.plugin_page_startup import page_startups  # noqa: PLC0415
+
+        startups = page_startups(self._app)
+        startups.begin(plugin, page)
+        try:
+            declared = await self._row(plugin, page)
+            startups.attach(plugin, page, namespace=str(declared["server"]))
+            context = await self.context(plugin, page, create=True, row=declared)
+            startups.attach(plugin, page, context=context)
+            tabs = plugin_tabs(self._app)
+            opened = await tabs.open(context, plugin, page)
+        except PluginTabError as exc:
+            startups.fail(plugin, page, str(exc))
+            raise
+        except asyncio.CancelledError:
+            startups.fail(plugin, page, "the page open was cancelled")
+            raise
+        except Exception as exc:
+            startups.fail(plugin, page, f"{type(exc).__name__}: {exc}")
+            raise
         tab = dict(opened["tab"])
+        if tab.get("available", True):
+            startups.ready(plugin, page)
+        else:
+            detail = tabs.failure_detail(context, plugin, page)
+            startups.fail(plugin, page, detail or str(tab.get("reason") or ""))
         row = {**tab, "page": page, "context_session_id": context}
         return {
             "page": row,

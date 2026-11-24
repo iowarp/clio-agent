@@ -244,6 +244,30 @@ carries `task_handle`, the CLIO task the call became. Refusals are typed HTTP er
 not mounted in this session), `a2ui_surface_not_owned` and the HS1 reasons (422).
 Duplicate submissions are deduplicated as today.
 
+A server may ask the client to show a short notice for the action by returning, in the
+result's `_meta`, `"io.iowarp/toast"`:
+
+```json
+{"message": "Saved the site", "tone": "positive",
+ "undo": {"label": "Undo", "action": {"event": {"name": "undo_save", "context": {"id": "a"}}}}}
+```
+
+CLIO checks it and passes it through as `"toast"` on the action response, on every
+`outcome` (and on the tab and page `actions` routes, which answer the same way).
+`message` is 1 to 300 characters. `tone` is `neutral` (the default), `positive`,
+`warning` or `negative`. `undo` is optional: `label` is 1 to 40 characters and
+`action.event` is the A2UI action the client sends to the same surface's server when the
+person clicks it (`name` required, `context` an object when present). A toast that does
+not fit is dropped and logged; the response is unchanged otherwise.
+
+A client names the language it shows CLIO in with the request header
+`X-Clio-Locale: <BCP 47 tag>` (for example `es` or `pt-BR`, at most 35 characters).
+While that request runs, every `resources/read` and `tools/call` CLIO sends to a plugin's
+server for it (a tab or page `open` and its read, and an action) carries the request
+`_meta` `{"io.iowarp/locale": "<tag>"}`. A tab keeps the tag of its last `open` for the
+re-reads a server's update triggers. A missing or malformed header sends no key, and a
+server may ignore it.
+
 A `data_source/login/<provider>` action answers as any client sign-in action does, and
 the client then runs its own sign-in for `provider`, which it takes from the action name it
 sent:
@@ -291,6 +315,13 @@ without asking. An `allow_once` or `deny` answer applies to the one call, as bef
 the model can also see keeps its own per-tool question, and the agent's own calls are
 unchanged. The question goes to the session the action runs in; for a page, that is the
 page's context session. Nothing here names a particular server.
+
+On the plugin's own page (`place: "page"`, the plugin's entry in the primary navigation)
+the person's click is the consent: an action there that reaches one of the plugin's
+view-only tools runs without a question, recorded as `auto_approved` with reason
+`surface_page_click`. A deny from a rule or the tool's default still wins, an `ask` rule
+or default still asks, and a tool the model can also see keeps its own question. Tabs and
+conversation surfaces ask as above.
 
 ## HS3: plugin tabs
 
@@ -425,10 +456,25 @@ POST /v1/plugin-pages/{plugin}/{page}/open      body {}
          "surfaces": [<surface wire>, ...], "revision": 1}
 POST /v1/plugin-pages/{plugin}/{page}/close
      -> {"closed": true}
+GET  /v1/plugin-pages/{plugin}/{page}/status
+     -> {"state": "idle" | "starting" | "ready" | "failed",
+         "steps": [{"id": "env" | "server" | "page",
+                    "state": "pending" | "active" | "done" | "failed",
+                    "elapsed_ms": 0}],
+         "error"?: "..."}
 POST /v1/plugin-pages/{plugin}/{page}/actions
      header x-a2ui-version: 0.9.1 (else 406)
      body and response as a tab's actions
 ```
+
+- `status` reports the page's latest `open` while it runs, so a client can poll it
+  (every few hundred milliseconds) and show progress instead of a blank page. `env` is
+  preparing the plugin's environment (provisioning, such as a `uv` build), `server` is
+  starting its MCP server, and `page` is reading the page's resource. The steps always
+  come in that order. A page not opened since CLIO started is `idle` with every step
+  `pending` and `elapsed_ms` 0. A failed open is `failed`, its step in progress
+  `failed`, and `error` says why; the next `open` starts a new record. Opens that
+  overlap share one record. The route reads only the record, so polling is cheap.
 
 - The list covers every installed plugin that declares a page. An untrusted plugin's
   page is `available: false, reason: "plugin_not_trusted"`, and opening it is 409 with

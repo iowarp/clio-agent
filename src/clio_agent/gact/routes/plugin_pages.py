@@ -1,8 +1,9 @@
-"""Plugin page routes (host semantics HS3): list, open, close, and act on a page.
+"""Plugin page routes (host semantics HS3): list, open, close, act on, and watch a page open.
 
 A page is a plugin's entry in the host's primary navigation; see
 :mod:`clio_agent.gact.plugin_pages`. Its events and permission prompts arrive on its
-context session's event stream and interaction routes.
+context session's event stream and interaction routes. ``status`` reports the steps of
+the page's latest open (:mod:`clio_agent.gact.plugin_page_startup`).
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 
+from clio_agent.gact.plugin_page_startup import page_startups
 from clio_agent.gact.plugin_pages import plugin_pages
 from clio_agent.gact.plugin_tabs import PluginTabError
 from clio_agent.gact.protocol_v3 import A2UI_V091
@@ -47,6 +49,11 @@ def register_plugin_page_routes(app: FastAPI) -> None:
             return await plugin_pages(app).close(plugin, page)
         except PluginTabError as exc:
             raise _error(exc) from exc
+
+    @app.get("/v1/plugin-pages/{plugin}/{page}/status")
+    async def plugin_page_status(plugin: str, page: str) -> dict[str, Any]:
+        # Cheap enough to poll while an open is in flight: it reads only the record.
+        return page_startups(app).status(plugin, page)
 
     @app.post("/v1/plugin-pages/{plugin}/{page}/actions")
     async def plugin_page_action(plugin: str, page: str, request: Request) -> dict[str, Any]:

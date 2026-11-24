@@ -12,8 +12,9 @@ carries a :class:`SurfaceConsent` naming the server's view-only tools and a read
 summary. The permission gate words the question with it and records the tools on the
 row; an "allow for this session" or "allow for this workspace" answer grants every one
 of them, so the next action on any of the server's controls runs without asking again.
-A tool the model can also see keeps its own per-tool question. Nothing here names a
-particular server.
+A tool the model can also see keeps its own per-tool question. On the plugin's own page
+(:data:`PLACE_PAGE`) the click itself is the consent (:func:`page_click`): no question
+is raised for its app-only tools. Nothing here names a particular server.
 """
 
 from __future__ import annotations
@@ -120,6 +121,24 @@ def covering(tool_name: str) -> SurfaceConsent | None:
     return consent if consent is not None and tool_name in consent.tools else None
 
 
+#: The permission record's reason when a click on the server's own page allowed the call.
+REASON_PAGE_CLICK = "surface_page_click"
+
+
+def page_click(tool_name: str) -> SurfaceConsent | None:
+    """The active consent when a click on its server's own page runs ``tool_name``.
+
+    A plugin's page (:data:`PLACE_PAGE`) is the plugin's own place, opened by the person
+    from CLIO's navigation; a click on one of its controls is the person asking that
+    plugin to act. It is consent for the plugin's app-only tools there (the ones
+    :func:`view_only_tools` lists), so no further question is raised. A tab or a
+    conversation surface, and any tool the model can also call, still ask.
+    """
+
+    consent = covering(tool_name)
+    return consent if consent is not None and consent.place == PLACE_PAGE else None
+
+
 def granted_tools(row: Mapping[str, Any]) -> tuple[str, ...]:
     """The tools a permission row's surface consent covers, else ``()``."""
 
@@ -136,10 +155,12 @@ __all__ = [
     "PLACE_CONVERSATION",
     "PLACE_PAGE",
     "PLACE_TAB",
+    "REASON_PAGE_CLICK",
     "SurfaceConsent",
     "covering",
     "for_surface",
     "granted_tools",
+    "page_click",
     "scope",
     "view_only_tools",
 ]

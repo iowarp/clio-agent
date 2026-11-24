@@ -51,6 +51,7 @@ from clio_agent.gact.task_publication import publish_task_notice
 from clio_agent.tools import recorded_results, server_confirm, view_only_results
 from clio_agent.tools.caller_scope import caller_meta
 from clio_agent.tools.mcp_runtime import enter_connection
+from clio_agent.tools.request_locale import with_locale
 from clio_agent.tools.task_call_context import TASK_CALL, permission_snapshot, safe_description
 from clio_agent.tools.task_client import (
     AcceptedNativeCall,
@@ -467,7 +468,8 @@ class ExternalTasks:
                 if client is None:
                     raise ValueError("External task transport is unavailable before submission")
                 with client.submission(binding):
-                    meta = caller_meta()  # the calling session, for per-branch state
+                    # The calling session, for per-branch state, and the person's locale.
+                    meta = with_locale(caller_meta())
                     return await client.call_tool(
                         name,
                         public,

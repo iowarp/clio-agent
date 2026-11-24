@@ -1684,6 +1684,13 @@ tools.mcp.hold_while_waiting_s: 1800.0
 # call; raise for tools needing many follow-up inputs.
 # tools.mcp.input_required_max_rounds:  # computed at runtime: DEFAULT_INPUT_REQUIRED_MAX_ROUNDS
 
+# CLIO_MCP_INSTALL_PREBUILD  (bool)  <- src/clio_agent/gact/plugin_prebuild.py
+# Build a trusted plugin's MCP server environments (byte-compiled) in the
+# background when it is installed, updated or trusted, so its first page or
+# tool call does not wait; set false to build them only when a server first
+# starts.
+tools.mcp.install_prebuild: true
+
 # CLIO_MCP_LISTING_TTL_H  (float)  <- src/clio_agent/tools/listing_cache.py
 # Hours a cached MCP tool listing stays valid before a live relist is
 # forced; lower to pick up upstream tool changes sooner.

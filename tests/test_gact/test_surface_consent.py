@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from clio_agent.gact import surface_consent
+from clio_agent.gact.app import _make_permission_gate, _tool_session_context
 from clio_agent.gact.permission_gate import _ask_and_wait
 from clio_agent.gact.runtime.grant_resolver import resolve
 from tests.test_gact.test_permissions import _client
@@ -172,3 +173,83 @@ def test_a_tool_outside_the_consent_keeps_its_own_question(tmp_path: Path) -> No
         assert decided == ["allow"]
         granted = [p["tool_name_pattern"] for p in app.state.permission_policies]
         assert granted == ["srv_describe"]
+
+
+def test_only_a_click_on_the_plugins_own_page_is_its_consent() -> None:
+    page = surface_consent.for_surface("srv", "Server", LISTED, place="page", place_title="P")
+    tab = surface_consent.for_surface("srv", "Server", LISTED, place="tab", place_title="T")
+    view = surface_consent.for_surface("srv", "Server", LISTED)
+
+    with surface_consent.scope(page):
+        assert surface_consent.page_click("srv_open_form") is page
+        assert surface_consent.page_click("srv_describe") is None  # the model sees it too
+    for other in (tab, view):
+        with surface_consent.scope(other):
+            assert surface_consent.page_click("srv_open_form") is None
+    assert surface_consent.page_click("srv_open_form") is None
+
+
+def test_a_click_on_the_page_runs_its_app_only_tool_without_a_question(tmp_path: Path) -> None:
+    consent = surface_consent.for_surface(
+        "srv", "Server", LISTED, place="page", place_title="Compute"
+    )
+    with _client(tmp_path, []) as client:
+        app: Any = client.app
+        sid = client.post("/v1/sessions", json={"title": "page"}).json()["id"]
+        gate = _make_permission_gate(app)
+        with _tool_session_context(sid), surface_consent.scope(consent):
+            assert gate("srv_open_form", {"token": "t"}, EXTERNAL) == "allow"
+
+        rows = list(app.state.permissions.values())
+        assert [row["status"] for row in rows] == ["auto_approved"]
+        assert rows[0]["reason"] == surface_consent.REASON_PAGE_CLICK
+        assert app.state.permission_policies == []  # nothing is granted beyond this call
+
+
+def test_a_deny_rule_still_wins_over_a_page_click(tmp_path: Path) -> None:
+    consent = surface_consent.for_surface(
+        "srv", "Server", LISTED, place="page", place_title="Compute"
+    )
+    with _client(tmp_path, []) as client:
+        app: Any = client.app
+        sid = client.post("/v1/sessions", json={"title": "page"}).json()["id"]
+        response = client.put(
+            "/v1/policies",
+            json={
+                "policies": [
+                    {
+                        "scope": "session",
+                        "scope_id": sid,
+                        "tool_name_pattern": "srv_open_form",
+                        "action": "deny",
+                    }
+                ]
+            },
+        )
+        assert response.status_code == 200, response.text
+        gate = _make_permission_gate(app)
+        with _tool_session_context(sid), surface_consent.scope(consent):
+            assert gate("srv_open_form", {"token": "t"}, EXTERNAL) == "deny"
+
+
+def test_a_tab_click_still_asks(tmp_path: Path) -> None:
+    consent = surface_consent.for_surface("srv", "Server", LISTED, place="tab", place_title="T")
+    with _client(tmp_path, []) as client:
+        app: Any = client.app
+        sid = client.post("/v1/sessions", json={"title": "tab"}).json()["id"]
+        decided: list[str] = []
+
+        def call() -> None:
+            gate = _make_permission_gate(app)
+            with _tool_session_context(sid), surface_consent.scope(consent):
+                decided.append(gate("srv_open_form", {"token": "t"}, EXTERNAL))
+
+        thread = threading.Thread(target=contextvars.copy_context().run, args=(call,))
+        thread.start()
+        row = _pending(app, "srv_open_form")
+        assert row["consent"]["place"] == "tab"
+
+        response = client.post(f"/v1/permissions/{row['id']}", json={"action": "deny"})
+        assert response.status_code == 204, response.text
+        thread.join(5)
+        assert decided == ["deny"]

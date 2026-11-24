@@ -19,6 +19,10 @@ left in place so the generic ``${VAR}`` expansion reports it as unset.
 ``${CLIO_SOURCE_RANGE_ORIGIN}`` is the loopback URL prefix under which CLIO serves
 byte ranges of linked-source files (``connected_data_open`` with ``range``), so a
 server accepts those URLs and no other remote address.
+``${CLIO_SAVED_SSH_CONFIG}`` is an OpenSSH config file of the SSH hosts saved in this
+CLIO (:mod:`clio_agent.gact.infrastructure.saved_ssh_config`): one ``Host`` block
+each, with ``HostName``, ``User`` and ``Port``, and no secrets. Write it as
+``${CLIO_SAVED_SSH_CONFIG:-}`` so a host without the file expands it to empty.
 
 A saved connector connection (a ``clio-connection`` row whose connection has a
 ``connector``) is filled per conversation: ``connector_values`` is that
@@ -41,7 +45,8 @@ from typing import Any
 
 PROVENANCE_CONFIG_VAR = "CLIO_PROVENANCE_CONFIG"
 RANGE_ORIGIN_VAR = "CLIO_SOURCE_RANGE_ORIGIN"
-CLIO_SUPPLIED_VARIABLES = (PROVENANCE_CONFIG_VAR, RANGE_ORIGIN_VAR)
+SAVED_SSH_CONFIG_VAR = "CLIO_SAVED_SSH_CONFIG"
+CLIO_SUPPLIED_VARIABLES = (PROVENANCE_CONFIG_VAR, RANGE_ORIGIN_VAR, SAVED_SSH_CONFIG_VAR)
 _SUPPLIED = re.compile(r"\$\{(" + "|".join(CLIO_SUPPLIED_VARIABLES) + r")(?::-[^}]*)?\}")
 
 _LOCK = threading.Lock()

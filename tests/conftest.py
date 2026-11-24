@@ -770,7 +770,7 @@ def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
         # covers the warm-up itself); a live test runs it as an operator would.
         "tools": {
             "file_policy": {"allowed_roots": allowed_roots},
-            "mcp": {"session_warmup": False},
+            "mcp": {"session_warmup": False, "install_prebuild": False},
         },
         "lm": {"model": "ibm/granite-4-h-tiny"},
         # clio-core is the only store: every test runs ARC on this worker's private

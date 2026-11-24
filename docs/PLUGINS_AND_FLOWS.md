@@ -115,9 +115,23 @@ lazily on first use, in the session workspace rather than the plugin root.
 per-plugin folder under the plugin store) are expanded in `args`, `env` and `cwd`
 and set in the server's environment. A declaration that references
 `${CLIO_PROVENANCE_CONFIG}` also receives the path of a YAML file with the
-effective provenance configuration. Two resolved plugins declaring the same
+effective provenance configuration. A declaration that references
+`${CLIO_SAVED_SSH_CONFIG}` receives the path of an OpenSSH config file listing
+the SSH hosts saved in this CLIO: one `Host` block each, with `HostName`, `User`
+and `Port` (and `IdentityFile` or `ProxyJump` only when the host names them), never
+a secret. CLIO rewrites it whenever the saved hosts change. Write it as
+`${CLIO_SAVED_SSH_CONFIG:-}` so a CLIO without the file expands it to empty. Two
+resolved plugins declaring the same
 server name is `mcp_server_collision`. A server's tools are namespaced by the
 server name (`web_...`).
+
+When a plugin is installed, updated or trusted, CLIO builds its stdio servers'
+environments in the background, byte-compiled, with the same provisioning step a
+server's first start runs (`uv sync` for `uv run --project`, a warm-up for `uvx`
+and `uv tool run` where builds run outside the sandbox, `clio-kit --prepare`). The
+first page or tool call then finds them built. A failed build is logged and never
+fails the install; the server's first start builds it again.
+`tools.mcp.install_prebuild` (`CLIO_MCP_INSTALL_PREBUILD`) turns this off.
 
 A plugin may declare its own server here with no connector catalog entry: the
 server starts from the plugin's declaration alone.

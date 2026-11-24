@@ -109,11 +109,18 @@ def refuse_untrusted_flow(app: Any, flow_id: str) -> None:
 
 
 def installed_changed(app: Any) -> None:
-    """Installed plugins ship A2UI catalogs: the next lookup re-reads the set."""
+    """Installed plugins ship A2UI catalogs: the next lookup re-reads the set.
+
+    A newly installed, updated or trusted plugin's server environments start building
+    in the background (:mod:`clio_agent.gact.plugin_prebuild`); that never fails here.
+    """
 
     registry = getattr(app.state, "a2ui_catalogs", None)
     if registry is not None:
         registry.invalidate()
+    from clio_agent.gact import plugin_prebuild  # noqa: PLC0415
+
+    plugin_prebuild.schedule(app)
 
 
 def installed_review(app: Any, name: str) -> dict[str, Any]:

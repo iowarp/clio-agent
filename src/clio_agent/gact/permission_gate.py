@@ -629,6 +629,29 @@ def _layered_deny(
     return DenyDecision(plan_deny_message, policy_deny_source(mode, plan_deny_message, by_rule))
 
 
+def _page_click_allows(
+    app: "FastAPI", sid: str, name: str, args: Mapping[str, Any], subject: str
+) -> bool:
+    """Allow, on the record, an app-only tool a click on its plugin's own page runs."""
+
+    from clio_agent.gact import surface_consent  # noqa: PLC0415
+
+    consent = surface_consent.page_click(name)
+    if consent is None:
+        return False
+    _record_resolved_permission(
+        app,
+        session_id=sid,
+        tool_name=name,
+        args=args,
+        status="auto_approved",
+        action="allow",
+        summary=f"{subject} {name!r} allowed by a click on {consent.server_title}'s page",
+        reason=surface_consent.REASON_PAGE_CLICK,
+    )
+    return True
+
+
 def _make_permission_gate(app: "FastAPI"):
     """Build a callable suitable for MCPToolBridge.permission_gate.
 
@@ -820,6 +843,8 @@ def _make_permission_gate(app: "FastAPI"):
             )
             return "allow"
         with script_grants.question():
+            if policy_action != "ask" and _page_click_allows(app, sid, name, args, subject):
+                return "allow"
             if policy_action != "ask" and script_grants.covers(decision_posture, name):
                 _record_resolved_permission(
                     app,

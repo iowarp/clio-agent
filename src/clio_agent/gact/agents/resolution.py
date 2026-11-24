@@ -441,11 +441,15 @@ def supplied_server_values(
     session's workspace. An incomplete handoff is traced, not hidden; the
     server reads the problems from the file it was given.
     ``${CLIO_SOURCE_RANGE_ORIGIN}`` is the loopback prefix of the byte-range route.
+    ``${CLIO_SAVED_SSH_CONFIG}`` is the OpenSSH config file of this CLIO's saved SSH
+    hosts; without an infrastructure store it is not supplied, so its ``:-`` default
+    applies.
     """
 
     from clio_agent.plugins.servers import (  # noqa: PLC0415
         PROVENANCE_CONFIG_VAR,
         RANGE_ORIGIN_VAR,
+        SAVED_SSH_CONFIG_VAR,
         references_variable,
     )
 
@@ -455,6 +459,11 @@ def supplied_server_values(
         from clio_agent.gact.storage.range_handles import range_origin  # noqa: PLC0415
 
         values[RANGE_ORIGIN_VAR] = range_origin(app)
+    if references_variable(specs, SAVED_SSH_CONFIG_VAR):
+        store = getattr(getattr(app, "state", None), "infrastructure_store", None)
+        path = store.saved_ssh_config_path() if store is not None else None
+        if path is not None:
+            values[SAVED_SSH_CONFIG_VAR] = str(path)
     if not references_variable(specs, PROVENANCE_CONFIG_VAR):
         return values
     from clio_agent.gact.provenance.handoff import write_provenance_handoff  # noqa: PLC0415

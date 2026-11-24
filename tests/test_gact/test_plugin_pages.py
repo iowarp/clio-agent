@@ -10,9 +10,11 @@ from typing import Any
 
 import pytest
 
+from clio_agent.gact import plugin_page_startup as startup_module
 from clio_agent.gact import plugin_pages as pages_module
 from clio_agent.gact import plugin_tabs as tabs_module
 from clio_agent.gact.a2ui_catalogs.registry import CatalogRegistry
+from clio_agent.tools import request_locale
 from tests.test_gact.test_host_semantics import SCOPE, _action, _Bus, _Executor, hostfx
 
 PAGE = {
@@ -356,3 +358,141 @@ def test_only_a_page_contexts_own_tab_events_are_renamed() -> None:
 def test_plugin_pages_module_names_no_particular_plugin() -> None:
     source = Path(pages_module.__file__).read_text(encoding="utf-8")
     assert "relay" not in source.lower()
+
+
+def _steps(status: dict[str, Any]) -> list[tuple[str, str]]:
+    return [(step["id"], step["state"]) for step in status["steps"]]
+
+
+async def test_a_page_open_reports_its_steps(
+    page_app: tuple[Any, _Executor, _Sessions], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, executor, _sessions = page_app
+    startups = startup_module.page_startups(app)
+    seen: list[dict[str, Any]] = []
+    real_read = executor.read_resource
+
+    def read(namespace: str, uri: str) -> Any:
+        seen.append(startups.status("host-fixture", "page"))  # while the page is read
+        return real_read(namespace, uri)
+
+    monkeypatch.setattr(executor, "read_resource", read)
+    before = startups.status("host-fixture", "page")
+    try:
+        await pages_module.plugin_pages(app).open("host-fixture", "page")
+    finally:
+        _shutdown(app)
+    after = startups.status("host-fixture", "page")
+
+    assert before == {
+        "state": "idle",
+        "steps": [
+            {"id": "env", "state": "pending", "elapsed_ms": 0},
+            {"id": "server", "state": "pending", "elapsed_ms": 0},
+            {"id": "page", "state": "pending", "elapsed_ms": 0},
+        ],
+    }
+    assert seen[0]["state"] == "starting"
+    assert _steps(seen[0]) == [("env", "done"), ("server", "done"), ("page", "active")]
+    assert after["state"] == "ready" and "error" not in after
+    assert _steps(after) == [("env", "done"), ("server", "done"), ("page", "done")]
+    assert all(isinstance(step["elapsed_ms"], int) for step in after["steps"])
+
+
+async def test_a_failed_page_open_reports_the_step_and_why(
+    page_app: tuple[Any, _Executor, _Sessions],
+) -> None:
+    app, executor, _sessions = page_app
+    executor.fail_read = RuntimeError("the resource is gone")
+    try:
+        opened = await pages_module.plugin_pages(app).open("host-fixture", "page")
+    finally:
+        _shutdown(app)
+    status = startup_module.page_startups(app).status("host-fixture", "page")
+
+    assert opened["page"]["available"] is False
+    assert status["state"] == "failed"
+    assert _steps(status) == [("env", "done"), ("server", "done"), ("page", "failed")]
+    assert "the resource is gone" in status["error"]
+
+
+async def test_a_refused_page_open_fails_its_first_step(
+    page_app: tuple[Any, _Executor, _Sessions],
+) -> None:
+    app, _executor, _sessions = page_app
+    with pytest.raises(tabs_module.PluginTabError):
+        await pages_module.plugin_pages(app).open("stranger", "page")
+    status = startup_module.page_startups(app).status("stranger", "page")
+
+    assert status["state"] == "failed"
+    assert _steps(status) == [("env", "failed"), ("server", "pending"), ("page", "pending")]
+    assert status["error"]
+
+
+def test_the_server_step_follows_the_servers_own_preparation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.tools import mcp_prepare
+
+    rows = {"phase": mcp_prepare.PHASE_PROVISION, "state": mcp_prepare.PREPARING}
+    monkeypatch.setattr(mcp_prepare, "preparation_state", lambda namespace: dict(rows))
+    startups = startup_module.PageStartups()
+    startups.begin("p", "home")
+    startups.attach("p", "home", namespace="srv")
+
+    assert _steps(startups.status("p", "home"))[:2] == [("env", "active"), ("server", "pending")]
+    rows["phase"] = mcp_prepare.PHASE_LAUNCH
+    assert _steps(startups.status("p", "home"))[:2] == [("env", "done"), ("server", "active")]
+    startups.fail("p", "home", "the server exited")
+    failed = startups.status("p", "home")
+    assert _steps(failed) == [("env", "done"), ("server", "failed"), ("page", "pending")]
+    assert failed["error"] == "the server exited"
+
+
+async def test_a_page_read_carries_the_persons_locale(
+    page_app: tuple[Any, _Executor, _Sessions], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, executor, _sessions = page_app
+    locales: list[str | None] = []
+    real_read = executor.read_resource
+
+    def read(namespace: str, uri: str) -> Any:
+        locales.append(request_locale.current())
+        return real_read(namespace, uri)
+
+    monkeypatch.setattr(executor, "read_resource", read)
+    tabs = tabs_module.plugin_tabs(app)
+    try:
+        with request_locale.scope("es"):
+            opened = await pages_module.plugin_pages(app).open("host-fixture", "page")
+        await tabs.refresh((opened["context_session_id"], "host-fixture", "page"))
+    finally:
+        _shutdown(app)
+
+    assert locales == ["es", "es"]  # a pushed re-read keeps the open's language
+
+
+async def test_a_page_action_passes_its_servers_toast(
+    page_app: tuple[Any, _Executor, _Sessions], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, executor, _sessions = page_app
+    real_call = executor.call_tool_result
+    toast = {
+        "message": "Saved",
+        "tone": "positive",
+        "undo": {"label": "Undo", "action": {"event": {"name": "unsave", "context": {"id": 1}}}},
+    }
+
+    def call(name: str, arguments: dict[str, Any]) -> Any:
+        return {**real_call(name, arguments), "_meta": {"io.iowarp/toast": toast}}
+
+    monkeypatch.setattr(executor, "call_tool_result", call)
+    pages = pages_module.plugin_pages(app)
+    try:
+        await pages.open("host-fixture", "page")
+        result = await pages.action("host-fixture", "page", _action("bump", {"by": 1}))
+    finally:
+        _shutdown(app)
+
+    assert result["outcome"] == "applied"
+    assert result["toast"] == toast

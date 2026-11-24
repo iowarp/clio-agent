@@ -72,8 +72,8 @@ class MCPClientProtocol(Protocol):
         """Call a tool and forward optional native progress notifications."""
         ...
 
-    async def read_resource(self, uri: str) -> Any:
-        """Read a resource from the backing server."""
+    async def read_resource(self, uri: str, *, meta: dict[str, Any] | None = None) -> Any:
+        """Read a resource from the backing server, with optional request ``_meta``."""
         ...
 
 
@@ -619,7 +619,11 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
             client = await self._namespace_client(namespace, proxy)
         else:
             client = self._client
-        return await asyncio.wait_for(client.read_resource(uri), timeout=self._timeout)
+        from clio_agent.tools.request_locale import locale_meta  # noqa: PLC0415
+
+        meta = locale_meta()  # the person's language, when the request named one
+        read = client.read_resource(uri, meta=meta) if meta else client.read_resource(uri)
+        return await asyncio.wait_for(read, timeout=self._timeout)
 
     async def _connect_namespace(self, namespace: str, proxy: Any) -> Any:
         """Connect a declared namespace, retaining era, route and cache-lock evidence."""

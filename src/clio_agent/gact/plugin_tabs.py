@@ -30,6 +30,7 @@ from clio_agent.gact.a2ui import (
     validate_client_action,
 )
 from clio_agent.gact.events import Event
+from clio_agent.gact.plugin_page_startup import page_startups
 from clio_agent.gact.plugin_tab_revisions import carry_revisions
 from clio_agent.gact.server_actions import (
     ServerActionError,
@@ -49,7 +50,7 @@ from clio_agent.gact.server_surfaces import (
     result_blocks,
     server_scope,
 )
-from clio_agent.tools import fleet_close_listeners
+from clio_agent.tools import fleet_close_listeners, request_locale
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,8 @@ class TabState:
     #: The mounted server the watch was started on; a remount drops it (HS3).
     watch_proxy: Any = None
     actions: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: The person's language when the tab was opened, so a pushed re-read keeps it.
+    locale: str | None = None
 
     @property
     def tab_id(self) -> str:
@@ -227,6 +230,12 @@ class PluginTabs:
 
         with self._lock:
             return self._failures.get((session_id, plugin, tab), ("", ""))[0]
+
+    def failure_detail(self, session_id: str, plugin: str, tab: str) -> str:
+        """The message of the open tab's last failed read ("" when it did not fail)."""
+
+        with self._lock:
+            return self._failures.get((session_id, plugin, tab), ("", ""))[1]
 
     def _declared(self, session_id: str, plugin: str, tab: str) -> dict[str, Any]:
         from clio_agent.gact.plugin_pages import page_context  # noqa: PLC0415
@@ -349,13 +358,17 @@ class PluginTabs:
         from clio_agent.gact.off_loop import run_off_loop  # noqa: PLC0415
 
         namespace, uri = state.watch_key
+        locale = request_locale.current() or state.locale
+        startups = page_startups(self._app)
 
         def read(executor: Any) -> Any:
             _prepare_server(executor, namespace)
+            startups.server_ready(state.session_id, state.plugin, state.tab)
             return executor.read_resource(namespace, uri)
 
         try:
-            result = await _run_bound(self._app, state.session_id, read)
+            with request_locale.scope(locale):
+                result = await _run_bound(self._app, state.session_id, read)
         except PluginTabError:
             raise
         except ValueError as exc:
@@ -418,6 +431,7 @@ class PluginTabs:
             if state is None:
                 state = TabState(session_id, plugin, tab, declared, scope)
                 self._open[key] = state
+            state.locale = request_locale.current() or state.locale
         try:
             surfaces, reason, detail = await self._read(state)
         except PluginTabError as exc:

@@ -74,6 +74,7 @@ from clio_agent.gact.semantic_events import (
 )
 from clio_agent.prompts import PromptRegistry, PromptSource
 from clio_agent.runtime import asyncio_wait_release, trace
+from clio_agent.tools import request_locale
 
 logger = logging.getLogger(__name__)
 
@@ -957,6 +958,7 @@ def build_app(
 
     install_protocol_negotiation(app)
     asyncio_wait_release.install()  # a pooled MCP session never keeps a tool call's turn
+    request_locale.install(app)  # a plugin server hears the person's X-Clio-Locale
 
     configure_bearer_auth(app)
 

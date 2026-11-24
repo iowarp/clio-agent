@@ -40,6 +40,7 @@ class ServerActionOutcome:
     surface_ids: list[str] = field(default_factory=list)
     error_text: str = ""
     task_handle: str = ""
+    toast: dict[str, Any] | None = None
 
     def wire(self, action_id: str) -> dict[str, Any]:
         row: dict[str, Any] = {
@@ -54,7 +55,77 @@ class ServerActionOutcome:
             row["error_text"] = self.error_text
         if self.task_handle:
             row["task_handle"] = self.task_handle
+        if self.toast:
+            row["toast"] = dict(self.toast)
         return row
+
+
+#: The ``_meta`` key of a tool result's short notice for the person (see :func:`result_toast`).
+TOAST_META_KEY = "io.iowarp/toast"
+TOAST_TONES = frozenset({"neutral", "positive", "warning", "negative"})
+_TOAST_MESSAGE_MAX = 300
+_TOAST_UNDO_LABEL_MAX = 40
+
+
+def _result_meta(raw_result: Any) -> Mapping[str, Any]:
+    meta = getattr(raw_result, "meta", None)
+    if meta is None and isinstance(raw_result, Mapping):
+        meta = raw_result.get("_meta", raw_result.get("meta"))
+    return meta if isinstance(meta, Mapping) else {}
+
+
+def _undo(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    label, action = value.get("label"), value.get("action")
+    if not isinstance(label, str) or not 1 <= len(label.strip()) <= _TOAST_UNDO_LABEL_MAX:
+        return None
+    event = action.get("event") if isinstance(action, Mapping) else None
+    if not isinstance(event, Mapping):
+        return None
+    event_name, context = event.get("name"), event.get("context", {})
+    if not isinstance(event_name, str) or not event_name.strip():
+        return None
+    if not isinstance(context, Mapping):
+        return None
+    return {"label": label.strip(), "action": {"event": dict(event)}}
+
+
+def result_toast(raw_result: Any, *, tool: str = "") -> dict[str, Any] | None:
+    """The valid ``_meta["io.iowarp/toast"]`` of a tool result, else ``None``.
+
+    A toast is ``{message, tone, undo?: {label, action}}``: ``message`` 1..300
+    characters, ``tone`` one of :data:`TOAST_TONES` (``neutral`` when absent), and
+    ``undo`` a label of 1..40 characters with an A2UI event action
+    (``{"event": {"name", "context"?}}``) the surface sends like any other. An invalid toast is dropped with a log line; it never
+    fails the action.
+    """
+
+    value = _result_meta(raw_result).get(TOAST_META_KEY)
+    if value is None:
+        return None
+    problem = ""
+    toast: dict[str, Any] = {}
+    if not isinstance(value, Mapping):
+        problem = "not an object"
+    else:
+        message, tone = value.get("message"), value.get("tone", "neutral")
+        if not isinstance(message, str) or not 1 <= len(message.strip()) <= _TOAST_MESSAGE_MAX:
+            problem = "message must be 1 to 300 characters"
+        elif tone not in TOAST_TONES:
+            problem = f"tone {tone!r} is not one of {sorted(TOAST_TONES)}"
+        else:
+            toast = {"message": message.strip(), "tone": tone}
+            if value.get("undo") is not None:
+                undo = _undo(value["undo"])
+                if undo is None:
+                    problem = "undo needs a 1 to 40 character label and an A2UI event action"
+                else:
+                    toast["undo"] = undo
+    if problem:
+        logger.warning("a2ui_action_toast_dropped tool=%s reason=%s", tool or "?", problem)
+        return None
+    return toast
 
 
 def login_provider(name: str) -> str:
@@ -244,24 +315,31 @@ async def deliver_server_action(
     raw = await call_server_action(
         app, session_id, scope, name, context, place=place, place_title=place_title
     )
+    toast = result_toast(raw, tool=name)
     handle = task_handle(raw)
     if handle:
-        return ServerActionOutcome(tool=name, outcome="task_pending", task_handle=handle)
+        return ServerActionOutcome(
+            tool=name, outcome="task_pending", task_handle=handle, toast=toast
+        )
     if is_error_result(raw):
-        return ServerActionOutcome(tool=name, outcome="tool_error", error_text=error_text(raw))
+        return ServerActionOutcome(
+            tool=name, outcome="tool_error", error_text=error_text(raw), toast=toast
+        )
     outcomes = await run_off_loop(apply, raw)
     if not outcomes:
-        return ServerActionOutcome(tool=name, outcome="no_update")
+        return ServerActionOutcome(tool=name, outcome="no_update", toast=toast)
     applied = [outcome for outcome in outcomes if not outcome.reason]
     if not applied:
         refused = outcomes[0]
         raise ServerActionError(422, refused.reason, refused.detail or refused.reason)
     surface_ids = list(dict.fromkeys(sid for outcome in applied for sid in outcome.surface_ids))
-    return ServerActionOutcome(tool=name, outcome="applied", surface_ids=surface_ids)
+    return ServerActionOutcome(tool=name, outcome="applied", surface_ids=surface_ids, toast=toast)
 
 
 __all__ = [
     "LOGIN_ACTION_PREFIX",
+    "TOAST_META_KEY",
+    "TOAST_TONES",
     "ServerActionError",
     "ServerActionOutcome",
     "call_server_action",
@@ -272,6 +350,7 @@ __all__ = [
     "login_provider",
     "resolve_server_tool",
     "resolve_server_tool_definition",
+    "result_toast",
     "server_tools",
     "task_handle",
 ]
