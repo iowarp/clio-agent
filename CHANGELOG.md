@@ -36,6 +36,10 @@ TUI/HTTP surface aren't tracked here.
 
 ### Changed
 
+- `connected_data_write` follows the session's approval mode, as an MCP tool does:
+  plan mode refuses it, `ask` and `auto-edits` ask, `bypass` runs it. A
+  `write_through` save changes the original (a GitHub save is a commit), and it had
+  run unasked in every mode, plan mode included.
 - `metadata` on session create and update refuses server-owned keys (`agent_flow`,
   `unattended`, `run_limits`, ...) with `metadata_reserved`.
 - A flow refuses options it does not declare (`flow_options_invalid`).
