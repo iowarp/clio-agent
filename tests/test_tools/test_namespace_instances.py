@@ -407,9 +407,11 @@ async def test_a_failure_on_the_new_server_names_the_views_holding_the_old_one(
             "paraview_open_view", "paraview", new_proxy, RuntimeError("node lock held")
         )
         assert isinstance(error, MCPNamespaceInstanceHeldError)
-        assert str(error).startswith(MCP_NAMESPACE_INSTANCE_HELD)
-        assert "mapp_1" in str(error) and "node lock held" in str(error)
+        assert str(error).startswith("paraview_open_view failed on the new paraview server: ")
+        assert "node lock held" in str(error).split(MCP_NAMESPACE_INSTANCE_HELD)[0]
+        assert "mapp_1" in str(error) and MCP_NAMESPACE_INSTANCE_HELD in str(error)
         assert error.details["views"] == ["open_view view mapp_1 (conversation sess_1)"]
+        assert error.details["reason"] == MCP_NAMESPACE_INSTANCE_HELD
         assert mcp_executor._held_error("paraview_x", "paraview", None, RuntimeError()) is None
 
         import mcp_types
@@ -419,14 +421,30 @@ async def test_a_failure_on_the_new_server_names_the_views_holding_the_old_one(
             is_error=True,
         )
         noted = mcp_executor._with_held_note(failed, "paraview_open_view", "paraview", new_proxy)
-        assert noted.content[-1].text == "another node half is running"
-        assert noted.content[0].text.startswith(MCP_NAMESPACE_INSTANCE_HELD)
-        assert "mapp_1" in noted.content[0].text
+        assert noted.content[0].text == "another node half is running"
+        assert noted.content[-1].text.startswith(f"({MCP_NAMESPACE_INSTANCE_HELD})")
+        assert "mapp_1" in noted.content[-1].text
+        from clio_agent.tools.mcp_result_text import result_to_text
         from clio_agent.tools.result_errors import structured_tool_result_error
 
-        shown = structured_tool_result_error(noted) or ""  # the failure people and the model see
-        assert shown.startswith(MCP_NAMESPACE_INSTANCE_HELD)
-        assert "mapp_1" in shown and "another node half is running" in shown
+        # The failure people see is the new server's own, whatever the views' names.
+        shown = structured_tool_result_error(noted) or ""
+        assert shown == "another node half is running"
+        seen = result_to_text(noted)  # the model reads the failure, then the views
+        assert seen.index("another node half is running") < seen.index("mapp_1")
+        long_named = ["open_view view " + "v" * 600 + " (conversation sess_1)"]
+        assert namespace_instances.holding_views(new_proxy)
+        cause = "Traceback: NameError: name 'reader' is not defined"
+        script_failed = mcp_types.CallToolResult(
+            content=[mcp_types.TextContent(type="text", text=cause)], is_error=True
+        )
+        import unittest.mock
+
+        with unittest.mock.patch.object(
+            namespace_instances, "holding_views", lambda proxy: long_named
+        ):
+            long_noted = mcp_executor._with_held_note(script_failed, "pv_x", "paraview", new_proxy)
+        assert structured_tool_result_error(long_noted) == cause  # never cut off by the note
         from fastmcp.client.client import CallToolResult as ClientResult
 
         client_failed = ClientResult(  # the proxy's own result shape: a dataclass
@@ -437,7 +455,8 @@ async def test_a_failure_on_the_new_server_names_the_views_holding_the_old_one(
             is_error=True,
         )
         client_noted = mcp_executor._with_held_note(client_failed, "pv_x", "paraview", new_proxy)
-        assert "mapp_1" in (structured_tool_result_error(client_noted) or "")
+        assert structured_tool_result_error(client_noted) == "lock held"
+        assert "mapp_1" in result_to_text(client_noted)
         assert old_backend.disconnects == 0  # the view's server is never stopped for it
         views["open"] = False
         assert namespace_instances.holding_views(new_proxy) == []

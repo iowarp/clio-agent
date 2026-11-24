@@ -34,9 +34,10 @@ to the fleet that drew it. :func:`retire_superseded` stops the retained server o
 its last view has closed, or its session ended (typed reason
 ``superseded_views_closed``). When a call to the new server fails while a retained one
 runs, the executor names the open views holding it (:func:`holding_views`, typed
-``mcp_namespace_instance_held``): the retained server may hold an exclusive resource
-(a node lock, a port). CLIO neither waits silently for the views to close nor stops
-them.
+``mcp_namespace_instance_held``) after the new server's own failure, never before it:
+the retained server may hold an exclusive resource (a node lock, a port), but most such
+failures are the new server's own, and a note first cut their cause off (W17, 2026-11).
+CLIO neither waits silently for the views to close nor stops them.
 
 Within one proxy, the proxy route's kept-alive backend and the direct route are two
 processes of the same server. :func:`may_go_direct` keeps the proxy route while that

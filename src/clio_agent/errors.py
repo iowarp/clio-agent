@@ -380,8 +380,9 @@ def held_by_views_text(namespace: str, views: list[str]) -> str:
     named = "; ".join(views)
     return (
         f"The previous {namespace} server is still running because these views are open: "
-        f"{named}. It may hold a resource the new server needs (a lock or a port). "
-        "Close that view to release it, then retry. CLIO does not stop an open view."
+        f"{named}. Only if this failure is about a resource in use (a lock or a port) may "
+        "that server hold it: closing the view releases it. Otherwise the failure is the "
+        "new server's own. CLIO does not stop an open view."
     )
 
 
@@ -391,6 +392,10 @@ class MCPNamespaceInstanceHeldError(ToolError):
     The old server stays alive while App views it drew are open (setting a connector
     value must not close them), so it may still hold an exclusive resource. The error
     names those views instead of the call waiting or the view being stopped.
+
+    The new server's own failure leads: most failures beside a retained server are its
+    own (a script error, a bad argument), and a shown failure is cut at a few hundred
+    characters, so a note first hid the cause behind a claim nothing showed.
     """
 
     def __init__(self, tool: str, namespace: str, views: list[str], cause: str) -> None:
@@ -398,8 +403,8 @@ class MCPNamespaceInstanceHeldError(ToolError):
         self.namespace = namespace
         self.views = list(views)
         super().__init__(
-            f"{MCP_NAMESPACE_INSTANCE_HELD}: {tool} failed on the new {namespace} server "
-            f"({cause}). {held_by_views_text(namespace, self.views)}",
+            f"{tool} failed on the new {namespace} server: {cause}. "
+            f"({MCP_NAMESPACE_INSTANCE_HELD}) {held_by_views_text(namespace, self.views)}",
             details={
                 "reason": MCP_NAMESPACE_INSTANCE_HELD,
                 "namespace": namespace,

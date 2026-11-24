@@ -254,7 +254,11 @@ def _held_error(name: str, namespace: str, proxy: Any, error: BaseException) -> 
 
 def _with_held_note(result: Any, name: str, namespace: str, proxy: Any) -> Any:
     """An error result from a connector's new server, with the open views holding its
-    superseded server named (typed ``mcp_namespace_instance_held``)."""
+    superseded server named after the server's own failure.
+
+    The server's text stays first: the shown failure is its first text block, cut at
+    500 characters, and a held note first (W17, 2026-11) hid an ordinary failure of
+    the new server behind "close the view", which the failure was not about."""
 
     import mcp_types  # noqa: PLC0415
 
@@ -271,21 +275,11 @@ def _with_held_note(result: Any, name: str, namespace: str, proxy: Any) -> Any:
         name,
         len(views),
     )
-    cause = next(
-        (
-            t.strip()
-            for b in content
-            if isinstance(t := getattr(b, "text", None), str) and t.strip()
-        ),
-        "",
-    )
-    # First, so the failure's own text (the first block) carries the reason and the views.
     note = mcp_types.TextContent(
         type="text",
-        text=f"{MCP_NAMESPACE_INSTANCE_HELD}: {held_by_views_text(namespace, views)}"
-        + (f" The new server said: {cause}" if cause else ""),
+        text=f"({MCP_NAMESPACE_INSTANCE_HELD}) {held_by_views_text(namespace, views)}",
     )
-    blocks = [note, *content]
+    blocks = [*content, note]
     if dataclasses.is_dataclass(result) and not isinstance(result, type):
         return dataclasses.replace(result, content=blocks)  # FastMCP's client result
     try:
