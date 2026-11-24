@@ -57,7 +57,7 @@ from clio_agent.plugins.marketplace import (
     load_agent_specs,
     read_marketplace,
 )
-from clio_agent.plugins.package_files import ignored_package_names, source_stamp
+from clio_agent.plugins.package_files import ignored_package_names, outside_link, source_stamp
 from clio_agent.plugins.records import Diagnostic, PluginRecord
 from clio_agent.plugins.sources import (
     FetchedSource,
@@ -260,6 +260,13 @@ class PluginStore:
 
     # ---------------------------------------------------------------- install
     def _snapshot(self, market: str, source: Path) -> Path:
+        link = outside_link(source)
+        if link is not None:
+            raise StoreError(
+                "marketplace_invalid",
+                f"{link.relative_to(source).as_posix()} is a link to a folder or to a file "
+                "outside the marketplace",
+            )
         exec_digest, text_digest = tree_digests(source)
         digest = hashlib.sha256(f"{exec_digest}{text_digest}".encode()).hexdigest()[:16]
         target = self.root / "snapshots" / market / digest
