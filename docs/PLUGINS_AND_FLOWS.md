@@ -125,11 +125,15 @@ resolved plugins declaring the same
 server name is `mcp_server_collision`. A server's tools are namespaced by the
 server name (`web_...`).
 
-When a plugin is installed, updated or trusted, CLIO builds its stdio servers'
+For a trusted plugin that declares a navigation page, CLIO builds its stdio servers'
 environments in the background, byte-compiled, with the same provisioning step a
 server's first start runs (`uv sync` for `uv run --project`, a warm-up for `uvx`
-and `uv tool run` where builds run outside the sandbox, `clio-kit --prepare`). The
-first page or tool call then finds them built. A failed build is logged and never
+and `uv tool run` where builds run outside the sandbox, `clio-kit --prepare`). It
+does so when a marketplace is installed, updated or trusted, and once when the app
+first lists its pages, so the default marketplace and a version that changed while
+CLIO was closed are covered; an unchanged environment is skipped at once. Opening the
+page then finds its server built. Other plugins' servers build on first use, since a
+marketplace holds many a turn may never start. A failed build is logged and never
 fails the install; the server's first start builds it again.
 `tools.mcp.install_prebuild` (`CLIO_MCP_INSTALL_PREBUILD`) turns this off.
 

@@ -89,6 +89,10 @@ def declared_pages(app: Any) -> list[dict[str, Any]]:
         if host.get("title"):
             row["plugin_title"] = str(host["title"])
         pages[record.id] = row
+    # The first listing is when the person can first open a page: build them all now.
+    from clio_agent.gact import plugin_prebuild  # noqa: PLC0415
+
+    plugin_prebuild.schedule_once(app)
     return list(pages.values())
 
 

@@ -1658,9 +1658,10 @@ KEY_NOTES: dict[str, str] = {
         "clio-kit --prepare); a build that stops making progress fails sooner, typed."
     ),
     "tools.mcp.install_prebuild": (
-        "Build a trusted plugin's MCP server environments (byte-compiled) in the background when "
-        "it is installed, updated or trusted, so its first page or tool call does not wait; set "
-        "false to build them only when a server first starts."
+        "Build a trusted page plugin's MCP server environments (byte-compiled) in the background "
+        "when its marketplace is installed, updated or trusted and when the app first lists its "
+        "pages, so opening the page does not wait; set false to build them only when a server "
+        "first starts."
     ),
     "tools.mcp.probe_timeout_retries": (
         "Retries of the era-negotiation probe after a client-side timeout before giving up; raise "
