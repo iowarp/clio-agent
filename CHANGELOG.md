@@ -36,6 +36,10 @@ TUI/HTTP surface aren't tracked here.
 
 ### Changed
 
+- A path argument an MCP server declares as a `local` file (`ai.iowarp.clio/paths`)
+  meets folder access as `fs_read_file`'s does: outside the workspace and approved
+  folders, the call asks for the folder first, read-only tools included. URLs and
+  `remote` paths are unchanged.
 - Every door that accepts an A2UI message (the producer tools, `POST` to a surface,
   replay) now bounds its nesting before the catalog's JSON Schema runs, and runs the
   chart guard (`check_chart_spec`) on each `clio.chart.v1` spec. Deep nesting had

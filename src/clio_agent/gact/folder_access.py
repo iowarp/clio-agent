@@ -54,8 +54,13 @@ def bind_folder_gate(app: FastAPI, gate: Callable[..., str]) -> Callable[..., st
 
 @checked
 def requested_folders(name: str, args: Mapping[str, Any]) -> list[str]:
-    """Return denied folders for declared built-in path arguments, without reading files."""
+    """Return denied folders for declared path arguments, without reading files.
+
+    Built-in file tools and the shell name theirs here; any other tool's are the
+    arguments its server declares as ``local`` paths (``ai.iowarp.clio/paths``).
+    """
     paths: list[tuple[str, bool]] = []
+    declared_reads: set[str] = set()
     if name in {"fs_read_file", "fs_write_file", "fs_edit_file"}:
         value = args.get("path")
         if isinstance(value, str) and value:
@@ -73,7 +78,21 @@ def requested_folders(name: str, args: Mapping[str, Any]) -> list[str]:
             raise ValueError("access_paths must contain non-empty file or folder paths")
         paths.extend((p, Path(p).expanduser().is_dir()) for p in declared)
     else:
-        return []
+        from clio_agent.tools.tool_path_contract import (  # noqa: PLC0415
+            ACCESS_READ,
+            MACHINE_LOCAL,
+            call_declared_paths,
+        )
+
+        for arg, spec in call_declared_paths(name).items():
+            value = args.get(arg)
+            if spec.machine == MACHINE_LOCAL and isinstance(value, str) and value:
+                if "://" not in value:  # a URL is not a file on this computer
+                    paths.append((value, Path(value).expanduser().is_dir()))
+                    if spec.access == ACCESS_READ:
+                        declared_reads.add(value)
+        if not paths:
+            return []
     policy = FileAccessPolicy.from_env()
     folders: list[str] = []
     for raw, directory in paths:
@@ -86,7 +105,7 @@ def requested_folders(name: str, args: Mapping[str, Any]) -> list[str]:
         # Shell path declarations describe access, not write intent. The child
         # fence enforces writes; never turn an approved source read into a root
         # grant (which would incorrectly request read/write access).
-        reads_source = name in {
+        reads_source = raw in declared_reads or name in {
             "fs_read_file",
             "fs_list_directory",
             "fs_search_text",
