@@ -1663,6 +1663,11 @@ KEY_NOTES: dict[str, str] = {
         "pages, so opening the page does not wait; set false to build them only when a server "
         "first starts."
     ),
+    "tools.mcp.page_prestart_s": (
+        "Seconds a page plugin that built cleanly keeps its servers after CLIO starts them in "
+        "the background (at install and when the app first lists its pages), so the first open "
+        "of the page finds its server running; 0 turns prestarting off."
+    ),
     "tools.mcp.probe_timeout_retries": (
         "Retries of the era-negotiation probe after a client-side timeout before giving up; raise "
         "for a slow-starting server."

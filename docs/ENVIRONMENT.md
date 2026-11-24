@@ -259,6 +259,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_MCP_MAX_WAIT_S` | `tools.mcp.max_wait_s` | float | `180.0` | `src/clio_agent/tools/mcp_server_progress.py` |
 | `CLIO_MCP_MOUNT_RETRY_DELAYS_S` | `tools.mcp.mount_retry_delays_s` | list | `0.5,1.5` | `src/clio_agent/gact/mcp_readiness.py` |
 | `CLIO_MCP_NO_PROGRESS_S` | `tools.mcp.no_progress_s` | float | `30.0` | `src/clio_agent/tools/mcp_server_progress.py` |
+| `CLIO_MCP_PAGE_PRESTART_S` | `tools.mcp.page_prestart_s` | float | `1800.0` | `src/clio_agent/gact/plugin_prebuild.py` |
 | `CLIO_MCP_PROBE_TIMEOUT_RETRIES` | `tools.mcp.probe_timeout_retries` | int | `3` | `src/clio_agent/tools/mcp_probe_hardening.py` |
 | `CLIO_MCP_PROVISION_MAX_WAIT_S` | `tools.mcp.provision_max_wait_s` | float | `900.0` | `src/clio_agent/tools/mcp_prepare.py` |
 | `CLIO_MCP_RESPONSE_CACHE_ENABLED` | `tools.mcp.response_cache_enabled` | bool | `false` | `src/clio_agent/tools/mcp_runtime.py` |

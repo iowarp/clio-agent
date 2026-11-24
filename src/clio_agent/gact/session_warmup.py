@@ -66,7 +66,7 @@ def start_session_warmup(
         app: The GACT app (its ``state.agent`` owns the workspace fleets).
         sid: The session whose servers to start.
         trigger: What asked for it (``session_created`` / ``conversation_opened`` /
-            ``agent_changed`` / ``turn_started``), for the log.
+            ``agent_changed`` / ``turn_started`` / ``page_prestart``), for the log.
     """
 
     if not session_warmup_enabled():
@@ -220,8 +220,11 @@ def hold_while_waiting_s() -> float:
     )
 
 
-def hold_session_fleet(app: Any, sid: str) -> None:
-    """Keep ``sid``'s workspace fleet while the session waits on its user."""
+def hold_session_fleet(app: Any, sid: str, *, seconds: float | None = None) -> None:
+    """Keep ``sid``'s workspace fleet while the session waits on its user.
+
+    ``seconds`` overrides :func:`hold_while_waiting_s` (a prestarted page's hold).
+    """
 
     state = getattr(app, "state", None)
     agent = getattr(state, "agent", None)
@@ -247,7 +250,11 @@ def hold_session_fleet(app: Any, sid: str) -> None:
                 "session_fleet_hold_refused session=%s root=%s error=%s", sid, root, error
             )
             return
-        timer = threading.Timer(hold_while_waiting_s(), release_session_fleet, args=(sid,))
+        timer = threading.Timer(
+            hold_while_waiting_s() if seconds is None else seconds,
+            release_session_fleet,
+            args=(sid,),
+        )
         timer.daemon = True
         _holds[sid] = (stack, timer)
     timer.start()

@@ -1713,6 +1713,13 @@ tools.mcp.mount_retry_delays_s: ["0.5", "1.5"]
 # waited for up to tools.mcp.max_wait_s.
 tools.mcp.no_progress_s: 30.0
 
+# CLIO_MCP_PAGE_PRESTART_S  (float)  <- src/clio_agent/gact/plugin_prebuild.py
+# Seconds a page plugin that built cleanly keeps its servers after CLIO
+# starts them in the background (at install and when the app first lists its
+# pages), so the first open of the page finds its server running; 0 turns
+# prestarting off.
+tools.mcp.page_prestart_s: 1800.0
+
 # CLIO_MCP_PROBE_TIMEOUT_RETRIES  (int)  <- src/clio_agent/tools/mcp_probe_hardening.py
 # Retries of the era-negotiation probe after a client-side timeout before
 # giving up; raise for a slow-starting server.

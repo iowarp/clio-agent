@@ -137,6 +137,13 @@ marketplace holds many a turn may never start. A failed build is logged and neve
 fails the install; the server's first start builds it again.
 `tools.mcp.install_prebuild` (`CLIO_MCP_INSTALL_PREBUILD`) turns this off.
 
+A built environment still leaves the server's own start (a Python server's imports
+take seconds, more on the first run of freshly installed files). So once a page
+plugin builds cleanly, CLIO also prestarts its page: it creates the page's context,
+starts its servers as for a new session, and holds them for
+`tools.mcp.page_prestart_s` (`CLIO_MCP_PAGE_PRESTART_S`, 1800 s; `0` turns this off).
+A first open in that time finds the server running.
+
 A plugin may declare its own server here with no connector catalog entry: the
 server starts from the plugin's declaration alone.
 

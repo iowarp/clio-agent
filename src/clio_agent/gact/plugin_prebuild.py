@@ -17,10 +17,18 @@ build, and a marketplace holds many plugins whose servers a turn may never start
 those still build on first use. Nothing here can fail an install: every error is logged
 and the server's first start builds as it would have. An untrusted plugin is not built
 (building runs its build backend), and ``tools.mcp.install_prebuild`` turns the step off.
+
+A built environment still leaves the server's start to the first open: a Python server
+imports its libraries (seconds), and the first run of freshly installed files is slower
+still while the system scans them. So once a page plugin builds cleanly its page is
+prestarted (:func:`prestart`): its context is created, its servers are started as a new
+session's are, and its fleet is held for ``tools.mcp.page_prestart_s`` (30 min; ``0``
+turns prestarting off), so a first open in that time finds the server running.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 from collections.abc import Mapping
@@ -99,6 +107,47 @@ def prebuild(app: Any, record: Any) -> dict[str, str]:
     return outcomes
 
 
+def prestart_s() -> float:
+    """``tools.mcp.page_prestart_s`` (1800): how long a prestarted page keeps its servers."""
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "tools.mcp.page_prestart_s",
+        env="CLIO_MCP_PAGE_PRESTART_S",
+        default=1800.0,
+        cast=conf.as_float,
+    )
+
+
+def prestart(app: Any, record: Any) -> str | None:
+    """Start ``record``'s page servers now and hold them; return the page's context id.
+
+    ``None`` when prestarting is off, the app has no running loop yet, or the plugin
+    declares no page. The page's context is the one its first open would create.
+    """
+
+    seconds = prestart_s()
+    loop = getattr(getattr(app, "state", None), "mcp_app_loop", None)
+    if seconds <= 0 or not isinstance(loop, asyncio.AbstractEventLoop) or not _has_page(record):
+        return None
+    from clio_agent.gact import session_warmup  # noqa: PLC0415
+    from clio_agent.gact.plugin_pages import plugin_pages  # noqa: PLC0415
+
+    page = str(record.host["navigation"]["id"])
+    opening = plugin_pages(app).context(str(record.id), page, create=True)
+    context = asyncio.run_coroutine_threadsafe(opening, loop).result(timeout=120)
+    # A context made now has started its servers; one that existed has not.
+    session_warmup.start_session_warmup(app, context, trigger="page_prestart")
+    session_warmup.hold_session_fleet(app, context, seconds=seconds)
+    logger.info("plugin page prestarted plugin=%s page=%s context=%s", record.id, page, context)
+    return context
+
+
+def _built(outcomes: Mapping[str, str]) -> bool:
+    return not any(str(outcome).startswith(("failed", "skipped")) for outcome in outcomes.values())
+
+
 def _has_page(record: Any) -> bool:
     """Whether ``record`` declares a navigation page in its ``ai.iowarp.clio`` extension."""
 
@@ -156,7 +205,12 @@ def schedule(app: Any) -> threading.Thread | None:
             logger.warning("plugin prebuild not started error=%r", exc)
             return
         for record in records:
-            prebuild(app, record)
+            if not _built(prebuild(app, record)):
+                continue
+            try:
+                prestart(app, record)
+            except Exception as exc:  # noqa: BLE001 - the first open starts it as before
+                logger.warning("plugin page prestart failed plugin=%s error=%r", record.id, exc)
 
     thread = threading.Thread(target=run, name="clio-plugin-prebuild", daemon=True)
     thread.start()
