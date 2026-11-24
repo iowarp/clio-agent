@@ -36,6 +36,10 @@ TUI/HTTP surface aren't tracked here.
 
 ### Changed
 
+- A path argument an MCP server declares as a `local` file (`ai.iowarp.clio/paths`)
+  meets folder access as `fs_read_file`'s does: outside the workspace and approved
+  folders, the call asks for the folder first, read-only tools included. URLs and
+  `remote` paths are unchanged.
 - `metadata` on session create and update refuses server-owned keys (`agent_flow`,
   `unattended`, `run_limits`, ...) with `metadata_reserved`.
 - A flow refuses options it does not declare (`flow_options_invalid`).

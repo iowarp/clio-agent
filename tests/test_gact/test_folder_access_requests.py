@@ -395,3 +395,35 @@ def test_long_windows_artifact_paths_remain_visible_and_evictable(
     assert entries[0].size_bytes == len(b"long path evidence")
     assert store.evict(sha) == len(b"long path evidence")
     assert not store.has_blob(sha) and not list(store.iter_blobs())
+
+
+def test_a_servers_declared_local_paths_need_folder_access(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A read-only MCP tool's local path meets folder access like fs_read_file's."""
+    from clio_agent.tools import tool_path_contract as tool_paths
+
+    root, outside = tmp_path / "workspace", tmp_path / "elsewhere"
+    root.mkdir()
+    outside.mkdir()
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(root))
+    monkeypatch.setitem(conf.store().data["tools"]["file_policy"], "allowed_roots", [str(root)])
+    definition = {
+        "_meta": {
+            tool_paths.PATHS_META_KEY: {
+                "path": {"machine": "local", "access": "read"},
+                "remote": {"machine": "remote", "access": "read"},
+            }
+        }
+    }
+    with tool_workspace_context(root):
+        tool_paths.bind_call("h5_open_file", definition)
+        assert requested_folders("h5_open_file", {"path": str(outside / "run.h5")}) == [
+            str(outside)
+        ]
+        assert requested_folders("h5_open_file", {"path": str(root / "run.h5")}) == []
+        assert requested_folders("h5_open_file", {"path": "run.h5"}) == []
+        assert requested_folders("h5_open_file", {"path": "http://127.0.0.1:1/v1/x"}) == []
+        assert requested_folders("h5_open_file", {"remote": str(outside / "r.h5")}) == []
+        # Only the running call's tool has its declaration bound.
+        assert requested_folders("other_tool", {"path": str(outside / "run.h5")}) == []
