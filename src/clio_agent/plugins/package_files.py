@@ -30,6 +30,23 @@ def package_files(root: Path) -> Iterator[Path]:
                 yield path
 
 
+def outside_link(root: Path) -> Path | None:
+    """The first symbolic link in the package that a snapshot must not copy, else None.
+
+    A snapshot copies a link's target, so a file link that leaves ``root`` (absolute, or
+    ``..`` up out of a fetched archive) would copy a file of this computer into it. A
+    directory link is refused too: copying follows it, and it can loop.
+    """
+    inside = root.resolve()
+    for directory, directories, files in os.walk(root, onerror=_raise_walk_error):
+        directories[:] = sorted(set(directories) - ignored_package_names(directory, directories))
+        for name in [*directories, *sorted(set(files) - ignored_package_names(directory, files))]:
+            path = Path(directory) / name
+            if path.is_symlink() and (path.is_dir() or not path.resolve().is_relative_to(inside)):
+                return path
+    return None
+
+
 def source_stamp(root: Path) -> str:
     """The version of a local source as its file metadata: names, sizes and mtimes.
 
