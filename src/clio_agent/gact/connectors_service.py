@@ -35,7 +35,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from clio_agent.connectors import entries as entries_mod
-from clio_agent.connectors import listing, materialize, secrets, state
+from clio_agent.connectors import listing, materialize, outside_sandbox, secrets, state
 from clio_agent.connectors import refresh as saved_copy
 from clio_agent.connectors.entries import Entry, Need
 from clio_agent.connectors.overlay import value_problem
@@ -326,6 +326,8 @@ def row(app: Any, found: Entry, choice: state.Choice | None = None) -> dict[str,
         "kit": found.kit or None,
         # What must already be on this machine, in words (LZ-O4, SL-D8).
         "requires": found.requires or None,
+        # What its server starts outside the sandbox, and the person's decision on it.
+        "outside_sandbox": outside_sandbox.wire(found.id),
         "enabled": choice.enabled,
         "plugin": _plugin(records, found),
         # What a conversation's plugin picker adds for this connector (CN9 *Amended*).
@@ -423,6 +425,24 @@ async def apply(app: Any, found: Entry, *, keep_if_unchanged: bool = False) -> d
             _relist_failed(app, found, choice, saved, relist_failed)
     sessions = await asyncio.to_thread(follow_in_open_sessions, app)
     publish_changed(app, found.id, sessions)
+    return row(app, found, state.choice(found.id))
+
+
+async def take_back_outside_sandbox(app: Any, connector_id: str) -> dict[str, Any]:
+    """Forget the person's decision: the server runs fenced again, and is asked anew."""
+
+    from clio_agent.gact.connector_outside import restart_servers  # noqa: PLC0415
+
+    found = entry(connector_id)
+    if not found.outside_sandbox:
+        raise ConnectorError(
+            "connector_not_outside_sandbox", "This connector's server runs only in the sandbox"
+        )
+    was_allowed = outside_sandbox.allowed(found.id)
+    await asyncio.to_thread(outside_sandbox.forget, found.id)
+    if was_allowed:
+        await asyncio.to_thread(restart_servers, app, found.id, "outside_sandbox_taken_back")
+    publish_changed(app, found.id, [])
     return row(app, found, state.choice(found.id))
 
 

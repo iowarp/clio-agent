@@ -23,6 +23,7 @@
         "plugin": {"$ref": "#/$defs/id", "description": "The plugin that follows this connector"},
         "group": {"type": "string", "maxLength": 40, "description": "The domain Discover groups it under"},
         "requires": {"type": "string", "maxLength": 300, "description": "What must already be installed on this machine for it to work, in words"},
+        "outside_sandbox": {"type": "string", "minLength": 1, "maxLength": 300, "description": "What its server starts that CLIO's sandbox would block (a desktop app, a user-scope installer), in words. The person is asked once whether the server may run outside the sandbox"},
         "tools": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true, "description": "The server tools this connector offers; absent means every tool"},
         "hide_tools": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 80}, "minItems": 1, "uniqueItems": true, "description": "Glob patterns of server tools this connector does not offer (for example sim_*): left out of the listing and refused by name"}
       }

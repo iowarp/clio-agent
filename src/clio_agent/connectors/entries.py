@@ -92,6 +92,10 @@ class Entry:
     #: What must already be on this machine for it to work, in words ("" for nothing
     #: known): a written ``requires``, else the clio-kit catalogue's prerequisite note.
     requires: str = ""
+    #: What its server starts that CLIO's sandbox would block (a desktop app, a
+    #: user-scope installer), in words; "" for nothing. The person is asked once
+    #: whether the server may run outside the sandbox (``connectors/outside_sandbox.py``).
+    outside_sandbox: str = ""
 
     def need(self, key: str) -> Need | None:
         return next((need for need in self.needs if need.key == key), None)
@@ -148,6 +152,7 @@ class Entry:
             **({"tools": list(self.tools)} if self.tools else {}),
             **({"hide_tools": list(self.hide_tools)} if self.hide_tools else {}),
             **({"requires": self.requires} if self.requires else {}),
+            **({"outside_sandbox": self.outside_sandbox} if self.outside_sandbox else {}),
         }
 
 
@@ -284,6 +289,7 @@ def entry_from_raw(
         group=str(raw.get("group") or ""),
         kit=kit_entries.kit_server(raw["server"]),
         requires=str(raw.get("requires") or ""),
+        outside_sandbox=str(raw.get("outside_sandbox") or ""),
     )
 
 

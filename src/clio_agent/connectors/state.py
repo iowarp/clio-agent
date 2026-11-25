@@ -126,6 +126,29 @@ def update(
         return _choice(current)
 
 
+def field_value(connector_id: str, key: str) -> Any:
+    """One stored field of a connector's choices beyond ``enabled`` and ``values``."""
+
+    with _LOCK:
+        return (_read()["connectors"].get(connector_id) or {}).get(key)
+
+
+def set_field(connector_id: str, key: str, value: Any) -> None:
+    """Store (``None``: remove) one field of a connector's choices, keeping the rest."""
+
+    if key in {"enabled", "values"}:
+        raise ConnectorStateError(f"{key!r} is changed with update()")
+    with _LOCK:
+        document = _read()
+        current = dict(document["connectors"].get(connector_id) or {})
+        if value is None:
+            current.pop(key, None)
+        else:
+            current[key] = value
+        document["connectors"][connector_id] = current
+        _write(document)
+
+
 def forget(connector_id: str) -> None:
     """Remove a connector's choices and, for a custom one, its entry."""
 

@@ -672,6 +672,9 @@ def _make_permission_gate(app: "FastAPI"):
         from clio_agent.gact.hooks import stash_pre_tool_intercept  # noqa: PLC0415
 
         stash_pre_tool_intercept(None)
+        from clio_agent.gact.connector_outside import ask_if_needed  # noqa: PLC0415
+
+        ask_if_needed(app, name, args, context)  # where the server runs, asked once
         if (answered := answered_or_outside(app, name, args, context)) is not None:
             return answered  # a person approved this very call, or must for outside_sandbox
         # #1032: reads inside permitted territory need no action approval. A provably read-only call (MCP

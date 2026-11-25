@@ -684,6 +684,28 @@ shell refuses `outside_sandbox` without a recorded allow (`outside_sandbox_not_a
 a path that skipped the gate fails closed. CLIO never takes a password: a command that needs
 one (`sudo` on a desktop) is still the person's to run, as `elevation_required` says.
 
+**A connector's server outside the sandbox, once per connector.** Some connector servers
+start a desktop app or a user-scope installer, and those keep the person's own settings
+where the fence blocks them: the registry and Documents on Windows, `~/Library` on macOS,
+`~/.config` and the display on Linux. Such a connector's catalog entry says so in
+`outside_sandbox`. The first time an agent calls one of its tools under an active fence,
+before the call reaches the server, the gate asks the person whether that server may run
+outside CLIO's sandbox (`gact/connector_outside.py`). As with a command outside the
+sandbox, only the person answers, whatever the approval mode, rules or AI reviewer; the
+card states what the server starts and what running outside the sandbox means, and offers
+only **allow** or **deny**. The answer is kept for that connector and its server
+declaration (`connectors/outside_sandbox.py`, in `connectors.yaml`), so a new command or
+pinned release is asked again. An allow starts the connector's server again, unconfined,
+in every resident fleet (mechanism `none`, reason `outside_sandbox_allowed_for_connector`,
+logged), so the call that asked already reaches it; a deny keeps it fenced. The call
+itself then goes through the gate's other layers as usual. Nothing is asked in an
+unattended run, when a rule or the mode denies the call, or when the question ends with
+the turn. The person takes it back on the connector (`DELETE
+/v1/connectors/{id}/outside-sandbox`), and the server runs fenced again. The same code
+runs on every platform; only the fence it leaves differs (MXC AppContainer on Windows,
+Seatbelt on macOS, Landlock or bubblewrap on Linux), and with no active fence nothing is
+asked.
+
 ### Provenance tiers under the fence (#980)
 
 The fence upgrades #966's honest-but-toothless floor into enforced guarantees, all

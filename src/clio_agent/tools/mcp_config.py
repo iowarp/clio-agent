@@ -636,7 +636,9 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
             final_command, final_args = resolved, resolved_args
         from clio_agent.tools.mcp_confine import confine_stdio_server  # noqa: PLC0415
 
-        confined, env = confine_stdio_server(spec.name, final_command, final_args, env, cwd)
+        confined, env = confine_stdio_server(
+            spec.name, final_command, final_args, env, cwd, connector=spec.connector or ""
+        )
         # A dieted launch re-declares itself once its plan is dropped (VF-D9).
         transport = spawn_diet_transport.stdio_transport(spec, cwd, diet is not None)(
             command=confined.command,
