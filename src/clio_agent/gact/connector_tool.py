@@ -10,9 +10,11 @@ secret and for a sign-in (only the person types or signs in, in the setup card)
 and for a need not marked ``agent_settable``. Like any built-in it passes the
 session's tool permission rules (``tool_permission_layers.native_gate``). The value
 is THIS conversation's (CV-D4): it goes into the conversation's own connector values,
-never the person's defaults, so another conversation's server is not touched. The
-conversation gets its own server with the value; the running turn calls that server
-from its next step, and its tools are listed again. The card shows the new value.
+kept for its whole tree (a parent and its subagents share them, and so one server per
+connector), never the person's defaults, so another conversation's server is not
+touched. The conversation gets its own server with the value; its running turns call
+that server from their next step, and its tools are listed again. The card shows the
+new value.
 
 Its row reads "Set <need> of <connector>"; expansion shows the value set and the
 connector's state after it, or the typed reason it was refused.
@@ -222,7 +224,8 @@ def build_set_connector_value_tool() -> Any:
         desc=(
             "Set values one of the person's connectors needs, such as where its server "
             "runs, when the person gives them in the conversation or a tool just produced "
-            "them. The values apply to this conversation only; other conversations keep "
+            "them. The values apply to this conversation only, its subagents included; "
+            "other conversations keep "
             "theirs. Only needs the connector marks as settable by the agent; never a secret "
             "or a sign-in, which the person enters in the setup card. The connector "
             "restarts with the values and lists its tools again, once per call: set "

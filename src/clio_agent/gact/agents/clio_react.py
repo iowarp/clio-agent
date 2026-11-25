@@ -46,6 +46,7 @@ import logging
 import threading
 import traceback
 import uuid
+import weakref
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -117,6 +118,18 @@ _CONTINUING: contextvars.ContextVar[bool] = contextvars.ContextVar(
 def active_loop() -> "_Loop | None":
     """The :class:`ClioReAct` loop running in this context, if any."""
     return _ACTIVE_LOOP.get()
+
+
+#: Every loop running now, in any context: a conversation tree's connector values
+#: moving reaches the turns of all its sessions (``connector_values.move_tree_turns``).
+_RUNNING: "weakref.WeakSet[_Loop]" = weakref.WeakSet()
+_RUNNING_LOCK = threading.Lock()
+
+
+def running_loops() -> "list[_Loop]":
+    """The loops running now, over every session."""
+    with _RUNNING_LOCK:
+        return list(_RUNNING)
 
 
 @contextlib.contextmanager
@@ -351,6 +364,8 @@ class _Loop:
             self.recorder.user_message(self.head)
         parent_token = _ctx.set_parent_span(expert_span)
         loop_token = _ACTIVE_LOOP.set(self)
+        with _RUNNING_LOCK:
+            _RUNNING.add(self)
         try:
             # A call whose result was never recorded gets the truth (outcome unknown)
             # before the first fold, which would otherwise refuse this scope every turn.
@@ -380,6 +395,8 @@ class _Loop:
             self.recorder.failed(exc, self.step, self.span)
             raise
         finally:
+            with _RUNNING_LOCK:
+                _RUNNING.discard(self)
             _ACTIVE_LOOP.reset(loop_token)
             _ctx.reset(parent_token)
             if continue_token is not None:

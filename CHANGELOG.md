@@ -40,6 +40,14 @@ TUI/HTTP surface aren't tracked here.
 
 ### Changed
 
+- A conversation's connector values are kept for its whole tree: a parent and all
+  its subagents read and write the same values, so they launch each connector the
+  same way and share one server of it, and through it one desktop app (one KiCad
+  server, one pcbnew). A value set in one session also moves the tree's other
+  running turns to the new server. Before, a parent's values (such as
+  `kicad.kicad_cli`) did not reach its subagents, so each launched its own server and
+  stopped the other's back and forth. Nothing limits spawns: the shared server starts
+  on first use and is reaped once the tree's last turn ends.
 - `connected_data_write` follows the session's approval mode, as an MCP tool does:
   plan mode refuses it, `ask` and `auto-edits` ask, `bypass` runs it. A
   `write_through` save changes the original (a GitHub save is a commit), and it had

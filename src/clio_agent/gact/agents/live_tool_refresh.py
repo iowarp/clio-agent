@@ -114,7 +114,7 @@ class LiveToolRefresher:
 
     def _apply_moved(self, tools: MutableMapping[str, Any]) -> bool:
         changed = False
-        for prefix, slot in self._moved.items():
+        for prefix, slot in list(self._moved.items()):  # another turn's move may land
             executor, applied = slot
             refresh_executor_tools(executor)
             revision = int(getattr(executor, "tools_revision", 0))

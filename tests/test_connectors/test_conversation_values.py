@@ -283,6 +283,33 @@ def test_a_turn_lease_on_the_workspace_protects_every_fleet_there() -> None:
 # ---------------------------------------------------------- setting values
 
 
+def test_a_parent_and_its_subagents_share_one_set_of_values(
+    fixture_catalog: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = _app()
+    state.update("fixture-secret", enabled=True, values={"where": "this-machine"})
+    app.state.sessions.get("sess_child").parent_session_id = "sess_root"
+    app.state.sessions.get("sess_grandchild").parent_session_id = "sess_child"
+    app.state.sessions.get("sess_root").parent_session_id = ""
+    assert connector_values.tree_root(app, "sess_grandchild") == "sess_root"
+    monkeypatch.setattr(
+        connector_values,
+        "move_session_fleet",
+        lambda _app, sid, found, move_turn: {"status": "ready", "tool_count": 3, "reason": None},
+    )
+    asyncio.run(
+        connector_values.set_session_values(
+            app, "sess_grandchild", "fixture-secret", {"where": "node08"}, by_agent=True
+        )
+    )
+    for sid in ("sess_root", "sess_child", "sess_grandchild"):
+        assert connector_values.session_overlay(app, sid) == {
+            "fixture-secret": {"where": "node08"}
+        }, sid
+    assert overlay.KEY not in app.state.sessions.get("sess_grandchild").metadata  # at the root
+    assert connector_values.session_overlay(app, "sess_other") == {}
+
+
 def test_an_agent_value_waits_for_running_calls_and_refuses_when_they_stay(
     fixture_catalog: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
