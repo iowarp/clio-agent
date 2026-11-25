@@ -620,6 +620,10 @@ KEY_NOTES: dict[str, str] = {
         "Optional bearer token required on non-loopback GACT API requests; set to protect a server "
         "exposed beyond localhost."
     ),
+    "gact.auth.loopback_requires_token": (
+        "Require the bearer token from loopback peers too (only when a token is set); default off. "
+        "Set when a same-host reverse proxy forwards network requests, as the clio-web image does."
+    ),
     "gact.context_references.browse_limit_per_kind": (
         "Rows returned per reference kind when the picker opens with no query typed; raise to "
         "browse more of a large workspace at a glance."
@@ -1411,6 +1415,10 @@ KEY_NOTES: dict[str, str] = {
         "successful calls to one tool (errors and calls that asked are recorded on their own). "
         "Default 60."
     ),
+    "code.foreground_background_after_s": (
+        "Seconds a foreground run_code script runs before it moves to a background task and "
+        "the call returns; the script keeps running. 0 never moves it. Default 180."
+    ),
     "code.idle_minutes": (
         "Minutes a run_code kernel keeps its variables without a script before it is stopped."
     ),
@@ -1489,6 +1497,11 @@ KEY_NOTES: dict[str, str] = {
     "tools.unknown_window_result_tokens": (
         "Tokens of one tool result the model is shown when its context window is unknown (no "
         "handshake or catalog entry); a longer result is saved to a file with its head."
+    ),
+    "tools.spilled_sample_chars": (
+        "Characters of a tool result shown as a sample when the result is saved to a file "
+        "instead of shown; the note says how large it is, where it is, and (for JSON) its "
+        "structure, so the agent explores the file for the rest."
     ),
     "tools.script_media_max": (
         "Images or PDFs one run_code script may attach to its result by viewing them "

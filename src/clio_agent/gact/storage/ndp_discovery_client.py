@@ -14,6 +14,8 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, Field
 
+from clio_agent.gact.storage.ndp_tls import system_tls
+
 
 class Dataset(BaseModel):
     """Catalog fields used to preserve an exact resource selection."""
@@ -45,7 +47,7 @@ class NDPClient:
             raise ValueError(
                 "No NDP Endpoint API is configured; set NDP_API_URL or use the public catalog"
             )
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, verify=system_tls()) as client:
             response = await client.request(method, self.base_url + path, params=params, json=body)
             response.raise_for_status()
             result = response.json()

@@ -89,12 +89,15 @@ def start_timeout_s() -> float:
     return value
 
 
-def _environment(workspace: Path, session_id: str) -> tuple[str, dict[str, str]]:
+def _environment(
+    workspace: Path, session_id: str, *, read_only: bool = False
+) -> tuple[str, dict[str, str]]:
     from clio_agent.paths import workspace_state_dir  # noqa: PLC0415
     from clio_agent.runtime.execution_environment import shell_environment  # noqa: PLC0415
 
     # The kernel belongs to one session: its TMPDIR is that session's scratch (TD56).
-    prepared = shell_environment(workspace, session_id=session_id)
+    # A plan-mode kernel's fence grants only scratch and temp: its uv cache stays there.
+    prepared = shell_environment(workspace, session_id=session_id, read_only=read_only)
     python = prepared.get("CLIO_EXECUTION_PYTHON") or ""
     if not python:
         python = sys.executable
@@ -136,6 +139,33 @@ class Kernel:
         self.process: subprocess.Popen[bytes] | None = None
         self.tree: Any = None
         self.python = ""
+        #: Start runs once, outside the registry lock; a script arriving meanwhile waits on
+        #: it rather than taking the starting kernel for a dead one and replacing it.
+        self._start_lock = threading.Lock()
+        self._start_state = "pending"  # "pending", "started" or the KernelError text
+
+    @property
+    def starting(self) -> bool:
+        """Registered, but its first start has not finished yet."""
+        return self._start_state == "pending"
+
+    def ensure_started(self) -> None:
+        """Start the kernel once; a concurrent caller waits for that start and shares its
+        outcome (a failed start raises for every caller, and the next script replaces it)."""
+        with self._start_lock:
+            if self._start_state == "started":
+                return
+            if self._start_state != "pending":
+                raise KernelError(self._start_state)
+            try:
+                self.start()
+            except KernelError as error:
+                self._start_state = str(error) or "the Python kernel did not start"
+                raise
+            except BaseException:
+                self._start_state = "the Python kernel did not start"
+                raise
+            self._start_state = "started"
 
     def start(self) -> None:
         from clio_agent.runtime import sandbox  # noqa: PLC0415
@@ -145,7 +175,7 @@ class Kernel:
             task_spawn_options,
         )
 
-        python, env = _environment(self.workspace, self.key[0])
+        python, env = _environment(self.workspace, self.key[0], read_only=self.read_only)
         self.python = python
         self.write_roots = (
             read_only_write_roots()
@@ -283,6 +313,9 @@ class Kernel:
 
 
 _KERNELS: dict[tuple[str, str], Kernel] = {}
+#: Scopes whose kernel left with a script moved to a background task: the scope's next
+#: kernel says why it is new (``replaced_backgrounded``).
+_DETACHED: dict[tuple[str, str], str] = {}
 _LOCK = threading.Lock()
 _REAPER: threading.Thread | None = None
 
@@ -308,23 +341,34 @@ def kernel_for(session_id: str, scope: str, workspace: Path, *, read_only: bool 
         kernel = _KERNELS.get(key)
         if (
             kernel is not None
-            and kernel.alive()
+            and (kernel.alive() or kernel.starting)
             and kernel.workspace == workspace
             and kernel.read_only == read_only
         ):
             kernel.last_used = time.monotonic()
-            return kernel
-        replaced = ""
-        if kernel is not None:
-            why = _replaced_because(kernel, workspace, read_only)
-            kernel.stop(why)
-            replaced = why.split(" ", 1)[0]
-        kernel = Kernel(key, workspace, read_only=read_only)
-        kernel.replaced = replaced
-        _KERNELS[key] = kernel
-        _start_reaper()
-    kernel.start()
+        else:
+            replaced = _DETACHED.pop(key, "")
+            if kernel is not None:
+                why = _replaced_because(kernel, workspace, read_only)
+                kernel.stop(why)
+                replaced = why.split(" ", 1)[0]
+            kernel = Kernel(key, workspace, read_only=read_only)
+            kernel.replaced = replaced
+            _KERNELS[key] = kernel
+            _start_reaper()
+    kernel.ensure_started()
     return kernel
+
+
+def detach(kernel: Kernel, reason: str) -> None:
+    """Take a running kernel from its scope without stopping it: its script now belongs
+    to a background task, which stops it when the script ends. The scope's next script
+    starts a new kernel whose :attr:`Kernel.replaced` is ``reason``."""
+    with _LOCK:
+        if _KERNELS.get(kernel.key) is kernel:
+            del _KERNELS[kernel.key]
+            _DETACHED[kernel.key] = reason
+    trace.event("CODE", "kernel detached key=%s reason=%s", kernel.key, reason)
 
 
 def discard(kernel: Kernel, reason: str) -> None:

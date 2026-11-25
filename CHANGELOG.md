@@ -40,6 +40,24 @@ TUI/HTTP surface aren't tracked here.
 
 ### Changed
 
+- `connected_data_write` follows the session's approval mode, as an MCP tool does:
+  plan mode refuses it, `ask` and `auto-edits` ask, `bypass` runs it. A
+  `write_through` save changes the original (a GitHub save is a commit), and it had
+  run unasked in every mode, plan mode included.
+- A path argument an MCP server declares as a `local` file (`ai.iowarp.clio/paths`)
+  meets folder access as `fs_read_file`'s does: outside the workspace and approved
+  folders, the call asks for the folder first, read-only tools included. URLs and
+  `remote` paths are unchanged.
+- Every door that accepts an A2UI message (the producer tools, `POST` to a surface,
+  replay) now bounds its nesting before the catalog's JSON Schema runs, and runs the
+  chart guard (`check_chart_spec`) on each `clio.chart.v1` spec. Deep nesting had
+  raised an untyped `RecursionError`, and a spec the guard refuses reached the
+  schema's slow recursive rules. A theme's `iconUrl` is checked like every other URL
+  slot.
+- Installing a marketplace refuses one that contains a link to a folder, or to a file
+  outside the marketplace (`marketplace_invalid`). The snapshot copied each link's
+  target, so a marketplace could copy a file of this computer into itself. A link to
+  a file inside the marketplace still installs.
 - `metadata` on session create and update refuses server-owned keys (`agent_flow`,
   `unattended`, `run_limits`, ...) with `metadata_reserved`.
 - A flow refuses options it does not declare (`flow_options_invalid`).
@@ -47,6 +65,10 @@ TUI/HTTP surface aren't tracked here.
   get the not-available reply, and new `--agent`, `--model` and `--workspace` flags
   apply. Its JSON drops `selected_expert`.
 - `serve.ensure_server` starts `clio-agent serve`, not `clio-agent-gact`.
+- The browser's actions (`browser_open`, `browser_navigate`, `browser_act`,
+  `browser_close`, `browser_evaluate`) follow the session's approval mode, as an MCP
+  tool does: plan mode refuses them, `ask` asks, `bypass` runs them. Called from a
+  `run_code` script they had run unasked in every mode. Its reads are unchanged.
 
 ### Removed
 

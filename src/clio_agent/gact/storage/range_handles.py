@@ -9,7 +9,8 @@ ranges they touch. The handle carries no credential: the read goes through the
 source's host-side adapter, so keys never leave CLIO. Every read is counted, which is
 how a run reports the bytes it moved.
 
-Providers whose adapter cannot seek answer ``range_unsupported``.
+Providers whose adapter cannot seek answer ``range_unsupported``; an NDP server that
+ignores ``Range`` does too (:mod:`clio_agent.gact.storage.ndp_range`).
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ RANGE_HANDLE_EXPIRED = "range_handle_expired"
 #: How long a handle answers (seconds); a script asks for a new one after that.
 HANDLE_TTL_S = 3600
 #: Providers whose files can be read by byte range.
-RANGE_PROVIDERS = frozenset({"s3", "local"})
+RANGE_PROVIDERS = frozenset({"s3", "ndp", "local"})
 
 Reader = Callable[[int, int], bytes]
 
@@ -54,6 +55,9 @@ class RangeHandle:
     read: Reader = field(repr=False)
     bytes_served: int = 0
     requests: int = 0
+    #: The file's upstream URL (NDP), against which a path beside it resolves
+    #: (:mod:`clio_agent.gact.storage.range_siblings`); never shown.
+    origin: str = field(default="", repr=False)
 
     def stats(self) -> dict[str, Any]:
         return {
@@ -74,6 +78,8 @@ class RangeHandles:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._handles: dict[str, RangeHandle] = {}
+        #: (parent handle, relative path) -> the handle serving that sibling file.
+        self._children: dict[tuple[str, str], str] = {}
 
     def add(self, handle: RangeHandle) -> RangeHandle:
         with self._lock:
@@ -82,6 +88,18 @@ class RangeHandles:
                 del self._handles[key]
             self._handles[handle.id] = handle
         return handle
+
+    def child(self, parent_id: str, relative: str) -> RangeHandle | None:
+        """The live handle already serving ``relative`` beside ``parent_id``'s file."""
+        with self._lock:
+            handle = self._handles.get(self._children.get((parent_id, relative), ""))
+        return handle if handle is not None and handle.expires_at >= time.time() else None
+
+    def adopt_child(self, parent_id: str, relative: str, child: RangeHandle) -> RangeHandle:
+        """Remember ``child`` as the handle for ``relative`` beside ``parent_id``'s file."""
+        with self._lock:
+            self._children[(parent_id, relative)] = child.id
+        return child
 
     def get(self, session_id: str, handle_id: str) -> RangeHandle:
         with self._lock:
@@ -93,9 +111,12 @@ class RangeHandles:
         return handle
 
     def served(self, handle: RangeHandle, n_bytes: int) -> None:
+        from clio_agent.runtime.commitment_activity import note_progress  # noqa: PLC0415
+
         with self._lock:
             handle.bytes_served += n_bytes
             handle.requests += 1
+        note_progress(handle.session_id)  # a script reading the file is working
 
     def for_session(self, session_id: str) -> list[RangeHandle]:
         with self._lock:
@@ -125,21 +146,23 @@ def handle_url(app: Any, handle: RangeHandle) -> str:
     return f"{range_origin(app)}/{handle.session_id}/source-ranges/{handle.id}/{name}"
 
 
-def _reader(service: StorageService, record: SourceRecord, entry: FileEntry) -> Reader:
-    """A function reading ``length`` bytes at ``start`` of ``entry`` through its adapter."""
+def _reader(service: StorageService, record: SourceRecord, entry: FileEntry) -> tuple[Reader, int]:
+    """A function reading ``length`` bytes at ``start`` of ``entry`` through its adapter,
+    and the file's size (an NDP reader asks the server when the catalog has none)."""
     from clio_agent.gact.storage.linked import linked_adapter  # noqa: PLC0415
 
-    if record.source.provider == "s3":
+    if record.source.provider in {"s3", "ndp"}:
         with linked_adapter(service, record) as adapter:
-            reader = adapter.range_reader(entry)  # holds the source's own client
-        return reader.read_range
+            reader = adapter.range_reader(entry)  # holds the source's own client or route
+        size = reader.total_size() if hasattr(reader, "total_size") else int(entry.size or 0)
+        return reader.read_range, size
 
     def read(start: int, length: int) -> bytes:
         with linked_adapter(service, record) as adapter, adapter.open_read(entry) as stream:
             stream.seek(start)
             return stream.read(length)
 
-    return read
+    return read, int(entry.size or 0)
 
 
 def mint(
@@ -165,6 +188,9 @@ def mint(
     entry = next((r for r in manifest.entries if r.path == relative and r.kind == "file"), None)
     if entry is None:
         raise ValueError("Select a file in the linked folder")
+    from clio_agent.gact.storage.range_siblings import origin_url  # noqa: PLC0415
+
+    read, size = _reader(service, record, entry)
     return handles.add(
         RangeHandle(
             id="rng_" + secrets.token_urlsafe(32),
@@ -174,9 +200,10 @@ def mint(
             manifest_id=manifest.id,
             path=entry.path,
             revision=entry.revision,
-            size=int(entry.size or 0),
+            size=size,
             provider=record.source.provider,
             expires_at=time.time() + HANDLE_TTL_S,
-            read=_reader(service, record, entry),
+            read=read,
+            origin=origin_url(service, record, entry.path),
         )
     )

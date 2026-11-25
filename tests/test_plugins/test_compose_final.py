@@ -73,3 +73,69 @@ def test_the_fragment_budget_binds_third_party_plugins_only() -> None:
         budget_exempt=frozenset({"core"}),
     )
     assert len(composed.warnings) == 1 and "x.long" in composed.warnings[0]
+
+
+_BY_PROVIDER = {
+    "sections": [
+        {"section": "identity", "fragments": [{"id": "a.identity", "text": "You are A."}]},
+        {
+            "section": "guidelines",
+            "fragments": [
+                {
+                    "id": "c.finish",
+                    "text": "Finish the work.",
+                    "providers": ["claude_code", "anthropic"],
+                },
+            ],
+        },
+    ]
+}
+
+
+def test_a_provider_fragment_reaches_only_its_providers_turns() -> None:
+    full = "You are A.\n\nFinish the work."
+    for provider in ("claude_code", "anthropic"):
+        assert final_prompt_text(full, _BY_PROVIDER, [], delegated=False, provider=provider) == full
+    for provider in ("lm_studio", "openrouter", ""):
+        text = final_prompt_text(full, _BY_PROVIDER, [], delegated=False, provider=provider)
+        assert text == "You are A."
+
+
+_BY_MODEL = {
+    "sections": [
+        {"section": "identity", "fragments": [{"id": "a.identity", "text": "You are A."}]},
+        {
+            "section": "guidelines",
+            "fragments": [
+                {"id": "c.opus", "text": "Do it, not list it.", "models": ["claude-opus-*"]},
+                {"id": "c.sonnet", "text": "Show it in a view.", "models": ["CLAUDE-SONNET-*"]},
+            ],
+        },
+    ]
+}
+
+
+def test_a_model_fragment_reaches_only_turns_on_matching_models() -> None:
+    full = "You are A.\n\nDo it, not list it.\n\nShow it in a view."
+    opus = final_prompt_text(full, _BY_MODEL, [], delegated=False, model="claude-opus-5-5")
+    assert opus == "You are A.\n\nDo it, not list it."
+    sonnet = final_prompt_text(full, _BY_MODEL, [], delegated=False, model="claude-sonnet-5-5")
+    assert sonnet == "You are A.\n\nShow it in a view."  # patterns match case-insensitively
+    for model in ("gpt-oss-120b", ""):
+        assert final_prompt_text(full, _BY_MODEL, [], delegated=False, model=model) == "You are A."
+
+
+def test_the_core_plugin_tunes_finishing_and_views_per_model() -> None:
+    from pathlib import Path
+
+    from clio_agent.plugins.loader import _fragments_and_texts
+
+    core = (
+        Path(__file__).resolve().parents[2] / "src/clio_agent/plugins/builtin/core/ai.iowarp.clio"
+    )
+    fragments, _texts, diagnostics = _fragments_and_texts(core, "core")
+    assert not diagnostics
+    by_id = {f.id: f for f in fragments}
+    assert by_id["core.finish_opus"].when_models == ("claude-opus-*",)
+    assert by_id["core.finish_sonnet"].when_models == ("claude-sonnet-*",)
+    assert by_id["core.visual_sonnet"].when_tools == ("create_a2ui_surface",)

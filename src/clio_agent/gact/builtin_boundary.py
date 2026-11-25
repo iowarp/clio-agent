@@ -404,7 +404,12 @@ class BuiltinBoundary:
                 permission_arguments,
                 selection_digest,
             ) = await self.app.state.task_history.io.run(
-                connection_approval, self.app.state.connected_storage, session.workspace_id, public
+                captured.copy().run,  # the agent's turn: its organizations are counted
+                connection_approval,
+                self.app.state.connected_storage,
+                session.workspace_id,
+                public,
+                in_turn=True,
             )
         if approved is None and not inherited_approval and kind != "Code":
             metadata = {"kind": "native"}

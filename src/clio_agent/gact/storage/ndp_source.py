@@ -13,13 +13,14 @@ from clio_schemas.connected_resources import SourceCapabilities
 
 from clio_agent.gact.storage.models import FileEntry
 from clio_agent.gact.storage.ndp_catalog import NDPDataset, NDPEndpoint, NDPResource
+from clio_agent.gact.storage.ndp_tls import system_tls
 
 if TYPE_CHECKING:
     from clio_agent.gact.storage.models import SourceRecord
+    from clio_agent.gact.storage.ndp_range import NDPRangeReader
     from clio_agent.gact.storage.store import SourceStore
 
 # Source adapters stream to disk; bounded linked readers enforce their own 512 MiB limit.
-MAX_RESOURCE_BYTES = 8 * 1024 * 1024 * 1024
 
 
 def public_selection(store: SourceStore, record: SourceRecord) -> bool:
@@ -53,8 +54,6 @@ class _ResourceReader(io.RawIOBase):
             except httpx.HTTPError as exc:
                 raise ValueError("NDP stopped streaming this resource; retry the read") from exc
             self.total += len(self.pending)
-            if self.total > MAX_RESOURCE_BYTES:
-                raise ValueError("This resource exceeds CLIO's 8 GiB transfer limit")
         size = min(len(view), len(self.pending))
         view[:size], self.pending = self.pending[:size], self.pending[size:]
         return size
@@ -151,12 +150,7 @@ class NDPSource:
             for item in self.dataset.resources
         ]
 
-    def open_read(self, entry: FileEntry) -> BinaryIO:
-        """Stream a selected object in 64 KiB chunks with an 8 GiB transfer ceiling.
-
-        This is not an in-memory text read. Materialization owns disk capacity,
-        cancellation, hashes and atomic publication; linked-file reads retain
-        their separate 512 MiB limit."""
+    def _selected(self, entry: FileEntry) -> NDPResource:
         selected = next(
             (
                 item
@@ -167,19 +161,26 @@ class NDPSource:
         )
         if selected is None:
             raise PermissionError("Choose a resource attached to this NDP source")
-        if selected.size > MAX_RESOURCE_BYTES:
-            raise ValueError("This resource exceeds CLIO's 8 GiB transfer limit")
+        return selected
+
+    def _send(
+        self, selected: NDPResource, extra: dict[str, str]
+    ) -> tuple[httpx.Response, httpx.Client]:
+        """GET ``selected`` on its documented route (redirects checked, bearer only beneath
+        the person's Endpoint), with ``extra`` headers on every hop; the caller closes both."""
         url, params = resource_route(self.dataset.endpoint, selected)
         protected = urlsplit(selected.url).scheme in {"pelican", "osdf", "s3"}
         if protected and not credential_target(self.dataset.endpoint, url):
             raise PermissionError(
                 "Configure an HTTPS NDP Endpoint for authenticated Pelican or S3 reads"
             )
-        client = httpx.Client(timeout=httpx.Timeout(60, connect=15), follow_redirects=False)
+        client = httpx.Client(
+            timeout=httpx.Timeout(60, connect=15), follow_redirects=False, verify=system_tls()
+        )
         response: httpx.Response | None = None
         try:
             for attempt in range(6):
-                headers = {}
+                headers = dict(extra)
                 if credential_target(self.dataset.endpoint, url):
                     if self.token is None:
                         raise PermissionError("Sign in to NDP to read this Endpoint's resources")
@@ -218,9 +219,7 @@ class NDPSource:
                     raise ValueError(
                         f"NDP could not read this resource (HTTP {response.status_code})"
                     )
-                if int(response.headers.get("content-length", "0")) > MAX_RESOURCE_BYTES:
-                    raise ValueError("This resource exceeds CLIO's 8 GiB transfer limit")
-                return cast(BinaryIO, io.BufferedReader(_ResourceReader(response, client)))
+                return response, client
             raise ValueError("NDP download could not be resolved")
         except Exception as exc:
             if response is not None:
@@ -229,6 +228,23 @@ class NDPSource:
             if isinstance(exc, httpx.HTTPError):
                 raise ValueError("NDP could not be reached while reading this resource") from exc
             raise
+
+    def open_read(self, entry: FileEntry) -> BinaryIO:
+        """Stream a selected object in 64 KiB chunks.
+
+        This is not an in-memory text read. No size is refused here: a download checks
+        the free disk before it starts (materialization owns capacity, cancellation,
+        hashes and atomic publication), a linked open checks it before copying, and a
+        byte-range read touches no disk."""
+        response, client = self._send(self._selected(entry), {})
+        return cast(BinaryIO, io.BufferedReader(_ResourceReader(response, client)))
+
+    def range_reader(self, entry: FileEntry) -> NDPRangeReader:
+        """A reader that fetches exact byte ranges of ``entry`` (one ranged GET each)."""
+        from clio_agent.gact.storage.ndp_range import NDPRangeReader  # noqa: PLC0415
+
+        selected = self._selected(entry)
+        return NDPRangeReader(lambda headers: self._send(selected, headers), selected.size)
 
     def apply(self, path: str, content: Path | None, expected: str | None) -> str | None:
         """Refuse every upstream write even when the account has a writer/admin role."""

@@ -304,6 +304,7 @@ def effective_write_roots(
             _add(temp)
         # The node's tool caches (sandbox.py redirects them to its first root's cache).
         _add(paths.workspace_cache_dir(str(roots[0])))
+        _add(paths.shared_uv_cache_dir())  # the machine's one shell uv cache
         return tuple(roots)
 
     if workspace_root:
@@ -328,7 +329,11 @@ def effective_write_roots(
     # settings, hook trust and credentials. A shell that could write them could break a
     # running server (an `rm -rf` of the cache did, KiCad ledger FN-3), widen its own
     # limits or replace a credential. The shell's caches go to the workspace's cache
-    # folder instead (sandbox.py redirects them there).
+    # folder instead (sandbox.py redirects them there), and its uv cache to the one
+    # folder every workspace's shells share (execution_environment.shared_uv_cache): that
+    # folder exactly, so uv stages and renames inside one grant (Landlock ABI 1).
+    if profile == PROFILE_SHELL:
+        _add(paths.shared_uv_cache_dir())
     if profile == PROFILE_FLEET:
         _add(paths.user_cache_dir())
         _add(paths.user_config_dir())

@@ -344,7 +344,10 @@ def test_model_lane_bounds_a_tabular_result_with_head_and_spill_file(
     # ``_result_to_text`` itself returns the full text; the caller bounds it.
     assert _result_to_text(payload) == full
     assert len(text) <= result_room().chars
-    assert text.startswith(f"[clio: result_spilled] This result is {len(full):,} characters")
+    assert text.startswith(
+        f"[clio: result_spilled] This result is about {len(full) // 4:,} tokens "
+        f"({len(full):,} characters)"
+    )
     assert '"rows": 1101' in text
     # The tail is not in the prompt; it is in the file, the same value saved indented.
     assert "earthscope_stations_clean.csv" not in text

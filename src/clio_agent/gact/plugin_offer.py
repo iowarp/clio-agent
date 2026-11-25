@@ -19,8 +19,10 @@ when the person has set it up (:mod:`clio_agent.gact.plugin_join`).
   Add puts it in this conversation's delta (the plugin-change ``note`` mode, as the
   plugin picker does); its MCP servers join the running turn's fleet with the spec the
   conversation's server set declares, and its skills load with ``load_skill`` from the
-  agent's next step (:mod:`clio_agent.gact.agents.skill_join`). Its Python tools arrive
-  with the next message (typed ``plugin_tools_next_message``). Not now is the typed
+  agent's next step (:mod:`clio_agent.gact.agents.skill_join`). Its own tools join the
+  running turn as the card's ``apply`` choice says (now, compact or note;
+  :mod:`clio_agent.gact.agents.turn_rebuild`); only when that join cannot run do they
+  arrive with the next message (typed ``plugin_tools_next_message``). Not now is the typed
   refusal ``plugin_offer_declined``; a conversation that cannot take the plugin answers
   the card with its typed resolution reason.
 """
@@ -29,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
 
@@ -424,8 +427,14 @@ async def answer(app: Any, row: dict[str, Any], action: str) -> None:
     )
 
 
-def _joined(app: Any, session_id: str, record: Any, *, already: bool) -> dict[str, Any]:
-    """What the plugin brings to the running turn, and the message that says so."""
+def _joined(
+    app: Any, session_id: str, record: Any, *, already: bool, turn: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """What the plugin brings to the running turn, and the message that says so.
+
+    ``turn`` is the running turn's join (:func:`.agents.turn_rebuild.join_running_turn`):
+    when it ran, the plugin's own tools are in this turn, not the next message.
+    """
 
     from clio_agent.gact.agents.resolution import session_resolution  # noqa: PLC0415
     from clio_agent.gact.connector_offer import join_running_turn  # noqa: PLC0415
@@ -455,11 +464,12 @@ def _joined(app: Any, session_id: str, record: Any, *, already: bool) -> dict[st
             f"its skills load with load_skill from your next step: "
             f"{', '.join(skill['id'] for skill in skills)}"
         )
-    if tools:
+    joined_turn = bool(turn and (turn.get("joined") or turn.get("pending")))
+    if tools and not joined_turn:  # else the join's own sentence says where they are
         parts.append(f"its {len(tools)} tools are in your tool list from your next step")
     if reasons:
         parts.append(f"its servers could not join this turn ({', '.join(reasons)})")
-    if later:
+    if later and not joined_turn:
         parts.append(f"its tools {', '.join(later)} arrive with the next message")
     result: dict[str, Any] = {
         "plugin": record.id,
@@ -473,9 +483,16 @@ def _joined(app: Any, session_id: str, record: Any, *, already: bool) -> dict[st
     }
     if reasons:
         result["join_reason"] = reasons[0]
-    if later:
+    if later and not joined_turn:
         result["tools_next_message"] = later
         result.setdefault("join_reason", TOOLS_NEXT_MESSAGE)
+    if turn:
+        from clio_agent.gact.agents.turn_rebuild import joined_message  # noqa: PLC0415
+
+        result["apply"] = turn.get("apply")
+        result["tools"] = sorted({*result["tools"], *(turn.get("joined") or ())})
+        if said := joined_message(turn):
+            result["message"] += " " + said
     return result
 
 
@@ -528,14 +545,22 @@ def _here_note(here: list[dict[str, Any]]) -> str:
     )
 
 
-async def _offer_plugin(app: Any, session_id: str, record: Any, reason: str) -> dict[str, Any]:
+async def _offer_plugin(
+    app: Any, session_id: str, record: Any, reason: str, *, required: bool = True
+) -> dict[str, Any]:
+    from clio_agent.gact import offer_detached  # noqa: PLC0415
     from clio_agent.gact.connector_setup import wait_for_card  # noqa: PLC0415
 
     here = await asyncio.to_thread(_here, app, session_id)
     if here is not None and record.id in here:
         return await asyncio.to_thread(_joined, app, session_id, record, already=True)
+    pending = await asyncio.to_thread(offer_detached.pending_offer, app, session_id, record.id)
+    if pending is not None and pending.get("detached"):
+        return offer_detached.shown_result(pending, outcome=offer_detached.OFFER_PENDING)
     row = await asyncio.to_thread(_card_row, app, session_id, record, reason)
     trace.event("TOOLS", "plugin_offered plugin=%s session=%s", _ref(record), session_id)
+    if not required:
+        return await asyncio.to_thread(offer_detached.show, app, row)
     named = {
         "plugin": record.id,
         "plugin_name": record.id,
@@ -555,11 +580,26 @@ async def _offer_plugin(app: Any, session_id: str, record: Any, reason: str) -> 
             **named,
             "message": f"The person chose not to add the plugin {record.id} now. Nothing changed.",
         }
-    result = await asyncio.to_thread(_joined, app, session_id, record, already=False)
+    from clio_agent.gact.agents.turn_rebuild import (  # noqa: PLC0415
+        DEFAULT_APPLY,
+        join_running_turn,
+    )
+
+    turn = await asyncio.to_thread(
+        join_running_turn, app, session_id, str(row.get("apply") or DEFAULT_APPLY)
+    )
+    result = await asyncio.to_thread(_joined, app, session_id, record, already=False, turn=turn)
     return {**result, "reason": reason}
 
 
 # -------------------------------------------------------------------- the tool
+
+
+def _summon_outcome(target: str, result: Mapping[str, Any]) -> dict[str, Any]:
+    """An @-named plugin's outcome for the turn's answer: added, or why not."""
+
+    reason = result.get("error") or result.get("refusal")
+    return {"error": str(reason)} if reason else {"handle": target}
 
 
 async def offer_plugin(
@@ -568,8 +608,11 @@ async def offer_plugin(
     search: str = "",
     category: str = "",
     needs: list[str] | None = None,
+    required: bool = False,
 ) -> dict[str, Any]:
-    """Offer to add a plugin or connector to this conversation; wait for Add or Not now.
+    """Offer to add a plugin or connector to this conversation. With ``required`` the
+    turn waits for Add or Not now; without it the card stays on screen and the turn goes
+    on (:mod:`clio_agent.gact.offer_detached`).
     With ``search`` or ``category`` instead, find what could be added (OL-D11). With
     ``needs`` and a connector already here, ask the person for those optional needs.
 
@@ -593,10 +636,21 @@ async def offer_plugin(
             from clio_agent.gact.connector_needs_offer import offer_needs  # noqa: PLC0415
 
             return await offer_needs(found, reason, needs)
-        if kind == "connector":
-            return await connector_offer.offer_connector(connector=found.id, reason=reason)
-        if kind == "plugin":
-            return await _offer_plugin(app, session_id, found, reason)
+        if kind in {"connector", "plugin"}:
+            from clio_agent.gact import summon  # noqa: PLC0415
+
+            # A plugin the person @-named: this call is what the summons asked for.
+            claimed = summon.claim(summon.PLUGIN, plugin.strip()) or summon.claim(
+                summon.PLUGIN, found.id
+            )
+            if kind == "connector":
+                result = await connector_offer.offer_connector(
+                    connector=found.id, reason=reason, required=required
+                )
+            else:
+                result = await _offer_plugin(app, session_id, found, reason, required=required)
+            summon.started(claimed, _summon_outcome(found.id, result))
+            return result
     from clio_agent.gact import offer_search  # noqa: PLC0415
     from clio_agent.gact.offer_list import listed, overlay_or_default  # noqa: PLC0415
 
@@ -646,9 +700,12 @@ def build_offer_plugin_tool() -> Any:
             "Add or Not now; you never add it yourself. The card is how you ask: the person "
             "cannot add a plugin from your text, so a plugin you would suggest is offered "
             "with this call (alongside what you deliver), not as a sentence in your answer. "
-            "A connector's card also turns it on and asks for what it needs. On Add its "
-            "tools and skills are yours from your next step and you continue the request; "
-            "on Not now you get a refusal and nothing changed. The session facts list some "
+            "A connector's card also turns it on and asks for what it needs. With required "
+            "true (the request cannot go on without it) the turn waits for the answer: on "
+            "Add its tools and skills are yours from your next step and you continue; on "
+            "Not now you get a refusal and nothing changed. Otherwise the card stays on "
+            "screen and you go on with what you have; if the person adds it later you are "
+            "told, and offering it again brings its tools into the turn. The session facts list some "
             "of them and count the rest by category; search (words) or category reaches "
             "every one, the unlisted too, and asks the person nothing: each row says whether "
             "it is in your plugin list. The person chooses that list in "
@@ -681,6 +738,14 @@ def build_offer_plugin_tool() -> Any:
                     "Required. One sentence for the person, shown on the card: why this "
                     "request needs it and what it would do here. For a search, what you are "
                     "looking for."
+                ),
+            },
+            "required": {
+                "type": "boolean",
+                "description": (
+                    "True when the request cannot go on without this plugin, so the turn "
+                    "waits for the person's answer. False (the default) when you can go on "
+                    "without it, for example with another source: the card stays on screen."
                 ),
             },
             "needs": {

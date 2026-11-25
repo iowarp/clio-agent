@@ -20,7 +20,8 @@ def connected_data_status() -> dict[str, Any]:
     With the ndp plugin, NDP catalog search needs no attached dataset, saved
     Endpoint or sign-in. NDP Endpoint operations, requests and uploads are
     enabled on the next turn once this workspace has a connected NDP dataset
-    or a visible saved NDP Endpoint.
+    or a visible saved NDP Endpoint. storage gives the free bytes where downloads are
+    kept and each source's bytes on disk, so a large download can be judged first.
     """
     app = context.active_app()
     sid = context.active_session_id()
@@ -126,8 +127,11 @@ def session_data_status(app: Any, sid: str) -> dict[str, Any]:
                 "owner": source.owner.model_dump(mode="json"),
             }
         )
+    from clio_agent.gact.storage.storage_usage import storage_usage  # noqa: PLC0415
+
     return {
         "status": "available",
+        "storage": storage_usage(service.store.root, [row["id"] for row in sources]),
         "clio_id": service.store.clio_id,
         "workspace_id": session.workspace_id,
         "workspace_folders": [
@@ -333,8 +337,11 @@ def _range_handle(
 
     if not linked:
         raise ValueError("Downloaded files are local; open them by path, not by range")
+    from clio_agent.gact.storage.range_siblings import vrt_note  # noqa: PLC0415
+
     handle = mint(service, record, path, session_id=sid, handles=registry(app))
-    return {
+    mosaic = vrt_note(service, handle)
+    return ({"vrt": mosaic} if mosaic else {}) | {
         "handle": handle.id,
         "handle_url": handle_url(app, handle),
         "source_id": record.source.id,
@@ -437,4 +444,7 @@ def build_connected_data_write_tool() -> Any:
         domain="resources",
         title="Save linked file",
         read_only=False,
+        # A write_through save changes the original (a GitHub save is a commit): it
+        # follows the approval mode as an MCP tool does, and plan mode refuses it.
+        outside=True,
     )

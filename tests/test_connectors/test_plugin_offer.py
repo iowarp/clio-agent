@@ -108,6 +108,8 @@ def app(fixture_catalog: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
 def _offer_in_thread(**kwargs: Any) -> tuple[threading.Thread, dict[str, Any]]:
     outcome: dict[str, Any] = {}
 
+    kwargs.setdefault("required", True)  # the turn waits for the card
+
     def run() -> None:
         outcome["value"] = asyncio.run(plugin_offer.offer_plugin(**kwargs))
 
@@ -302,7 +304,9 @@ def test_stopping_the_turn_ends_the_offer(app: Any, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(
         "clio_agent.gact.code_task_context.question_cancel_token", lambda _app, _sid: stop
     )
-    result = asyncio.run(plugin_offer.offer_plugin(plugin="Alpha", reason="To try it."))
+    result = asyncio.run(
+        plugin_offer.offer_plugin(plugin="Alpha", reason="To try it.", required=True)
+    )
     assert result["error"] == plugin_offer.OFFER_CANCELLED and result["outcome"] == "cancelled"
 
 
@@ -311,7 +315,7 @@ def test_a_connector_or_its_plugin_is_the_connector_offer(
 ) -> None:
     asked: list[str] = []
 
-    async def offer(connector: str = "", reason: str = "") -> dict[str, Any]:
+    async def offer(connector: str = "", reason: str = "", required: bool = True) -> dict[str, Any]:
         asked.append(connector)
         return {"connector": connector}
 
@@ -590,3 +594,83 @@ def test_many_clio_kit_connectors_never_hide_the_library(
     ]
     assert rows[7]["id"] == "kit-00" and total == len(rows) == 7 + 24
     assert [row["id"] for row in listed][-2:] == ["tariff-calc", "kit-00"]
+
+
+# ------------------------------------------------------- an offer not waited for
+
+
+def _mail_app(app: Any) -> list[Any]:
+    """Give the fixture app a task history that records mail; the recorded items."""
+
+    import contextlib
+
+    mail: list[Any] = []
+    contents: dict[str, Any] = {}
+
+    def write_content(_sid: str, value: Any) -> str:
+        key = f"c{len(contents)}"
+        contents[key] = value
+        return key
+
+    app.state.task_history = SimpleNamespace(
+        serialized=contextlib.nullcontext,
+        write_content=write_content,
+        record_mail=lambda item: mail.append((item, contents[item.content])),
+    )
+    return mail
+
+
+def test_an_optional_offer_shows_the_card_and_returns_at_once(
+    app: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import clio_agent.arc.task_types as task_types
+
+    monkeypatch.setattr(task_types, "MailItem", lambda **kw: SimpleNamespace(**kw))
+    mail = _mail_app(app)
+    result = asyncio.run(plugin_offer.offer_plugin(plugin="Alpha", reason="A second source."))
+    assert result["outcome"] == "plugin_offer_shown" and result["offered"] is True
+    assert "Go on with what you can do without it" in result["message"]
+    card = next(c for c in connector_setup.projected(app, {"sess_a"}) if c.status == "pending")
+    assert card.payload["reason"] == "A second source."
+    # Offered again while the card is pending: no second card.
+    again = asyncio.run(plugin_offer.offer_plugin(plugin="Alpha", reason="Still useful."))
+    assert again["outcome"] == "plugin_offer_pending"
+    assert len(app.state.connector_setups) == 1
+    # The person adds it later: it is here, and the agent is told through its mail.
+    asyncio.run(connector_setup.respond(app, {"sess_a"}, card.id, "submit", {}, {}))
+    assert app.state.added == [("sess_a", ["lab/Alpha"])]
+    assert len(mail) == 1
+    item, text = mail[0]
+    assert item.kind == "attention" and item.recipient_session == "sess_a"
+    assert "The person added Alpha" in text and "call offer_plugin with plugin 'Alpha'" in text
+    # Offered again now: it is here, so its tools join the turn.
+    monkeypatch.setattr(connectors, "join_running_turn", lambda *_a, **_k: ([], ""))
+    joined = asyncio.run(plugin_offer.offer_plugin(plugin="Alpha", reason="Use it."))
+    assert joined["already_here"] is True
+
+
+def test_an_optional_offer_declined_later_tells_the_agent(
+    app: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import clio_agent.arc.task_types as task_types
+
+    monkeypatch.setattr(task_types, "MailItem", lambda **kw: SimpleNamespace(**kw))
+    mail = _mail_app(app)
+    asyncio.run(plugin_offer.offer_plugin(plugin="Alpha", reason="A second source."))
+    card = next(c for c in connector_setup.projected(app, {"sess_a"}) if c.status == "pending")
+    asyncio.run(connector_setup.respond(app, {"sess_a"}, card.id, "decline", {}, {}))
+    assert app.state.added == [] and len(mail) == 1
+    assert "chose not to add Alpha" in mail[0][1]
+
+
+def test_the_row_of_an_offer_on_screen_says_the_work_goes_on() -> None:
+    from clio_agent.gact import offer_detached
+
+    row = offer_detached.shown_result(
+        {"plugin_id": "Alpha", "connector_name": "Alpha", "reason": "r"},
+        outcome=offer_detached.OFFER_SHOWN,
+    )
+    shown = present({"plugin": "Alpha", "reason": "r"}, row, row)
+    outcome = next(b for b in shown["blocks"] if b["id"] == "outcome")
+    assert outcome["text"] == "Not answered yet; the work goes on without it"
+    assert shown.get("status") != "failed"

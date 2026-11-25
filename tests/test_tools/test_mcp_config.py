@@ -20,6 +20,7 @@ from clio_agent.tools.mcp_config import (
     transport_for,
     transport_from_spec,
 )
+from clio_agent.tools.workspace_mcp_trust import trust_workspace_mcp
 
 
 def test_expand_env_default_and_required():
@@ -135,6 +136,7 @@ def test_load_precedence_frontmatter_user_workspace(tmp_path):
     # fixture is deterministic across OSes (on Windows the resolver otherwise uses
     # %LOCALAPPDATA%/clio-agent, not home/.config/clio-agent).
     env = {"XDG_CONFIG_HOME": str(home / ".config")}
+    trust_workspace_mcp(cwd / ".clio" / "mcp.yaml", home=home, env=env)
     servers = load_mcp_servers(home=home, cwd=cwd, plugin_servers=plugin_servers, env=env)
     assert servers["ndp"].command == "workspace-ndp"  # workspace wins
     assert servers["ndp"].source == "workspace"
@@ -187,6 +189,7 @@ def test_load_mcp_servers_malformed_yaml_warns_loud_and_never_crashes_boot(tmp_p
     )
     plugin_servers = {"earthscope": {"geo": "pack-geo"}}
     env = {"XDG_CONFIG_HOME": str(home / ".config")}
+    trust_workspace_mcp(cwd / ".clio" / "mcp.yaml", home=home, env=env)
 
     with caplog.at_level(logging.WARNING, logger="clio_agent.tools.mcp_config"):
         servers = load_mcp_servers(home=home, cwd=cwd, plugin_servers=plugin_servers, env=env)

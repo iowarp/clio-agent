@@ -459,3 +459,38 @@ def test_a_fragment_scoped_to_root_or_delegated_sessions_reaches_only_those(
     )
     record = load_plugin(bad, marketplace="test", trusted=True)
     assert [row.code for row in record.diagnostics] == ["fragment_invalid"]
+
+
+def test_a_fragment_scoped_to_providers_reaches_only_their_turns(tmp_path: Path) -> None:
+    """``when.providers`` is recorded on the composed fragment and applied when a turn's
+    prompt is built, so one resolution serves turns on any provider."""
+
+    from clio_agent.plugins.compose_final import final_prompt_text
+
+    team = plugin(
+        tmp_path,
+        "team",
+        files={
+            "ai.iowarp.clio/prompt/claude.md": fragment(
+                "team", "claude", "capabilities", "Finish the work.", "{providers: [claude_code]}"
+            ),
+            "ai.iowarp.clio/prompt/all.md": fragment(
+                "team", "all", "capabilities", "Cite sources."
+            ),
+        },
+    )
+    resolution = resolve_agent(_catalog(tmp_path, team), _spec("team"), marketplace="test")
+    rows = {
+        row["id"]: row for section in resolution.prompt["sections"] for row in section["fragments"]
+    }
+    assert rows["team.claude"]["providers"] == ["claude_code"]
+    assert "providers" not in rows["team.all"]
+    tools = resolution.tool_names
+
+    def text(provider: str) -> str:
+        return final_prompt_text(
+            resolution.prompt_text, resolution.prompt, tools, delegated=False, provider=provider
+        )
+
+    assert "Finish the work." in text("claude_code") and "Cite sources." in text("claude_code")
+    assert "Finish the work." not in text("lm_studio") and "Cite sources." in text("lm_studio")

@@ -86,6 +86,64 @@ def market(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
+def test_a_plugin_the_conversation_lacks_is_summoned_through_its_offer(market: Path) -> None:
+    """@-naming a plugin the person has but this conversation lacks: the agent is told to
+    offer it; nothing is added before the person's Add, and the answer says it was not."""
+
+    from clio_agent.gact.summon import summon_injections
+
+    with TestClient(build_app(sessions_path=market / "s.json", agent=_Recorder())) as c:
+        sid = _session(c)
+        plugins = c.get(f"/v1/sessions/{sid}/summon-targets").json()["plugins"]
+        paraview = next(row for row in plugins if row["id"] == "paraview")
+        assert paraview["kind"] == "connector" and "3D" in paraview["description"]
+        resp = c.post(
+            f"/v1/sessions/{sid}/messages",
+            json={
+                "parts": [
+                    {"type": "text", "text": "@paraview show the eddy"},
+                    _summon("paraview", "plugin"),
+                ]
+            },
+        )
+        assert resp.status_code == 202, resp.text
+        assert _user(c, sid)["metadata"]["summons"]["plugins"] == ["paraview"]
+        additions = summon_injections(c.app, sid, c.app.state.messages[sid][0].metadata["summons"])
+        assert [source for source, _ in additions] == ["summon_plugin"]
+        assert additions[0][1].startswith("The person asked for paraview on this message (")
+        assert 'call offer_plugin with plugin="paraview", required true' in additions[0][1]
+        outcome = _answer(c, sid).metadata["summons_outcome"]
+        assert outcome["not_started"] == [
+            {"kind": "plugin", "target": "paraview", "reason": "not_called"}
+        ]
+
+
+def test_an_offer_records_what_became_of_the_summoned_plugin() -> None:
+    from clio_agent.gact import context as _ctx
+    from clio_agent.gact import summon
+    from clio_agent.gact.plugin_offer import _summon_outcome
+
+    app = SimpleNamespace(state=SimpleNamespace())
+    summon.open_turn(app, "turn_1", "msg_1", {"plugins": ["paraview", "kicad"]})
+    app_token = _ctx.set_app(app)
+    turn_token = _ctx.set_turn_id_token("turn_1")
+    try:
+        summon.started(
+            summon.claim(summon.PLUGIN, "paraview"), _summon_outcome("paraview", {"joined": True})
+        )
+        summon.started(
+            summon.claim(summon.PLUGIN, "kicad"),
+            _summon_outcome("kicad", {"refusal": "plugin_offer_declined"}),
+        )
+    finally:
+        _ctx.reset(turn_token)
+        _ctx.reset(app_token)
+    assert summon.settle_turn(app, "turn_1") == {
+        "started": [{"kind": "plugin", "target": "paraview", "handle": "paraview"}],
+        "not_started": [{"kind": "plugin", "target": "kicad", "reason": "plugin_offer_declined"}],
+    }
+
+
 def _session(client: TestClient) -> str:
     response = client.post(
         "/v1/sessions", json={"title": "t", "metadata": {"agent_ref": "clio/reviewing"}}

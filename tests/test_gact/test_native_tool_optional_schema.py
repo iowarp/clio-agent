@@ -126,3 +126,14 @@ def test_explicit_null_schema_retains_its_shape_and_constraints(nullable: dict[s
     assert tool(limit=None) is None
     assert tool(limit=0) == 0
     assert declared == original
+
+
+def test_capture_can_be_called_with_only_the_surface_id() -> None:
+    """A tool result names the surface it showed; capturing it needs nothing more."""
+
+    parameters = build_capture_a2ui_surface_tool().format_as_litellm_function_call()["function"][
+        "parameters"
+    ]
+    assert parameters.get("required", []) == ["surface_id"]
+    validator = Draft202012Validator(parameters["properties"]["expected_revision"])
+    assert validator.is_valid(None) and validator.is_valid(3)

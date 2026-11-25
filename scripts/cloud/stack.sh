@@ -16,6 +16,12 @@
 # (scripts/acceptance/continuity_check.py); CLIO_UI_DIR does the same for the web UI
 # with another gact-tui checkout.
 #
+# The UI is the production web build by default, served with /v1 forwarded to the
+# agent as `clio web` serves it (scripts/cloud/serve_web_build.mjs). The Vite dev
+# server's memory grows by about 1.4 GB per 10 minutes of a streaming turn, which
+# killed harness browsers on long live runs (ndp-ledger R9); CLIO_UI_DEV=1 runs the
+# dev server instead, for UI work that wants hot reload.
+#
 # Ports: AGENT_PORT (default 8787, the UI's default service address) and
 # UI_PORT (default 5173); FIXTURE_PORT (default 8790) serves the browser fixture
 # site as a.fixture.localhost and b.fixture.localhost, and FIXTURE_TLS_PORT (default
@@ -51,9 +57,11 @@ if [ "${CLIO_CLOUD_ISOLATE:-0}" = "1" ]; then
     mkdir -p "$dir"
     export "XDG_${role}_HOME=$dir"
   done
-  # Several stacks share one cloud disk: keep each clio-core store small (it
-  # preallocates about 1 GB otherwise).
-  export CLIO_ARC_CTE_FILE_CAPACITY="${CLIO_ARC_CTE_FILE_CAPACITY:-128MB}"
+  # Several stacks share one cloud disk, and the store preallocates its capacity, so
+  # it is capped. 128 MB was too small: one deep-research run whose researchers ran
+  # scripts filled it, and clio-core refused writes for the rest of the run
+  # (2026-11-19). 1 GB holds several such runs.
+  export CLIO_ARC_CTE_FILE_CAPACITY="${CLIO_ARC_CTE_FILE_CAPACITY:-1GB}"
 fi
 # The cloud stack runs as root, where Chromium's sandbox cannot start (browser ledger BR11).
 export CLIO_BROWSER_ALLOW_UNSANDBOXED="${CLIO_BROWSER_ALLOW_UNSANDBOXED:-1}"
@@ -103,7 +111,14 @@ start_ui() {
   # neutral GACT profile. The override is gitignored in gact-tui.
   local brand="$tui/brand.config.local.json"
   [ -f "$brand" ] || printf '{"profile":"clio","brandingRoot":"%s/branding"}\n' "$ROOT" > "$brand"
-  launch "$STATE/ui.pid" "$STATE/ui.log" "$web" pnpm dev --port "$UI_PORT" --strictPort
+  if [ "${CLIO_UI_DEV:-0}" = "1" ]; then
+    launch "$STATE/ui.pid" "$STATE/ui.log" "$web" pnpm dev --port "$UI_PORT" --strictPort
+  else
+    (cd "$web" && npx vite build --outDir "$STATE/web-build" --emptyOutDir) > "$STATE/ui-build.log" 2>&1 \
+      || { echo "ui: build failed; see $STATE/ui-build.log"; return 1; }
+    AGENT_PORT="$AGENT_PORT" launch "$STATE/ui.pid" "$STATE/ui.log" "$ROOT" \
+      node scripts/cloud/serve_web_build.mjs "$STATE/web-build" "$UI_PORT"
+  fi
   if wait_http "http://127.0.0.1:$UI_PORT/" 120; then
     echo "ui: http://127.0.0.1:$UI_PORT"
   else
@@ -149,13 +164,24 @@ status() {
   done
 }
 
+stop_agent() {
+  stop_one agent
+  # A server that ran past its shutdown budget (a turn held by refused writes) ends
+  # without stopping its clio-core daemon, which runs in its own session; installed
+  # CLIO cleans that up at its next start, but this stack's state is deleted instead.
+  # The same owner-safe cleanup stops only a daemon this state started, and only when
+  # no live client remains (seen 2026-11-19: clio_run and its log pump outlived stop).
+  (cd "$ROOT" && uv run --no-sync python -c 'from clio_agent.arc.storage import cleanup_runtime_after_client_crash as c; print("clio-core: stopped" if c(wait_timeout_seconds=10.0) else "clio-core: nothing of ours running")') 2>/dev/null \
+    || echo "clio-core: cleanup did not run; check for a leftover clio_run"
+}
+
 case "${1:-status}" in
   start) start_fixture && start_agent && start_ui ;;
-  stop) stop_one ui; stop_one agent; stop_one fixture ;;
-  restart) stop_one ui; stop_one agent; stop_one fixture; start_fixture && start_agent && start_ui ;;
+  stop) stop_one ui; stop_agent; stop_one fixture ;;
+  restart) stop_one ui; stop_agent; stop_one fixture; start_fixture && start_agent && start_ui ;;
   status) status ;;
   agent-start) start_agent ;;
-  agent-stop) stop_one agent ;;
+  agent-stop) stop_agent ;;
   ui-start) start_ui ;;
   ui-stop) stop_one ui ;;
   logs) tail -n 40 "$STATE/agent.log" "$STATE/ui.log" "$STATE/fixture.log" 2>/dev/null ;;

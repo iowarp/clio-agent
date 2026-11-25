@@ -6,7 +6,11 @@ to a YAML file) instead of scattered across hardcoded constants and bare
 
 1. **config FILE** — workspace ``<cwd>/.clio/config.yaml`` deep-merged OVER
    user ``<config>/clio-agent/config.yaml`` (mirrors the ``mcp.yaml`` discovery
-   in :mod:`clio_agent.tools.mcp_config`; honours ``XDG_CONFIG_HOME``).
+   in :mod:`clio_agent.tools.mcp_config`; honours ``XDG_CONFIG_HOME``). A
+   workspace file may not set the keys in :data:`WORKSPACE_PROTECTED_KEYS`
+   (sandbox, trust, permissions, auth and similar); those come from the user
+   file, the environment or the defaults, and a workspace value is ignored with
+   a logged reason.
 2. **environment** — ``os.environ`` (already seeded by ``.env`` via
    :func:`clio_agent.env_file.load_project_env_file`, so dotenv keeps working).
 3. **committed defaults** — the packaged ``config.defaults.yaml`` base layer (a
@@ -62,6 +66,7 @@ Usage::
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -86,6 +91,77 @@ _DEFAULTS_FILENAME = "config.defaults.yaml"
 
 # Sentinel distinguishing "key absent from file" from "file value is None/empty".
 _UNSET: Any = object()
+
+#: Keys a WORKSPACE config file may not set. The workspace is the directory CLIO
+#: runs in, often a repository someone else wrote, and these keys decide what CLIO
+#: trusts, runs or exposes: the OS sandbox, the auto-trusted marketplace, hooks,
+#: tool permissions and approval scope, file access, the server's auth and browser
+#: origins, browser grants, and where components and tasks are fetched or sent.
+#: Each is read from the user's ``config.yaml``, the environment or the defaults
+#: only; a workspace value is ignored with a logged reason. An entry covers its
+#: whole subtree, and a workspace value that replaces one of its parents with a
+#: non-mapping is ignored too.
+WORKSPACE_PROTECTED_KEYS: tuple[str, ...] = (
+    "sandbox",
+    "plugins.default_marketplace",
+    "plugins.store_root",
+    "hooks.allow_managed_only",
+    "hooks.config",
+    "hooks.managed_config",
+    "hooks.trust_store",
+    "permissions",
+    "tools.permissions",
+    "tools.callers",
+    "tools.write_ahead",
+    "tools.file_policy.allowed_roots",
+    "tools.file_policy.allow_symlinks",
+    "tools.mcp.elicitation.url_trusted_origins",
+    "code.covering_postures",
+    "fleet.delegation",
+    "gact.auth",
+    "gact.cors",
+    "gact.allowed_hosts",
+    "gact.port",
+    "gact.mcp_apps.sandbox_host",
+    "gact.tasks.code.url",
+    "gact.tasks.shell.url",
+    "gact.tasks.storage.url",
+    "browser.allow_unsandboxed",
+    "browser.granted_hosts",
+    "browser.cdp_url",
+    "browser.profile",
+    "providers.component_updates.index_url",
+    "providers.native_image_url_allowlist",
+)
+
+
+def is_workspace_protected(key: str) -> bool:
+    """Whether ``key`` (a dotted path) is, or lies under, a workspace-protected key."""
+    return any(key == p or key.startswith(p + ".") for p in WORKSPACE_PROTECTED_KEYS)
+
+
+def _strip_protected(document: Mapping[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Return ``document`` without workspace-protected keys, and the keys it dropped.
+
+    A protected key is dropped wherever it appears; so is any parent of one that
+    the document sets to a non-mapping, which would otherwise replace the user's
+    whole subtree in the merge.
+    """
+    out: dict[str, Any] = copy.deepcopy(dict(document))
+    dropped: list[str] = []
+    for protected in WORKSPACE_PROTECTED_KEYS:
+        parts = protected.split(".")
+        node: Any = out
+        for depth, part in enumerate(parts):
+            if not isinstance(node, dict) or part not in node:
+                break
+            if depth == len(parts) - 1 or not isinstance(node[part], Mapping):
+                del node[part]
+                dropped.append(".".join(parts[: depth + 1]))
+                break
+            node = node[part]
+    return out, sorted(set(dropped))
+
 
 # Public alias so callers can test a :meth:`ConfigStore.file_value` result for
 # "key absent from the file layer" (used to label config-vs-env provenance).
@@ -328,6 +404,14 @@ class ConfigStore:
         user = _read_yaml_mapping(user_path) if user_path is not None else {}
         legacy = workspace_path.parent.parent.parent / ".clio" / "config.yaml"
         workspace = _deep_merge(_read_yaml_mapping(legacy), _read_yaml_mapping(workspace_path))
+        workspace, dropped = _strip_protected(workspace)
+        for key in dropped:
+            logger.warning(
+                "workspace config key ignored reason=workspace_protected_key key=%s "
+                "workspace=%s; set it in the user config.yaml or the environment",
+                key,
+                workspace_path.parent.parent.parent,
+            )
         return _deep_merge(user, workspace)
 
     def _layer_paths(self) -> tuple[Path | None, Path]:
@@ -420,7 +504,7 @@ class ConfigStore:
         if self.file_value(key) is not _UNSET:
             user, workspace = self._layer_paths()
             legacy = workspace.parent.parent.parent / ".clio" / "config.yaml"
-            for path in (workspace, legacy):
+            for path in () if is_workspace_protected(key) else (workspace, legacy):
                 if _lookup(_read_yaml_mapping(path), key) is not _UNSET:
                     return "workspace"
             if user is not None and _lookup(_read_yaml_mapping(user), key) is not _UNSET:

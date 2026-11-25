@@ -165,6 +165,37 @@ def test_context_window_exceeded_stops_without_another_call() -> None:
     assert len(engine.requests) == 1
 
 
+def test_a_refused_request_is_compacted_and_sent_once_more(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A too-long request is not the end of the turn: compact, then send the step again."""
+    from clio_agent.gact import compaction_overflow
+
+    compacted: list[Any] = []
+    monkeypatch.setattr(
+        compaction_overflow,
+        "compact_after_overflow",
+        lambda guard, lm: compacted.append(guard) or True,
+    )
+    pred, engine = _run(
+        [Reply(raises=ContextLengthError("too long")), Reply(text="done")], [search]
+    )
+    assert (pred.termination_reason, pred.answer) == ("direct_response", "done")
+    assert len(engine.requests) == 2 and len(compacted) == 1
+
+
+def test_a_second_refusal_after_compaction_stops_the_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.gact import compaction_overflow
+
+    monkeypatch.setattr(compaction_overflow, "compact_after_overflow", lambda guard, lm: True)
+    too_long = [Reply(raises=ContextLengthError("too long")) for _ in range(2)]
+    pred, engine = _run(too_long, [search])
+    assert pred.termination_reason == "context_window_exceeded"
+    assert len(engine.requests) == 2
+
+
 def test_an_engines_own_typed_error_reaches_the_turn_as_itself() -> None:
     from clio_agent.providers.claude_code_plan_limit import ClaudeCodePlanLimitError
 

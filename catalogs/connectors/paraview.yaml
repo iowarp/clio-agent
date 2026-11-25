@@ -3,7 +3,7 @@
 - id: paraview
   name: ParaView
   logo: paraview.svg
-  description: Open scientific data in ParaView, on this machine or another, and see it in a tab
+  description: See 3D fields, volumes and meshes in ParaView in a live view you can rotate, slice and contour, on this machine or another
   server:
     command: clio-kit
     args: [mcp-server, paraview]

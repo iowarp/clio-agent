@@ -111,6 +111,7 @@ export default defineConfig({
 						{ label: 'Use the browser', slug: 'docs/browser' },
 						{ label: 'Apps', slug: 'docs/apps' },
 						{ label: 'Design a board with KiCad', slug: 'docs/kicad' },
+						{ label: 'Ocean and weather science', slug: 'docs/ocean-and-weather' },
 						{ label: 'Quantum programs with IBM Quantum', slug: 'docs/ibm-quantum' },
 						{
 							label: 'Run work on other computers', collapsed: true,

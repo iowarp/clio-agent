@@ -1,0 +1,149 @@
+From b6403098f6a6a46c356236ca9c083a8d56f78987 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 19 Nov 2026 17:53:12 +0000
+Subject: [PATCH 5/7] fix(questions): answer a one-choice form with one button
+ per option
+
+A consent such as "Allow searches through the literature sources?" is an MCP
+elicitation form with one required choice. It rendered as a "Choice" heading,
+a radio list and a separate Send response (live 2026-11-19), so the person
+picked a small radio and then pressed a second button. A form that is only one
+choice of two or three plain options now shows each option as its own numbered
+button; pressing one sends it, and the first is the Enter default. Longer
+choices and multi-field forms keep the form.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01BHQAws7LSR8fWEJvjbJM4q
+---
+ .../clio/pending-interactions.test.tsx        | 39 +++++++++++++
+ .../clio/question-interaction-forms.tsx       | 57 +++++++++++++++++++
+ 2 files changed, 96 insertions(+)
+
+diff --git a/web/src/components/clio/pending-interactions.test.tsx b/web/src/components/clio/pending-interactions.test.tsx
+index e827c9cb0..22ddb1ece 100644
+--- a/web/src/components/clio/pending-interactions.test.tsx
++++ b/web/src/components/clio/pending-interactions.test.tsx
+@@ -91,6 +91,45 @@ function renderPending(
+ }
+ 
+ describe('ClioPendingInteractions', () => {
++  // Live 2026-11-19: this consent was a radio list, a "Choice" heading and Send response.
++  it('answers a form that is one short choice with one button per option', async () => {
++    const user = userEvent.setup();
++    const interaction = pending('mcp_task_input', {
++      prompt: 'Allow searches through the literature sources?',
++      requires_human_response: true,
++      actions: ['answer', 'cancel'],
++      payload: {
++        mode: 'form',
++        fields: [
++          {
++            name: 'choice',
++            type: 'string',
++            title: 'Choice',
++            enum: ['approve', 'decline'],
++            enum_names: [
++              'Allow searches through the literature sources',
++              "Don't use the literature sources",
++            ],
++            default: 'approve',
++            required: true,
++          },
++        ],
++      },
++    });
++    const onResponse = renderPending([interaction]);
++
++    expect(screen.queryByRole('radio')).toBeNull();
++    expect(screen.queryByRole('button', { name: 'Send response' })).toBeNull();
++    expect(
++      screen.getByRole('button', { name: /Allow searches through the literature sources/u }),
++    ).toBeVisible();
++    await user.click(screen.getByRole('button', { name: /Don't use the literature sources/u }));
++    expect(onResponse).toHaveBeenCalledWith(interaction, {
++      action: 'answer',
++      metadata: { choice: 'decline' },
++    });
++  });
++
+   it('renders structured defaults and submits the complete field map', async () => {
+     const user = userEvent.setup();
+     const interaction = pending('mcp_task_input', {
+diff --git a/web/src/components/clio/question-interaction-forms.tsx b/web/src/components/clio/question-interaction-forms.tsx
+index f47679823..b91b82a6a 100644
+--- a/web/src/components/clio/question-interaction-forms.tsx
++++ b/web/src/components/clio/question-interaction-forms.tsx
+@@ -73,6 +73,45 @@ export function StructuredQuestionResponse(props: QuestionSurfaceProps) {
+     }
+   };
+ 
++  const choice = choiceButtonsField(fields);
++  if (choice) {
++    const answer = async (value: string) => {
++      setSending(true);
++      try {
++        await props.onResponse(interaction, {
++          action: 'answer',
++          metadata: { [choice.name]: value },
++        });
++      } catch (thrown) {
++        const message = thrown instanceof Error ? thrown.message : String(thrown);
++        setFieldErrors({ [choice.name]: message });
++      } finally {
++        setSending(false);
++      }
++    };
++    const error = errors[choice.name];
++    return (
++      <QuestionFrame {...props}>
++        <AskError error={props.responseError ?? (error ? new Error(error) : undefined)} />
++        <AskOptions aria-label={choice.title || t`Answer`}>
++          {(choice.enum as string[]).map((value, index) => (
++            <AskButton
++              disabled={props.disabled || sending}
++              // i18n-ignore: key name
++              hint={index === 0 ? 'Enter' : undefined}
++              key={value}
++              number={index + 1}
++              onClick={() => void answer(value)}
++              primary={index === 0}
++            >
++              {choice.enum_names?.[index] || value}
++            </AskButton>
++          ))}
++        </AskOptions>
++      </QuestionFrame>
++    );
++  }
++
+   return (
+     <QuestionFrame {...props}>
+       <AskError error={props.responseError} />
+@@ -108,6 +147,24 @@ export function StructuredQuestionResponse(props: QuestionSurfaceProps) {
+   );
+ }
+ 
++/**
++ * A form that is only one choice of two or three plain options answers by its buttons:
++ * pressing an option sends it. Live 2026-11-19, "Allow searches through the literature
++ * sources?" was a radio list, a "Choice" heading and a separate Send response.
++ */
++function choiceButtonsField(
++  fields: readonly PendingInteractionField[],
++): PendingInteractionField | undefined {
++  const [field] = fields;
++  if (fields.length !== 1 || !field || field.multi || field.type !== 'string') return undefined;
++  const options = field.enum ?? [];
++  return options.length >= 2 &&
++    options.length <= 3 &&
++    options.every((option) => typeof option === 'string' && option !== '')
++    ? field
++    : undefined;
++}
++
+ /** Explicit URL consent; nothing is opened or fetched during render. */
+ export function UrlConsentResponse(props: QuestionSurfaceProps) {
+   const { interaction } = props;
+-- 
+2.43.0
+

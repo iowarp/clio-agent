@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent import conf
 from clio_agent.gact.app import build_app
+from tests._config_layer import set_config
 
 
 @pytest.fixture(autouse=True)
@@ -112,10 +113,12 @@ def test_config_file_cors_origin_wins_over_env(
 ) -> None:
     monkeypatch.setenv("CLIO_GACT_CORS_ORIGINS", "http://env.example")
     monkeypatch.chdir(tmp_path)
+    set_config("gact.cors.origins", ["http://localhost:4173"])
+    # A workspace file may not open CORS (conf.WORKSPACE_PROTECTED_KEYS).
     config_dir = tmp_path / ".clio"
     config_dir.mkdir()
     (config_dir / "config.yaml").write_text(
-        "gact:\n  cors:\n    origins:\n      - http://localhost:4173\n",
+        "gact:\n  cors:\n    origins:\n      - http://workspace.example\n",
         encoding="utf-8",
     )
     conf.reload()

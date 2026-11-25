@@ -711,7 +711,8 @@ def test_workspace_mcp_root_data_reaches_exact_gact_structured_content(
         # The model reads the server's text block (text first), so its size is the
         # server's serialization of the same Root/data.
         size = re.match(
-            r"\[clio: result_spilled\] This result is ([\d,]+) characters", agent.model_text
+            r"\[clio: result_spilled\] This result is about [\d,]+ tokens \(([\d,]+) characters\)",
+            agent.model_text,
         )
         assert size, agent.model_text[:200]
         assert int(size.group(1).replace(",", "")) > 12_000

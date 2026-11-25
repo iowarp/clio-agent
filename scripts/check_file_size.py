@@ -1088,7 +1088,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # landed these with CI off during the RC1 UI freeze, so the guard went red unnoticed.
     # The code is frozen for the release; split or hoist and ratchet these back down after
     # RC1 instead of growing them further.
-    "src/clio_agent/gact/compaction.py": 913,
+    "src/clio_agent/gact/compaction.py": 912,
     "src/clio_agent/gact/infrastructure/node_service.py": 824,
     # macOS worker identity (libproc start time, no /proc). This file ships to the host as one
     # standalone script (routes/infrastructure_models.py reads node_models.__file__), so the
@@ -1101,7 +1101,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # modules, 765 lines, back under the flat 800 cap.)
     "src/clio_agent/gact/routes/system.py": 817,
     "src/clio_agent/gact/sessions.py": 839,
-    "src/clio_agent/gact/turn_finalize.py": 803,
+    "src/clio_agent/gact/turn_finalize.py": 787,
     # (sandbox_cli.py's entry retired: #2339 grew it to 838; the fleet-runtime grant plan moved to
     # runtime/fleet_runtime_paths.py, 666 lines, back under the flat 800 cap.)
     "src/clio_agent/runtime/sandbox_codex.py": 862,

@@ -75,6 +75,33 @@ def test_first_use_asks_approval_then_remembers_it(monkeypatch) -> None:
     assert result["payload_file"].endswith(".json")
 
 
+def test_several_unanswered_sources_are_one_question(monkeypatch) -> None:
+    """One question names every unanswered source in try order; its answer covers each.
+    Asked one by one, declining Keenable asked about Exa at once, and so on: five
+    questions for one search, and an unwatched run waited on each (58 minutes).
+    SABOTAGE: drop the combined gate and the first question is ``approve:keenable``."""
+    fake = FakeSources({"keenable": [_ok()], "exa": [_ok()], "you": [_ok()]})
+    monkeypatch.setattr(web_sources, "search", fake)
+    _settings(
+        approved=["you"],
+        web={"order": ["keenable", "exa", "you"], "disabled": ["firecrawl", "parallel"]},
+    )
+    with pytest.raises(broker.AskPerson) as asked:
+        asyncio.run(web.web_search(WebQuery(query="q")))
+    decision = asked.value.decision
+    assert decision.topic == broker.WEB_SOURCES_TOPIC + "keenable,exa"
+    assert "Keenable and Exa" in decision.message and fake.calls == []
+    broker.apply_answer(decision.topic, broker.DECLINE)
+    result = asyncio.run(web.web_search(WebQuery(query="q")))  # no second question
+    assert result["source"] == "you" and fake.calls == ["you"]
+    SEARCH_LIMITS.reset()
+    with pytest.raises(broker.AskPerson) as again:
+        asyncio.run(web.web_search(WebQuery(query="q")))
+    broker.apply_answer(again.value.decision.topic, broker.APPROVE)
+    assert {"keenable", "exa"} <= load_search_settings().approved
+    assert asyncio.run(web.web_search(WebQuery(query="q")))["source"] == "keenable"
+
+
 def test_declining_a_source_moves_to_the_next_with_a_note(monkeypatch) -> None:
     monkeypatch.setattr(web_sources, "search", FakeSources({"keenable": [_ok()], "exa": [_ok()]}))
     _settings(approved=["exa"], web={"order": ["keenable", "exa"]})

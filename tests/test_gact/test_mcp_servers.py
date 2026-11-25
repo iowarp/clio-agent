@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from fastmcp import FastMCP
 
 from clio_agent.gact.app import build_app
+from clio_agent.tools.workspace_mcp_trust import trust_workspace_mcp
 from tests._plugin_fixtures import custom_marketplace
 
 
@@ -324,6 +325,7 @@ def test_mcp_servers_surfaces_an_unreadable_declaration_file(
     workspace = tmp_path / "workspace"
     workspace.joinpath(".clio").mkdir(parents=True)
     workspace.joinpath(".clio", "mcp.yaml").write_text("mcp_servers: [oops\n", encoding="utf-8")
+    trust_workspace_mcp(workspace / ".clio" / "mcp.yaml")
 
     app = build_app(sessions_path=tmp_path / "unreadable.json", agent=_InventoryAgent())
     with TestClient(app) as session_client:

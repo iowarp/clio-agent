@@ -237,6 +237,45 @@ def test_landlock_out_of_root_rename_still_denied(tmp_path: Path) -> None:
 
 
 @_LANDLOCK
+def test_landlock_shell_writes_the_shared_uv_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A confined shell may write the uv cache every workspace's shells share, the way uv
+    does: stage in a temp folder inside the cache, then rename it into a bucket. CLIO's own
+    cache root, which holds the servers' environments, stays out of reach."""
+    from clio_agent import paths
+    from clio_agent.runtime import execution_environment
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    # The test runtime keeps CLIO's cache under tmp_path, a granted root: put it outside
+    # every grant so the test can tell the shared folder's own grant from the base roots.
+    roots = sandbox.effective_write_roots(sandbox.PROFILE_SHELL, workspace_root=str(workspace))
+    cache_root = _outside_roots(roots, "clio_shared_uv").with_suffix("")
+    cache_root.mkdir()
+    monkeypatch.setattr(paths, "user_cache_dir", lambda: cache_root)
+    try:
+        shared = execution_environment.shared_uv_cache(workspace)
+        assert shared == cache_root / "uv-shared"
+        stage = shared / ".tmp-stage"
+        bucket = shared / "archive-v0" / "pkg"
+        sibling = cache_root / "mcp-uv-cache"
+        confined = _shell_confined(
+            _landlock_state(),
+            f"mkdir -p {stage} {bucket.parent} && echo pkg > {stage}/wheel"
+            f" && mv {stage} {bucket} && mkdir {sibling}",
+            workspace,
+        )
+        result = _run(confined, cwd=workspace)
+        _require_fence_enforced(result)
+        assert (bucket / "wheel").read_text().strip() == "pkg"  # staged and renamed
+        assert result.returncode != 0  # the last step, outside the shared folder, is denied
+        assert not sibling.exists()
+    finally:
+        shutil.rmtree(cache_root, ignore_errors=True)
+
+
+@_LANDLOCK
 def test_landlock_in_workspace_write_succeeds(tmp_path: Path) -> None:
     state = _landlock_state()
     target = tmp_path / "ll_ok.txt"

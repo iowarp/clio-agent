@@ -1,7 +1,7 @@
 # CLIO — no-install Docker deployment using the published ghcr.io images
 # (no local build needed; pulls our released images).
 #
-#   docker compose up clio-web         # web UI  → http://localhost:8080
+#   docker compose up clio-web         # web UI  → http://localhost:8080 (this computer only)
 #   docker compose --profile api up    # headless backend (API/SSE) → :8100  (scale-out)
 #
 # The legacy TUI is frozen and unsupported; use Web or the API.
@@ -10,9 +10,16 @@ services:
   # Path (b)/(c): self-contained web UI + bundled backend — the quick-start.
   clio-web:
     image: ghcr.io/iowarp/clio-web:latest
+    # Published on this computer's loopback only. To open the UI from other
+    # machines, set CLIO_WEB_BIND=0.0.0.0 (or one of this host's addresses) and
+    # CLIO_GACT_BEARER_TOKEN=<secret>; the image refuses to start without the
+    # token. Whenever a token is set, every client connects with it (Connect
+    # by address), which also keeps other accounts on a shared host out.
     ports:
-      - "8080:80"
+      - "${CLIO_WEB_BIND:-127.0.0.1}:8080:8080"
     environment:
+      - CLIO_WEB_BIND=${CLIO_WEB_BIND:-127.0.0.1}
+      - CLIO_GACT_BEARER_TOKEN=${CLIO_GACT_BEARER_TOKEN:-}
       - CLIO_LM_PROVIDER=${CLIO_LM_PROVIDER:-lm_studio}
       - CLIO_LM_API_BASE=${CLIO_LM_API_BASE:-http://host.docker.internal:1234/v1}
       - CLIO_LM_MODEL=${CLIO_LM_MODEL:-}

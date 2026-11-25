@@ -408,10 +408,12 @@ override-dependencies = ["mcp==2.2.0"]
 [tool.uv.sources]
 # Develop pins the merged sibling commits so their unreleased work runs without a
 # release: clio-schemas (clio.mcp-app.v1 with recordingUri, clio.choice-table.v1 with row options, clio.dialog.v1 with a wide width and clio.picker.v1, the s3 connected-source
-# provider, the map's flat-map and globe facts) and clio-kit (paraview-mcp 3.3.0, geo 2.4.0, the slicer, and the pdf,
+# provider, the map's flat-map and globe facts, the layered map, section and profile
+# stack) and clio-kit (paraview-mcp 3.3.0, geo 2.4.0, the slicer, and the pdf,
 # earthdata, home-assistant and spice servers that run their pinned upstream releases,
 # apps ledger KM; the chemistry servers ase, decimer, fdmnes, graspa and pubchem and the
-# clio-chemistry bundle with avogadro, from clio-kit's claude/chemistry-in-clio branch until it merges,
+# clio-chemistry bundle with avogadro, merged on clio-kit main),
+# with this branch's ocean and weather work merged over clio-kit main until main takes it;
 # docs/design/chemistry-in-clio-status.md). A clio-kit built
 # from git takes components its version's release does not publish from that same
 # commit, verified against its catalogue. A release removes both entries and pins the

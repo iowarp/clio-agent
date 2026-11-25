@@ -17,7 +17,7 @@ For the rare case that needs env vars, headers, or OAuth, a mapping value is
 also accepted (``{command, args, env}`` or ``{url, headers, auth}``), but the string form is
 the documented, default surface.
 
-Scopes: workspace ``mcp.yaml`` > user config > the session's plugin servers > built-ins.
+Scopes: workspace ``mcp.yaml`` (once trusted) > user config > plugin servers > built-ins.
 
 Parsing only; ``transport_for`` turns a spec into a transport ``execution.py`` accepts.
 """
@@ -45,6 +45,7 @@ from clio_agent.tools.mcp_cache import _mcp_uv_cache_dir
 from clio_agent.tools.mcp_command_line import split_command
 from clio_agent.tools.mcp_config_values import optional_int
 from clio_agent.tools.mcp_environment import stdio_environment
+from clio_agent.tools.workspace_mcp_trust import workspace_mcp_trusted
 
 if TYPE_CHECKING:
     from mcp.client.auth.oauth2 import TokenStorage
@@ -472,7 +473,7 @@ def load_mcp_servers(
 ) -> dict[str, MCPServerSpec]:
     """Discover + merge declared MCP servers across all scopes.
 
-    Precedence (highest wins, merged whole by name): workspace
+    Precedence (highest wins, merged whole by name): a trusted workspace
     ``<cwd>/.clio/mcp.yaml`` > user ``<config>/clio-agent/mcp.yaml`` > the
     session's plugin servers (``plugin_servers`` = ``{plugin_id: {name: declaration}}``). Built-in
     ``fs``/``shell`` are provided by core, not part of this map.
@@ -492,9 +493,9 @@ def load_mcp_servers(
 
     user_mcp = paths.user_config_dir_for(home, lookup) / "mcp.yaml"
     _merge_mcp_yaml(merged, user_mcp, source="user", env=env)
-    _merge_mcp_yaml(
-        merged, paths.workspace_config_path(cwd, "mcp.yaml"), source="workspace", env=env
-    )
+    workspace_mcp = paths.workspace_config_path(cwd, "mcp.yaml")
+    if workspace_mcp_trusted(workspace_mcp, home=home, env=lookup):  # workspace_mcp_trust
+        _merge_mcp_yaml(merged, workspace_mcp, source="workspace", env=env)
 
     return {n: replace(s, name=n) for n, s in merged.items()}
 

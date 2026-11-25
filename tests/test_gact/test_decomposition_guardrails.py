@@ -291,7 +291,12 @@ from clio_agent.gact.app import build_app
 # /v1/plugin-pages/{plugin}/{page}/open, .../close and .../actions.
 # 498 -> 499: GET /v1/plugin-pages/{plugin}/{page}/status, the steps of a page's
 # latest open (routes/plugin_pages.py, gact/plugin_page_startup.py).
-EXPECTED_ROUTE_METHOD_PAIRS = 499
+# 499 -> 502: grids as maps and sections (routes/artifact_grid_views.py, 57760bcda):
+# GET /v1/artifacts/{artifact_id}/tiles/{z}/{x}/{y}.png, GET .../grid-info and
+# POST .../section-query.
+# 502 -> 504: a moved run_code script (routes/foreground_scripts.py, #2394):
+# GET /v1/sessions/{sid}/scripts/foreground and POST .../foreground/background.
+EXPECTED_ROUTE_METHOD_PAIRS = 504
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

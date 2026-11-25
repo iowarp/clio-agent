@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from clio_agent.gact.storage.github_oauth import DeviceAuthorization
+from clio_agent.gact.storage.ndp_tls import system_tls
 
 if TYPE_CHECKING:
     from clio_agent.gact.storage.auth import OAuthApplication
@@ -49,7 +50,7 @@ def discovery(issuer: str, bucket: int) -> dict[str, Any]:
     """Cache public discovery briefly and pin credential destinations to the issuer origin."""
     https_url(issuer)
     try:
-        with httpx.Client(timeout=30, follow_redirects=False) as client:
+        with httpx.Client(timeout=30, follow_redirects=False, verify=system_tls()) as client:
             response = client.get(issuer + "/.well-known/openid-configuration")
             response.raise_for_status()
             data = response.json()
@@ -98,7 +99,7 @@ def begin(app: OAuthApplication, verifier: str, *, extra_scopes: Sequence[str] =
     scopes = ["openid", "offline_access"]
     scopes.extend(scope for scope in extra_scopes if scope not in scopes)
     try:
-        with httpx.Client(timeout=30, follow_redirects=False) as client:
+        with httpx.Client(timeout=30, follow_redirects=False, verify=system_tls()) as client:
             response = client.post(
                 app.authorize_url,
                 data={
@@ -145,7 +146,7 @@ def poll(
         return None
     flow.next_poll_at = time.time() + flow.interval
     owned = client is None
-    client = client or httpx.Client(timeout=30, follow_redirects=False)
+    client = client or httpx.Client(timeout=30, follow_redirects=False, verify=system_tls())
     try:
         response = client.post(
             app.token_url,
@@ -209,7 +210,7 @@ def revoke(tokens: dict[str, object]) -> None:
     try:
         endpoint = discovery(issuer, int(time.time() // 300)).get("revocation_endpoint")
         if endpoint and tokens.get("refresh_token"):
-            with httpx.Client(timeout=15, follow_redirects=False) as client:
+            with httpx.Client(timeout=15, follow_redirects=False, verify=system_tls()) as client:
                 client.post(
                     endpoint,
                     data={

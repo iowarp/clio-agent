@@ -587,7 +587,19 @@ def test_react_builder_wires_block_and_tool(
     module = build_agent_module(
         SimpleNamespace(tool_executor=None), resolution_agent_def(resolution), resolution
     )
-    assert module.system_prompt.startswith(resolution.prompt_text.strip())
+    # The module's prompt is the composition kept for its provider (here openai): a
+    # fragment scoped to other providers (core.finish, for Claude) is left out.
+    from clio_agent.plugins.compose_final import final_prompt_text  # noqa: PLC0415
+
+    kept = final_prompt_text(
+        resolution.prompt_text,
+        resolution.prompt,
+        {row["name"] for row in resolution.tools},
+        delegated=False,
+        provider="openai",
+    ).strip()
+    assert module.system_prompt.startswith(kept.split("\n\n")[0])
+    assert "Finish the work the person asked for" not in module.system_prompt
     assert "quality-rubric" in module.system_prompt
     assert "SECRET_PROCEDURE_MARKER" not in module.system_prompt
     assert any(getattr(t, "name", "") == "load_skill" for t in module.tools)

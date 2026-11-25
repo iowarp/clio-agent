@@ -495,22 +495,27 @@ def test_a_nested_calls_completion_carries_its_parent_too() -> None:
     )
 
 
-def test_plan_mode_runs_scripts_only_behind_an_enforced_fence(monkeypatch: Any) -> None:
-    """The sandbox is what keeps a script read-only in plan mode; without it, refuse typed."""
+@pytest.mark.parametrize(("mode", "named"), [("plan", "Plan"), ("architect", "Deep research")])
+def test_read_only_modes_run_scripts_only_behind_an_enforced_fence(
+    monkeypatch: Any, mode: str, named: str
+) -> None:
+    """The sandbox is what keeps a script read-only in plan and Deep research mode; without
+    it, refuse typed. Behind it the script runs read-only (True)."""
     from clio_agent.runtime import sandbox
 
-    sessions = {"plan": SimpleNamespace(mode="plan"), "edit": SimpleNamespace(mode="edit")}
+    sessions = {mode: SimpleNamespace(mode=mode), "edit": SimpleNamespace(mode="edit")}
     app = SimpleNamespace(state=SimpleNamespace(sessions=SimpleNamespace(get=sessions.get)))
     monkeypatch.setattr(sandbox, "current_state", lambda: None)
     with pytest.raises(tool_module.CodeError) as refused:
-        tool_module._plan_mode_refusal(app, "plan")
+        tool_module._plan_mode_refusal(app, mode)
     assert refused.value.reason == tool_module.CODE_PLAN_MODE_UNCONFINED
-    tool_module._plan_mode_refusal(app, "edit")  # outside plan mode the fence is not required
+    assert f"not available in {named} mode" in str(refused.value)
+    assert tool_module._plan_mode_refusal(app, "edit") is False  # no fence needed, writable
     enforced = sandbox.SandboxResult(
         mechanism=sandbox.MECHANISM_LANDLOCK, active=True, reason=sandbox.REASON_FENCE_ACTIVE
     )
     monkeypatch.setattr(sandbox, "current_state", lambda: enforced)
-    tool_module._plan_mode_refusal(app, "plan")
+    assert tool_module._plan_mode_refusal(app, mode) is True
 
 
 def test_a_plan_mode_kernel_writes_only_scratch_and_temp(monkeypatch: Any, tmp_path: Path) -> None:

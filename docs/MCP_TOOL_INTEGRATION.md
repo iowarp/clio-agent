@@ -294,11 +294,13 @@ before compaction. With an unknown window the room is `tools.unknown_window_resu
 (25,000), traced `tool_result_window_unknown`.
 
 A result that does not fit is saved whole to the session's tool-output folder
-(`tools/mcp_result_projection.py`), and the model gets its first characters after a
-note marked `[clio: result_spilled]`: how long the result is, how much is shown, and
-where the rest is, with the exact `fs_read_file(path=..., offset=...)` that continues a
-text file, or a search for a JSON one. The note's wording is the reminder
-`clio.reminder.result_spilled` and its pieces. The stored evidence is never cut; the
+(`tools/mcp_result_projection.py`), and the model gets a pointer, not the result: a
+note marked `[clio: result_spilled]` with its size in tokens and characters, the file,
+how to explore it (a script or a search rather than reading it whole, and the exact
+`fs_read_file(path=..., offset=...)` that continues a text file), for a JSON result its
+structure (keys, list lengths and item fields, `tools/result_outline.py`), and a short
+sample of its first characters (`tools.spilled_sample_chars`, 2,000). The note's wording
+is the reminder `clio.reminder.result_spilled` and its pieces. The stored evidence is never cut; the
 transcript preview has its own bound (`limits.tool_result_chars`).
 
 Tools that size their own result (`fs_read_file`, `fs_search_text`, the shell) fill the

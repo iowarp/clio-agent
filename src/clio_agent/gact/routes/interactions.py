@@ -12,7 +12,7 @@ from starlette.concurrency import run_in_threadpool
 from clio_agent import conf
 from clio_agent.arc.task_types import QuestionReply
 from clio_agent.errors import ClioError
-from clio_agent.gact import agent_needs, connector_setup
+from clio_agent.gact import agent_needs, connector_setup, core_write_refusal
 from clio_agent.gact.a2ui_actions.record import last_action_wire
 from clio_agent.gact.human_controls import intervene
 from clio_agent.gact.off_loop import run_off_loop
@@ -357,6 +357,12 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
     """Render a common Question through the shipped interaction contract."""
     bundle = question.metadata.get("question_bundle")
     invocation = str(question.metadata.get("invocation_id") or "")
+    elicitation = question.metadata.get("elicitation")
+    if not invocation and isinstance(elicitation, dict):
+        # An MCP elicitation (a search source's consent among them) records the call
+        # that raised it only in its elicitation block; without this link the waiting
+        # call read as a bare spinner, never "waiting for you" (live 2026-11-19).
+        invocation = str(elicitation.get("invocation_id") or "")
     if not invocation and question.source == "ask_user":
         # ask_user records its Question under the asking tool call's id, which links
         # the waiting call to this interaction.
@@ -490,6 +496,9 @@ def project_pending_interactions(
             }
         )
         pending = pending[:limit]
+    held = core_write_refusal.held_recording_degradation(app, root_session_id)
+    if held is not None:
+        degradations.append(held)
     return InteractionProjection(_stamp_request_sequence(pending), degradations)
 
 

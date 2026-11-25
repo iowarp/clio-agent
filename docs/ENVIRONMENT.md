@@ -113,6 +113,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_CODE_BACKGROUND_RECORD_WINDOW_S` | `code.background_record_window_s` | str | `60.0` | `src/clio_agent/gact/code_task_records.py` |
 | `CLIO_CODE_BACKGROUND_STATUS_S` | `code.background_status_s` | str | `5.0` | `src/clio_agent/gact/native_code.py` |
 | `CLIO_CODE_COVERING_POSTURES` | `code.covering_postures` | list | `auto-edits,ai-review,spotter-ai,spotter-watcher` | `src/clio_agent/gact/code_mode/grants.py` |
+| `CLIO_CODE_FOREGROUND_BACKGROUND_AFTER_S` | `code.foreground_background_after_s` | float | `180.0` | `src/clio_agent/gact/code_mode/foreground.py` |
 | `CLIO_CODE_IDLE_MINUTES` | `code.idle_minutes` | str | `30.0` | `src/clio_agent/gact/code_mode/kernels.py` |
 | `CLIO_CODE_INDEX_LINE_CHARS` | `code.index_line_chars` | int | `320` | `src/clio_agent/gact/code_mode/stubs.py` |
 | `CLIO_CODE_MAX_SCRIPT_CHARS` | `code.max_script_chars` | int | `20000` | `src/clio_agent/gact/code_mode/grants.py` |
@@ -175,6 +176,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_GACT_ALLOWED_HOSTS` | `gact.allowed_hosts` | str | _(unset)_ | `src/clio_agent/gact/cors.py` |
 | `CLIO_GACT_BEARER_TOKEN` | `gact.auth.bearer_token` | str | _(unset)_ | `src/clio_agent/gact/auth.py` |
 | `CLIO_GACT_CORS_ORIGINS` | `gact.cors.origins` | str | _(unset)_ | `src/clio_agent/gact/cors.py` |
+| `CLIO_GACT_LOOPBACK_REQUIRES_TOKEN` | `gact.auth.loopback_requires_token` | str | `false` | `src/clio_agent/gact/auth.py` |
 | `CLIO_GACT_MEDIA_CACHE_BYTES` | `gact.media_cache_bytes` | int | `67108864` | `src/clio_agent/gact/agents/media_cache.py` |
 | `CLIO_GACT_TURN_TIMEOUT_S` | `limits.turn_timeout_s` | float | `900.0` | `src/clio_agent/gact/_params.py` |
 | `CLIO_GOAL_JUDGE_MODEL` | `goal.judge_model` | str | _(unset)_ | `src/clio_agent/gact/goal.py` |
@@ -392,6 +394,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_TOOLS_SEARCH_MAX` | `tools.search_max` | int | `20` | `src/clio_agent/gact/search_tools.py` |
 | `CLIO_TOOLS_SEARCH_MISS_NAMES` | `tools.search_miss_names` | int | `40` | `src/clio_agent/gact/search_tools.py` |
 | `CLIO_TOOLS_SHELL_POLL_INTERVAL_MS` | `tools.shell_poll_interval_ms` | int | `200` | `src/clio_agent/gact/native_shell.py` |
+| `CLIO_TOOLS_SPILLED_SAMPLE_CHARS` | `tools.spilled_sample_chars` | int | `2000` | `src/clio_agent/tools/mcp_result_projection.py` |
 | `CLIO_TOOLS_WITHHELD` | `tools.withheld` | list | _(unset)_ | `src/clio_agent/gact/agents/native_tool_registry.py` |
 | `CLIO_TOOLS_WRITE_AHEAD` | `tools.write_ahead` | str | `non_read_only` | `src/clio_agent/gact/external_read_only.py` |
 | `CLIO_TOOL_RESULT_CHARS` | `limits.tool_result_chars` | int | `12000` | `src/clio_agent/gact/assignment_evidence.py` |

@@ -159,9 +159,11 @@ def register_task_routes(app: FastAPI) -> None:
 
     The science log's read route lives with them: its entries are task-history events.
     """
+    from clio_agent.gact.routes.foreground_scripts import register_foreground_script_routes
     from clio_agent.gact.routes.science_log import register_science_log_routes  # noqa: PLC0415
 
     register_science_log_routes(app)
+    register_foreground_script_routes(app)
 
     def caller(sid: str) -> TaskCaller:
         if not sid:

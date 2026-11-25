@@ -18,6 +18,10 @@ from clio_agent.gact.agents.resolution import (
 from clio_agent.tools.mcp_config import MCPServerSpec, unreadable_mcp_yaml_snapshot
 from clio_agent.tools.mcp_inventory_snapshot import WorkspaceMcpSnapshot, workspace_mcp_snapshot
 from clio_agent.tools.mcp_redaction import redact_mcp_spec
+from clio_agent.tools.workspace_mcp_trust import (
+    WORKSPACE_MCP_UNTRUSTED,
+    untrusted_workspace_mcp_snapshot,
+)
 
 
 def declared_mcp_specs(
@@ -100,6 +104,15 @@ def session_mcp_inventory(
         }
         for row in unreadable_mcp_yaml_snapshot()
     ]
+    # A workspace mcp.yaml is mounted only once its content is trusted.
+    degradations.extend(
+        {
+            "reason": WORKSPACE_MCP_UNTRUSTED,
+            "detail": f"{row['path']} is not trusted (sha256 {row['sha256']}); review it, "
+            "then run `clio-agent mcp trust` in that workspace",
+        }
+        for row in untrusted_workspace_mcp_snapshot()
+    )
     snapshot = WorkspaceMcpSnapshot()
     if connection_error:
         degradations.append({"reason": "mcp_connection_unavailable", "detail": connection_error})

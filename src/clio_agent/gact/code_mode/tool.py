@@ -10,9 +10,9 @@ tool calls it made.
 Running a script is one non-read call, approved before it runs with the code shown
 (``run_code`` asks the permission gate itself, as native tools that act do). Its nested
 calls are decided by the gate under the script's grant (:mod:`.grants`). In plan mode
-it runs only where the sandbox enforces the write fence, in a kernel that may write only
-the session's scratch folder and temp (its nested calls still meet the plan ACL), else
-it refuses with ``code_plan_mode_unconfined``.
+and Deep research mode it runs only where the sandbox enforces the write fence, in a kernel
+that may write only the session's scratch folder and temp (its nested calls still meet the
+mode's ACL), else it refuses with ``code_plan_mode_unconfined``.
 
 Nothing bounds a script's time or its number of calls: it ends when it finishes or when
 the agent or the person cancels it (taskable run_code CT3; CLIO is a human-observed
@@ -23,6 +23,7 @@ and the next script starts a fresh one.
 from __future__ import annotations
 
 import contextvars
+import functools
 import queue
 import time
 from collections.abc import Callable, Mapping
@@ -32,6 +33,7 @@ from typing import Any
 
 from clio_agent import conf
 from clio_agent.runtime import trace
+from clio_agent.runtime.commitment_activity import note_progress
 from clio_agent.tools.tool_observation import RefusedCallError
 
 __all__ = [
@@ -45,8 +47,10 @@ __all__ = [
     "run_script",
 ]
 
-#: Typed refusal: plan mode, and the sandbox does not enforce the write fence.
+#: Typed refusal: plan or Deep research mode, and the sandbox does not enforce the write fence.
 CODE_PLAN_MODE_UNCONFINED = "code_plan_mode_unconfined"
+#: The session modes whose scripts run read-only (``architect`` is the person's Deep research).
+_READ_ONLY_SCRIPT_MODES = {"plan": "Plan", "architect": "Deep research"}
 #: Typed refusal: the gate denied the script with its own reason (a deny policy, the plan
 #: ACL, a read-only session), which the model is given.
 CODE_SCRIPT_DENIED = "code_script_denied"
@@ -128,29 +132,34 @@ def _approve(app: Any, code: str) -> None:
 
 def run_code_unavailable(app: Any, session_id: str) -> str:
     """Why ``run_code`` cannot run a script in this session now (``""`` when it can):
-    :data:`CODE_PLAN_MODE_UNCONFINED` in plan mode on a host whose sandbox does not
-    enforce the write fence. The tool settings then offer ``code`` tools directly."""
+    :data:`CODE_PLAN_MODE_UNCONFINED` in plan or Deep research mode on a host whose sandbox
+    does not enforce the write fence. The tool settings then offer ``code`` tools directly."""
     from clio_agent.runtime import sandbox  # noqa: PLC0415
 
     sessions = getattr(getattr(app, "state", None), "sessions", None)
     session = sessions.get(session_id) if sessions is not None and session_id else None
-    if str(getattr(session, "mode", "") or "") != "plan" or sandbox.fence_enforced():
+    if _session_mode(session) not in _READ_ONLY_SCRIPT_MODES or sandbox.fence_enforced():
         return ""
     return CODE_PLAN_MODE_UNCONFINED
 
 
+def _session_mode(session: Any) -> str:
+    return str(getattr(session, "mode", "") or "")
+
+
 def _plan_mode_refusal(app: Any, session_id: str) -> bool:
-    """Whether the session is in plan mode (the script then runs read-only); refuses when
-    plan mode has no enforced fence."""
+    """Whether the session is in a read-only mode (the script then runs read-only); refuses
+    when that mode has no enforced fence."""
+    session = app.state.sessions.get(session_id)
     if run_code_unavailable(app, session_id):
         raise CodeError(
-            "run_code is not available in Plan mode here: this host's sandbox does not "
-            "enforce the write fence, so nothing would keep a script read-only. Call the "
-            "read tools directly; tools offered only to scripts can be called directly too.",
+            f"run_code is not available in {_READ_ONLY_SCRIPT_MODES[_session_mode(session)]} "
+            "mode here: this host's sandbox does not enforce the write fence, so nothing would "
+            "keep a script read-only. Call the read tools directly; tools offered only to "
+            "scripts can be called directly too.",
             CODE_PLAN_MODE_UNCONFINED,
         )
-    session = app.state.sessions.get(session_id)
-    return str(getattr(session, "mode", "") or "") == "plan"
+    return _session_mode(session) in _READ_ONLY_SCRIPT_MODES
 
 
 def _workspace() -> Path:
@@ -196,6 +205,13 @@ class PreparedScript:
     servers: tuple[str, ...]
     direct_only: frozenset[str]
     code_only: frozenset[str]
+
+
+def _script_session(prepared: Any) -> str:
+    """The session whose turn runs ``prepared`` ("" off-turn)."""
+    from clio_agent.gact.context import active_session_id  # noqa: PLC0415
+
+    return str(prepared.context.run(active_session_id) or "")
 
 
 def _session_approval_mode() -> str:
@@ -272,6 +288,7 @@ def execute_script(
     if live is not None:
         live["dispatcher"] = dispatcher  # a background task's status reads its call count
     outcome: dict[str, Any] = {"status": "failed", "output": "", "value": None, "error": ""}
+    session = _script_session(prepared)
     finished = False
     started = time.monotonic()
     poll = poll_s()
@@ -304,6 +321,7 @@ def execute_script(
                     outcome.update(error=f"The Python kernel exited: {kernel.diagnostics()}")
                     break
                 if message.get("type") == "call":
+                    note_progress(session)  # a working script is not a silent turn
                     dispatcher.submit(message, kernel.send)
                 elif message.get("type") == "done":
                     finished = True
@@ -359,6 +377,10 @@ def _boundary(kernel: Any, outcome: Mapping[str, Any]) -> dict[str, Any] | None:
     )
 
 
+def _first_line(code: str) -> str:
+    return next((ln.strip() for ln in code.splitlines() if ln.strip()), "")[:80]
+
+
 def run_script(
     agent: Any,
     code: str,
@@ -367,15 +389,39 @@ def run_script(
     scope: str,
     read_only: bool = False,
     grant: Any = None,
+    app: Any = None,
+    label: str = "",
 ) -> dict[str, Any]:
-    """Run ``code`` in the scope's kernel (a read-only one in plan mode); the outcome."""
+    """Run ``code`` in the scope's kernel (a read-only one in plan mode); the outcome.
+
+    The script runs on its own thread; past ``code.foreground_background_after_s``, or
+    when the person asks, it moves, still running, to a background task and the outcome
+    is that task's receipt (:mod:`clio_agent.gact.code_mode.foreground`)."""
     from clio_agent.agent import cancellation_requested  # noqa: PLC0415
-    from clio_agent.gact.code_mode import kernels  # noqa: PLC0415
+    from clio_agent.gact.code_mode import (
+        foreground,  # noqa: PLC0415
+        kernels,  # noqa: PLC0415
+    )
 
     prepared = prepare_script(agent, code, grant)
     kernel = kernels.kernel_for(session_id, scope, _workspace(), read_only=read_only)
-    outcome = execute_script(prepared, kernel, cancellation_requested)
-    if outcome["status"] == "cancelled":
+    run = foreground.ForegroundRun(session_id, label or _first_line(code))
+    run.live["kernel"] = kernel  # a task that takes the script over stops it at the end
+    log = foreground.output_log(session_id)  # what it prints, readable if it moves
+    run.live["output_path"] = str(log or "")
+    run.start(functools.partial(execute_script, output_path=str(log or "")), prepared, kernel)
+    state = run.wait(cancellation_requested, poll_s(), foreground.background_after_s())
+    if state == "move":
+        kernels.detach(kernel, "replaced_backgrounded")
+        receipt = launch_background(
+            app, agent, code, label, session_id=session_id, read_only=read_only,
+            prepared=prepared, adopted=run,
+        )  # fmt: skip
+        return foreground.moved_outcome(run, receipt, code)
+    outcome = run.outcome()
+    if log is not None:
+        log.unlink(missing_ok=True)  # it ended here: its output is in the outcome
+    if state == "cancelled" or outcome["status"] == "cancelled":
         from clio_agent.gact.agents.clio_react import _turn_cancelled  # noqa: PLC0415
 
         raise _turn_cancelled()
@@ -391,18 +437,23 @@ def launch_background(
     session_id: str,
     read_only: bool,
     grant: Any = None,
+    prepared: Any = None,
+    adopted: Any = None,
 ) -> dict[str, Any]:
-    """Hand an approved script to the code root; the task's acceptance receipt (CT2)."""
+    """Hand an approved script to the code root; the task's acceptance receipt (CT2).
+
+    ``adopted`` is a running foreground script (:class:`.foreground.ForegroundRun`) that
+    the task takes over as it is, with ``prepared`` its prepared script."""
     import asyncio  # noqa: PLC0415
 
     from clio_agent.gact.model_media import DETACHED, SCRIPT_MEDIA  # noqa: PLC0415
     from clio_agent.gact.native_code import CodeLaunch, stage_launch, take_launch  # noqa: PLC0415
 
-    prepared = prepare_script(agent, code, grant)
+    prepared = prepared or prepare_script(agent, code, grant)
     # It outlives this model step: an image it views has no result to ride (model_media).
     prepared.context.run(SCRIPT_MEDIA.set, DETACHED)
-    key = stage_launch(CodeLaunch(prepared, session_id, _workspace(), read_only))
-    name = label.strip() or next((ln.strip() for ln in code.splitlines() if ln.strip()), "")
+    key = stage_launch(CodeLaunch(prepared, session_id, _workspace(), read_only, adopted))
+    name = label.strip() or _first_line(code)
     arguments = {
         "code": code,
         "launch": key,
@@ -435,6 +486,7 @@ _NEW_KERNEL_WORDS = {
     "replaced_dead": "the previous one had stopped",
     "replaced_mode_changed": "Plan mode began or ended",
     "replaced_workspace_changed": "the workspace changed",
+    "replaced_backgrounded": "the previous one went with a script moved to the background",
 }
 
 
@@ -529,7 +581,12 @@ def build_run_code_tool() -> Any:
             scope=scope,
             read_only=read_only,
             grant=grant,
+            app=app,
+            label=label,
         )
+        if outcome["status"] == "backgrounded":
+            declare_structured_content(outcome)
+            return outcome["text"]
         if viewed := CALL_MEDIA.get():
             outcome["attached_media"] = [_attached_row(item) for item in viewed]
         declare_structured_content(outcome)

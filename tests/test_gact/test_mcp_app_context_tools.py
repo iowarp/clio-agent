@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -437,6 +438,40 @@ def test_a_call_after_reopening_waits_for_the_new_view_to_list_its_tools(
         client.put(f"{third_prefix}/app-tools", params=third_cap, json={"tools": [_NOTE]})
         worker.join(30)
         assert answers and "no longer offers set_highlight" in answers[0]
+
+
+def test_a_view_counts_as_listed_only_once_its_tools_are_on_offer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A call woken by a view's first list finds that list's tools already offered.
+
+    SABOTAGE: mark the view listed before its tools are validated and offered and the
+    woken call reads an empty offer: it answers that the view no longer offers the tool."""
+    from clio_agent.gact import mcp_app_tools  # noqa: PLC0415
+
+    app = _app(tmp_path)
+    with TestClient(app, base_url="http://127.0.0.1:8100") as client:
+        sid = client.post("/v1/sessions", json={"title": "board"}).json()["id"]
+        record = _record(app, sid)
+    table = AppToolTable()
+    original = mcp_app_tools._validated
+
+    def slow_validated(*args: Any) -> Any:
+        time.sleep(0.3)  # longer than the waiter's poll: it would wake inside this window
+        return original(*args)
+
+    monkeypatch.setattr(mcp_app_tools, "_validated", slow_validated)
+    offers: list[list[str]] = []
+
+    def waiter() -> None:
+        if table.wait_listed(sid, record.app_instance_id, lambda: False):
+            offers.append(list(table.offered(sid)))
+
+    worker = threading.Thread(target=waiter, daemon=True)
+    worker.start()
+    table.set_tools(record, [_HIGHLIGHT])
+    worker.join(30)
+    assert offers == [["app__board__set_highlight"]]
 
 
 async def test_a_call_published_while_no_stream_was_connected_reaches_the_next_stream(
