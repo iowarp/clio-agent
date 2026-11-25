@@ -79,6 +79,7 @@ from clio_agent.gact.agents.clio_react_recovery import recover_stream
 from clio_agent.gact.agents.clio_react_stream_call import call_lm as _call_lm
 from clio_agent.gact.agents.clio_react_submit import active_react_scope_safe, record_submit_audit
 from clio_agent.gact.agents.clio_react_submit import submit_tool as _submit_tool
+from clio_agent.gact.agents.clio_react_wire import without_wire_tags
 from clio_agent.gact.agents.step_clock import StepClock as _StepClock
 from clio_agent.gact.agents.tool_call_dedupe import (
     collapse_identical,
@@ -587,7 +588,7 @@ class _Loop:
         return Request(
             model=self.lm.model,
             system=self.system or None,  # a bare agent sends no system message
-            messages=tuple(_place_tool_media(self._context(), self.tool_media)),
+            messages=tuple(_place_tool_media(without_wire_tags(self._context()), self.tool_media)),
             tools=self.tools,
             config=self.config,
         )
