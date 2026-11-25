@@ -245,4 +245,34 @@ def resolve_managed_input(app: Any, workspace_id: str, root: Path, path: str) ->
     return None
 
 
-__all__ = ["WorkspaceFileWalk", "collect_workspace_file_entries", "workspace_file_media_type"]
+def resolve_workspace_plan_file(root: Path, path: str) -> Path | None:
+    """Resolve a session plan this workspace wrote, so the app can open and cite it.
+
+    Plans live in the workspace's state directory, outside its root. Only a Markdown file
+    directly inside ``<workspace state>/plans`` resolves, by its recorded absolute path or
+    as ``.clio-agent/local/plans/<name>.md``.
+    """
+    from clio_agent.paths import workspace_state_dir
+
+    requested = Path(path)
+    if ".." in requested.parts:
+        return None
+    plans = (workspace_state_dir(root) / "plans").resolve()
+    prefix = Path(".clio-agent/local/plans")
+    if requested.is_absolute():
+        target = requested.resolve()
+    elif requested.is_relative_to(prefix):
+        target = (plans / requested.relative_to(prefix)).resolve()
+    else:
+        return None
+    if target.parent != plans or target.suffix.casefold() != ".md":
+        return None
+    return target
+
+
+__all__ = [
+    "WorkspaceFileWalk",
+    "collect_workspace_file_entries",
+    "resolve_workspace_plan_file",
+    "workspace_file_media_type",
+]
