@@ -452,8 +452,11 @@ async def _on(loop: asyncio.AbstractEventLoop | None, coro: Coroutine[Any, Any, 
     running = asyncio.get_running_loop()
     if loop is None or loop is running:
         return await coro
-    if loop.is_closed():
+    if loop.is_closed() or not loop.is_running():
+        # A retired executor's private loop that stopped without closing would never
+        # run ``coro``: waiting on it held the reconcile (and the fleet) forever.
         coro.close()
+        trace.event("TOOLS", "mcp_namespace_stop_loop_idle closed=%s", loop.is_closed())
         return 0
     return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(coro, loop))
 

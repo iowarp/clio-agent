@@ -65,6 +65,12 @@ TUI/HTTP surface aren't tracked here.
   descriptor". CLIO creates the daemon's IPC folder (`<TEMP>\clio_<user>` or
   `CLIO_MEMFD_DIR`) before it starts. When the folder can't be created, ARC reports
   `clio_core_ipc_dir_unavailable`, naming the folder and the OS error.
+- A live MCP configuration change (`PUT /v1/mcp/configuration`) can no longer leave a
+  workspace's tools waiting forever on the server it replaces. Stopping or resetting
+  that server waits at most 20 seconds (`mcp_namespace_retire_timed_out`), and a stop
+  routed to a retired executor's idle event loop returns at once. A tool call or step
+  that is still not started after 15 seconds traces where it waits
+  (`call_stage_stalled`, with the thread's stack).
 
 ## [0.9.7] - 2026-11-13
 

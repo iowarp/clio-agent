@@ -28,6 +28,7 @@ from clio_agent.tools import (
     harness_notes,
     mcp_result_media,
     server_confirm,
+    stall_watch,
     task_descriptions,
     tool_presentation,
 )
@@ -581,7 +582,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             self._inflight += 1
             self._last_activity = time.monotonic()
         try:
-            with call_identity_scope():
+            with call_identity_scope(), stall_watch.watch("tool_call_before_started", name):
                 return self._call_tool_inner(name, args, return_raw=False)
         finally:
             with self._inflight_lock:
@@ -601,7 +602,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             self._inflight += 1
             self._last_activity = time.monotonic()
         try:
-            with call_identity_scope():
+            with call_identity_scope(), stall_watch.watch("tool_call_before_started", name):
                 return self._call_tool_inner(name, args, return_raw=True)
         finally:
             with self._inflight_lock:
@@ -696,6 +697,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             )
             return f"{synthesized}\n\n{observation}"
 
+        stall_watch.passed()
         observer_handle = notify_tool_observer(tool_observer, name, effective_args, "started", None)
         presentation_snapshot = tool_presentation.capture_tool_presentation(name, effective_args)
         forward_progress = observer_progress_handler(

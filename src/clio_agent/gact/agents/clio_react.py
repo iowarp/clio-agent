@@ -527,7 +527,10 @@ class _Loop:
         record_collapsed(active_app(), self.recorder.session, calls, repeats)
         thought_token = _ctx.set_step_thought(text, "".join(t.text for t in thinking))
         try:
-            self.recorder.step_open(self.step, self.span, text, calls)
+            from clio_agent.tools.stall_watch import watch  # noqa: PLC0415
+
+            with watch("react_step_open", ",".join(c.name for c in calls)):
+                self.recorder.step_open(self.step, self.span, text, calls)
             _raise_if_cancelled()
             outcomes = with_repeat_notes(calls, self._execute(calls), repeats)
         finally:

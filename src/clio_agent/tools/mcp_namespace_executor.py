@@ -16,6 +16,25 @@ from clio_agent.tools.mcp_task_routing import (
     resolve_namespace_route,
 )
 
+#: The longest a configuration change waits for a replaced server to stop. It runs
+#: under the fleet's build lock, so an unbounded wait would hold every later turn in
+#: that workspace until a restart; past it the stop goes on in the background.
+NAMESPACE_RETIRE_WAIT_SECONDS = 20.0
+
+MCP_NAMESPACE_RETIRE_TIMED_OUT = "mcp_namespace_retire_timed_out"
+
+
+def _retire_timed_out(namespace: str, step: str, reason: str) -> None:
+    trace.event(
+        "TOOLS",
+        "%s namespace=%s step=%s reason=%s waited_s=%.0f",
+        MCP_NAMESPACE_RETIRE_TIMED_OUT,
+        namespace,
+        step,
+        reason or "-",
+        NAMESPACE_RETIRE_WAIT_SECONDS,
+    )
+
 
 def _report_connect_stall(namespace: str, waited_s: float, roots: tuple[int, ...]) -> None:
     """Show a silent start on the namespace's preparation row; the wait goes on."""
@@ -677,11 +696,15 @@ class SyncNamespacePreparationMixin:
         proxy = self._async_executor._namespace_servers.get(namespace)
         if self._closed or proxy is None:
             return 0
-        return loop_result(
-            asyncio.run_coroutine_threadsafe(
-                namespace_instances.stop_instance(proxy, reason), self._loop
-            )
+        future = asyncio.run_coroutine_threadsafe(
+            namespace_instances.stop_instance(proxy, reason), self._loop
         )
+        try:
+            return loop_result(future, timeout=NAMESPACE_RETIRE_WAIT_SECONDS)
+        except TimeoutError:
+            future.cancel()
+            _retire_timed_out(namespace, "stop", reason)
+            return 0
 
     def reset_namespace(self, namespace: str) -> None:
         """Close ``namespace``'s persistent connection (its server process stops)."""
@@ -690,11 +713,14 @@ class SyncNamespacePreparationMixin:
 
         if self._closed:
             raise RuntimeError("SyncMCPToolExecutor is closed")
-        loop_result(
-            asyncio.run_coroutine_threadsafe(
-                self._async_executor.reset_namespace(namespace), self._loop
-            )
+        future = asyncio.run_coroutine_threadsafe(
+            self._async_executor.reset_namespace(namespace), self._loop
         )
+        try:
+            loop_result(future, timeout=NAMESPACE_RETIRE_WAIT_SECONDS)
+        except TimeoutError:
+            future.cancel()
+            _retire_timed_out(namespace, "reset", "")
 
     def set_resource_subscription(self, namespace: str, uri: str, *, subscribed: bool) -> bool:
         """Start or stop watching one resource on exactly ``namespace`` for updates (HS3)."""
