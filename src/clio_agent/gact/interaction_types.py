@@ -15,6 +15,7 @@ class UserQuestionOption(BaseModel):
     label: str
     value: str = ""
     description: str = ""
+    recommended: bool = False
 
 
 class UserQuestion(BaseModel):

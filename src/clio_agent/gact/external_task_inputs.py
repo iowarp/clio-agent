@@ -503,12 +503,13 @@ async def _input(self: ExternalTasks, host: ExternalConnection, params: Any, req
                         }
                     )
                 else:
-                    translated = translate_form_schema(params.requested_schema)
+                    request_meta = _request_meta(current, key, raw, getattr(request, "meta", None))
+                    translated = translate_form_schema(params.requested_schema, request_meta)
                     problem = translated.degrade
                     metadata = build_form_metadata(
                         translated,
                         **correlation,
-                        meta=_request_meta(current, key, raw, getattr(request, "meta", None)),
+                        meta=request_meta,
                     )
                     definition = QuestionDefinition.model_validate(
                         {

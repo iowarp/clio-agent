@@ -456,6 +456,7 @@ class UserQuestionOption(_WireModel):
     label: str = ""
     value: str = ""
     description: str = ""
+    recommended: bool = False
 
 
 class UserQuestion(_WireModel):

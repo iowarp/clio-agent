@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
+from clio_agent.gact.elicitation_choices import annotate_choices
 from clio_agent.gact.types import UserQuestion, UserQuestionOption
 
 __all__ = [
@@ -72,23 +73,41 @@ class FormTranslation:
     degrade: str | None = None
 
 
-def _enum_options(values: Sequence[Any], names: Sequence[Any] | None) -> list[UserQuestionOption]:
-    """Build one :class:`UserQuestionOption` per enum value (label from enumNames)."""
+def _enum_options(
+    values: Sequence[Any],
+    names: Sequence[Any] | None,
+    descriptions: Sequence[str] | None = None,
+    recommended: Any = None,
+) -> list[UserQuestionOption]:
+    """Build one :class:`UserQuestionOption` per enum value.
+
+    The label comes from enumNames (else the value), the meaning from the option's
+    ``description``, and ``recommended`` marks the option whose value it equals.
+    """
 
     options: list[UserQuestionOption] = []
     for index, value in enumerate(values):
         label = str(names[index]) if names and index < len(names) else str(value)
-        options.append(UserQuestionOption(label=label, value=str(value)))
+        meaning = descriptions[index] if descriptions and index < len(descriptions) else ""
+        options.append(
+            UserQuestionOption(
+                label=label,
+                value=str(value),
+                description=meaning,
+                recommended=recommended is not None and str(value) == str(recommended),
+            )
+        )
     return options
 
 
-def _titled_choices(spec: Mapping[str, Any]) -> tuple[list[Any], list[str]] | None:
-    """``(values, labels)`` of a titled single-select (``oneOf``/``anyOf`` of ``const``).
+def _titled_choices(spec: Mapping[str, Any]) -> tuple[list[Any], list[str], list[str]] | None:
+    """``(values, labels, meanings)`` of a titled select (``oneOf``/``anyOf`` of ``const``).
 
     MCP's titled enum form, ``{"oneOf": [{"const": "approve", "title": "Approve"}, ...]}``,
     names the same closed choice set as ``enum``/``enumNames``, so it maps to the same
-    field. Each label is the option's ``title``, else its value. Anything else (an empty
-    list, an option without ``const``) is not a closed choice set and returns ``None``.
+    field. Each label is the option's ``title``, else its value, and each meaning its
+    ``description``, else ``""``. Anything else (an empty list, an option without
+    ``const``) is not a closed choice set and returns ``None``.
     """
 
     for key in ("oneOf", "anyOf"):
@@ -105,12 +124,18 @@ def _titled_choices(spec: Mapping[str, Any]) -> tuple[list[Any], list[str]] | No
         return (
             [option["const"] for option in options],
             [str(option.get("title") or option["const"]) for option in options],
+            [
+                option["description"] if isinstance(option.get("description"), str) else ""
+                for option in options
+            ],
         )
     return None
 
 
-def _flat_multi_select(spec: Mapping[str, Any]) -> tuple[list[Any], str, list[Any] | None] | None:
-    """Return ``(enum, item_type, enum_names)`` for a flat array-of-enum ``spec``.
+def _flat_multi_select(
+    spec: Mapping[str, Any],
+) -> tuple[list[Any], str, list[Any] | None, list[str] | None] | None:
+    """Return ``(enum, item_type, enum_names, meanings)`` for a flat array-of-enum ``spec``.
 
     SEP-1330 multi-select: only a FLAT array whose ``items`` is itself an
     enum-bearing scalar is admitted -- a missing/nested/unconstrained ``items``
@@ -129,14 +154,14 @@ def _flat_multi_select(spec: Mapping[str, Any]) -> tuple[list[Any], str, list[An
         return None
     item_enum = items.get("enum")
     if item_enum is None and (titled := _titled_choices(items)) is not None:
-        return titled[0], str(items.get("type") or "string"), titled[1]
+        return titled[0], str(items.get("type") or "string"), titled[1], titled[2]
     if not (isinstance(item_enum, Sequence) and not isinstance(item_enum, (str, bytes))):
         return None
     names = items.get("enumNames")
     enum_names = (
         list(names) if isinstance(names, Sequence) and not isinstance(names, (str, bytes)) else None
     )
-    return list(item_enum), str(items.get("type") or "string"), enum_names
+    return list(item_enum), str(items.get("type") or "string"), enum_names, None
 
 
 def _bounded_int(value: Any) -> int | None:
@@ -159,12 +184,13 @@ def _array_field(name: str, spec: Mapping[str, Any], required: set[str]) -> dict
     multi = _flat_multi_select(spec)
     if multi is None:
         return "elicitation_schema_not_flat"
-    item_enum, item_type, item_enum_names = multi
+    item_enum, item_type, item_enum_names, item_meanings = multi
     return {
         "name": str(name),
         "type": "array",
         "enum": item_enum,
         "enum_names": item_enum_names,
+        "enum_descriptions": item_meanings,
         "multi": True,
         "item_type": item_type,
         # SEP-1330 finding (Opus review, C1-S4): minItems/maxItems are
@@ -205,8 +231,9 @@ def _scalar_field(name: str, spec: Mapping[str, Any], required: set[str]) -> dic
     field_type = spec.get("type")
     enum = spec.get("enum")
     enum_names = _scalar_enum_names(spec, enum)
+    meanings: list[str] | None = None
     if enum is None and (titled := _titled_choices(spec)) is not None:
-        enum, enum_names = titled
+        enum, enum_names, meanings = titled
     # A nested object (with or without a declared type) is not flat.
     if field_type == "object" or "properties" in spec or "items" in spec:
         return "elicitation_schema_not_flat"
@@ -221,6 +248,7 @@ def _scalar_field(name: str, spec: Mapping[str, Any], required: set[str]) -> dic
         if isinstance(enum, Sequence) and not isinstance(enum, (str, bytes))
         else None,
         "enum_names": enum_names,
+        "enum_descriptions": meanings,
         "multi": False,
         "item_type": "",
         "min_items": None,
@@ -253,7 +281,9 @@ def _single_field_kind(
     return None
 
 
-def translate_form_schema(requested_schema: Mapping[str, Any]) -> FormTranslation:
+def translate_form_schema(
+    requested_schema: Mapping[str, Any], meta: Mapping[str, Any] | None = None
+) -> FormTranslation:
     """Translate a flat restricted JSON Schema into a UserQuestion shape.
 
     Accepts the MCP form-mode subset: a top-level ``{"type": "object",
@@ -263,6 +293,12 @@ def translate_form_schema(requested_schema: Mapping[str, Any]) -> FormTranslatio
     nesting (a plain object, an unconstrained/nested array) or an unsupported
     scalar type returns a typed :attr:`FormTranslation.degrade` instead of
     raising.
+
+    Every choice keeps what each option means: a titled option's ``description``
+    (or, when the schema has none, the typed choice a server sends under ``meta``,
+    see :mod:`clio_agent.gact.elicitation_choices`). A single select marks one option recommended: the
+    typed choice's recommendation, else the field's ``default``. Fields carry both
+    as ``enum_descriptions`` and ``recommended``; a single-field choice's options too.
 
     Kind selection: a single boolean field -> ``confirmation``; a single
     scalar-enum field -> ``choice``; a single array-of-enum field ->
@@ -290,12 +326,20 @@ def translate_form_schema(requested_schema: Mapping[str, Any]) -> FormTranslatio
             return FormTranslation(degrade=built)
         fields.append(built)
 
+    annotate_choices(fields, meta)
+
     if len(fields) == 1:
         kind = _single_field_kind(fields[0], properties)
         if kind is not None:
-            names = fields[0].get("enum_names") or properties[fields[0]["name"]].get("enumNames")
+            only = fields[0]
+            names = only.get("enum_names") or properties[only["name"]].get("enumNames")
             options = (
-                _enum_options(fields[0]["enum"], names if isinstance(names, Sequence) else None)
+                _enum_options(
+                    only["enum"],
+                    names if isinstance(names, Sequence) else None,
+                    only.get("enum_descriptions"),
+                    only.get("recommended"),
+                )
                 if kind != "confirmation"
                 else []
             )
