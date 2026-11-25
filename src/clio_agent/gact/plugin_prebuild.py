@@ -7,9 +7,11 @@ step (:func:`clio_agent.tools.mcp_prepare.provision`) in the background, with
 ``UV_COMPILE_BYTECODE=1`` so the server's first import does not compile either, for every
 trusted installed plugin that declares a navigation page and has not been built in this
 process. It runs after an install, an update or a trust decision
-(:func:`clio_agent.gact.plugin_authoring.installed_changed`) and once when the app first
-lists its pages (:func:`schedule_once`), which covers the default marketplace and a
-version that changed while CLIO was closed. The provisioning marker lets an unchanged
+(:func:`clio_agent.gact.plugin_authoring.installed_changed`) and once when the agent is
+ready or the app first lists its pages, whichever comes first (:func:`schedule_once`),
+which covers the default marketplace and a version that changed while CLIO was closed.
+Starting at agent readiness means a page opened right after a restart finds its server
+already starting. The provisioning marker lets an unchanged
 environment be skipped at once, and lets the first start find it cached.
 
 Only page plugins are built: a page is opened by the person with nothing in front of the

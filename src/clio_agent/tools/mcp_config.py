@@ -619,9 +619,18 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
         from clio_agent.tools import spawn_diet, spawn_diet_transport  # noqa: PLC0415
 
         diet = spawn_diet.diet_transport_args(spec.name, resolved, tuple(resolved_args), env)
+        direct = None
+        if diet is None and bundled is None:
+            from clio_agent.tools.uv_provisioned_launch import provisioned_launch  # noqa: PLC0415
+
+            # A provisioned ``uv run --project`` server starts from its environment,
+            # so no spawn re-checks or re-syncs the project.
+            direct = provisioned_launch(spec, resolved, resolved_args, env)
         if diet is not None:
             diet_command, diet_args, env = diet
             final_command, final_args = diet_command, diet_args
+        elif direct is not None:
+            final_command, final_args, env = direct
         else:
             final_command, final_args = resolved, resolved_args
         from clio_agent.tools.mcp_confine import confine_stdio_server  # noqa: PLC0415
