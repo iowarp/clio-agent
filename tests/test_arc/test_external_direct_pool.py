@@ -654,3 +654,39 @@ async def test_the_holder_is_only_offered_while_its_owner_is_open() -> None:
         remove()
     open_ = True
     assert shared_direct_connections.holder() is None
+
+
+@pytest.mark.asyncio
+async def test_an_idle_reap_keeps_a_stdio_server_that_still_drives_a_task() -> None:
+    """Trial QA a18: the reaper closed an idle fleet while relay's install task waited on
+    its person. Stopping the stdio server failed the pending ``tasks/update`` (Connection
+    closed), and the answers given to the task's questions never reached relay.
+
+    SABOTAGE: drop the idle-reap branch in ``_retire_stale``; the client closes at once.
+    """
+    closed: list[bool] = []
+
+    class _Client:
+        async def close(self) -> None:
+            closed.append(True)
+
+    driver: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    host = SimpleNamespace(
+        rpcs=set(),
+        calls={"task-1": object()},
+        drivers={"task-1": driver},
+        cache_key=("relay", "", ""),
+        backend=SimpleNamespace(transport="stdio"),
+        client=_Client(),
+        closing=False,
+        superseded=False,
+        stop_reason="",
+    )
+    reason = connections.EXTERNAL_MCP_CONNECTION_FLEET_CLOSED
+    for because in ("idle_ttl", "lru_cap"):
+        await connections._retire_stale(None, host, reason, fleet="/w", because=because)  # type: ignore[arg-type]
+        assert host.superseded and not closed, "Kept for its task, never leased again"
+
+    await connections._retire_stale(None, host, reason, fleet="/w", because="restart")  # type: ignore[arg-type]
+    assert closed, "A restart replaces the server: it still stops now"
+    driver.cancel()

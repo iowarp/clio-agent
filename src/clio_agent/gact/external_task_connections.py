@@ -38,6 +38,15 @@ EXTERNAL_MCP_CONNECTION_SUPERSEDED = "external_mcp_connection_superseded"
 #: restarted or rebuilt, or the namespace was rebound): nothing can reach it any more,
 #: and it kept the proxy's server process running (CV-N2).
 EXTERNAL_MCP_CONNECTION_FLEET_CLOSED = "external_mcp_connection_fleet_closed"
+#: Fleet closes that only free an idle fleet (the reaper's TTL and LRU cap); nothing
+#: replaces the closed fleet's servers, unlike a restart or a configuration switch.
+_IDLE_REAPS = frozenset({"idle_ttl", "lru_cap"})
+
+
+def holds_tasks(host: ExternalConnection) -> bool:
+    """Whether ``host`` still drives an accepted task (its observation and input path)."""
+
+    return any(not driver.done() for driver in host.drivers.values())
 
 
 def _in_process_owner(configured: Client) -> str:
@@ -533,6 +542,17 @@ async def _retire_stale(
     host.stop_reason = reason
     client = host.client
     if client is None or host.closing or "stdio" not in host.backend.transport.casefold():
+        return
+    if why.get("because") in _IDLE_REAPS and not host.rpcs and holds_tasks(host):
+        # An idle fleet reap replaces nothing: stopping the server would cut the input
+        # path of the tasks it still drives, losing the answers a person gives them. It
+        # retires once their custody ends, as a remote server does.
+        logger.warning(
+            "external_mcp_connection_kept_for_tasks server=%s reason=%s tasks=%d",
+            host.cache_key[0],
+            reason,
+            len(host.calls),
+        )
         return
     logger.warning(
         "external_mcp_connection_stopped_busy server=%s reason=%s rpcs=%d tasks=%d",
