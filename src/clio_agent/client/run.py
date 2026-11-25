@@ -123,6 +123,7 @@ class RunEngine:
         ack_id = ""
         targets: set[str] = set()
         completed: MessageCompleted | None = None
+        redriven = False
         with self.client.sessions.events(self.session_id, reconnect_attempts=5) as feed:
             for event in feed:
                 if not ack_id and isinstance(event, SessionSnapshot):
@@ -138,11 +139,15 @@ class RunEngine:
                     self._announce(event.payload.get("metadata") or {})
                 elif isinstance(event, MessageCompleted):
                     identity = str(event.payload.get("turn_id") or "")
-                    if identity not in targets:
+                    if identity not in targets and not redriven:
                         targets |= self._recipient_turn(ack_id)
-                    if identity in targets:
+                    if identity in targets or redriven:
                         completed = event
-                        break
+                        # A Stop hook blocked the end and queued one more turn on
+                        # this session: the run ends when a turn completes unblocked.
+                        redriven = bool(event.payload.get("stop_hook_redrive"))
+                        if not redriven:
+                            break
         yield self.result(completed)
 
     def run(self, prompt: str, files: list[str] | None = None) -> RunResult:
