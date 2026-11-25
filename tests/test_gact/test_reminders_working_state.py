@@ -126,8 +126,9 @@ def test_the_plan_renders_todays_text(plan_session: Any) -> None:
     text, path = _plan(app, sid)
     assert text == (
         f"## The plan (active, {path})\n\n"
-        "If this plan is relevant to the current work and not finished, continue on it, and "
-        "update it with plan_update when your understanding or direction changes.\n\n"
+        "If this plan is relevant to the current work and not finished, continue on it: track "
+        "its steps with write_todos, and revise it with plan_update when a finding changes "
+        "its approach.\n\n"
         f"{_PLAN_TEXT}"
     )
     app.state.sessions.update(sid, metadata_patch={PERSON_EDIT_KEY: True})

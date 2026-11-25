@@ -244,8 +244,10 @@ def build_write_todos_tool(agent_def: Any) -> Any:
     from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     def write_todos(todos: list) -> str:
-        """Keep a short checklist of the next concrete steps of a multi-step job.
+        """Keep the conversation's todos: the steps of a multi-step job and their progress.
 
+        This is where step lists and progress go, including the issues an approved plan
+        leaves to work; the plan document (plan_update) is not a checklist.
         Each call replaces the whole list; each todo is
         ``{"content": <str>, "status": "pending"|"in_progress"|"completed"}``. It helps on
         work with three or more steps; a simple task does not need it. Mark an item

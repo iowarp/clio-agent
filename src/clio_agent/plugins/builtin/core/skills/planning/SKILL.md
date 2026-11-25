@@ -1,7 +1,7 @@
 ---
 name: planning
 title: Plan for the person's approval before acting
-description: Use when the person wants to approve a plan before anything changes, or an unresolved decision needs their approval (Plan Mode with plan_enter, plan_update and plan_exit). A plan you write and carry out yourself needs only plan_update.
+description: Use when the person wants to approve a plan before anything changes, or an unresolved decision needs their approval (Plan Mode with plan_enter, plan_update and plan_exit). A list of steps you carry out yourself is not a plan; keep it with write_todos.
 ---
 
 # Planning
@@ -55,15 +55,15 @@ Write the plan with `plan_update(content=...)` and revise it as you learn
 only Changes and Verification. Larger or open-ended work:
 - **Objective**: the question, what a complete answer contains, what counts as done.
 - **Approach**: how you will get there.
-- **Threads**: one per line, each marked at the start `[open]`, `[active]`, `[closed]`
-  or `[dropped]` (`- [open] name: what it asks`), so CLIO can count what is left; a
-  one-line reason when it ends and the handles of any children working on it.
+- **Issues**: the questions and pieces of work the plan leaves to do, one per line,
+  with the handles of any children working on them. After approval, carry them into
+  todos with `write_todos` and track their progress there, not in the plan.
 - **Findings**: each a claim with its references (`call:` refs, paths and lines,
   handles); a corrected finding is marked superseded rather than deleted.
-- Checking your claims is the last thread.
+- Checking your claims is the last issue.
 
 Keep what you know apart from what you still must find out: findings carry their
-references, and an unknown stays an open thread until you look it up. If a plan
+references, and an unknown stays an open issue until you look it up. If a plan
 already exists, judge whether it still fits this task before editing; treat a
 genuinely new task as a fresh plan.
 

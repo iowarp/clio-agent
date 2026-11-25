@@ -288,7 +288,7 @@ def test_the_shipped_stale_note_threshold_and_wording() -> None:
 
     assert working_state.stale_steps() == 25
     text = injections.render(working_state.PLAN_STALE_SOURCE, {"path": "p", "steps": 8})
-    assert text is not None and "threads have finished" in text
+    assert text is not None and "keep step progress in write_todos" in text
 
 
 def test_a_plan_closed_as_done_says_how_many_threads_it_still_marks_open(
