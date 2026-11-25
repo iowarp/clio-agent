@@ -24,6 +24,8 @@ from clio_agent.tools.mcp_extension_registry import (
     MCP_APP_MIME_TYPE,
     MCP_APPS_PROTOCOL_REVISION,
     OAUTH_CLIENT_CREDENTIALS_EXTENSION_ID,
+    RELAY_ASK_EXTENSION_ID,
+    RELAY_CHOICE_EXTENSION_ID,
     TASKS_EXTENSION_ID,
     UI_EXTENSION_ID,
     ExtensionsDeclaration,
@@ -45,12 +47,14 @@ def test_extensions_declaration_returns_the_typed_shape() -> None:
     assert all(isinstance(ext, ClientExtension) for ext in declaration.extensions)
 
 
-def test_clio_extension_order_is_apps_then_agent_elicitation() -> None:
+def test_clio_extension_order_is_apps_then_agent_elicitation_then_relay_asks() -> None:
     """Native Tasks are contributed by the SDK, outside CLIO's ad-only composition."""
     declaration = extensions_declaration(Client, object())
     assert [entry.identifier for entry in declaration.entries] == [
         UI_EXTENSION_ID,
         AGENT_ELICITATION_EXTENSION_ID,
+        RELAY_ASK_EXTENSION_ID,
+        RELAY_CHOICE_EXTENSION_ID,
     ]
 
 
@@ -63,6 +67,8 @@ def test_native_sdk_tasks_compose_with_clio_capability_ads() -> None:
         TASKS_EXTENSION_ID,
         UI_EXTENSION_ID,
         AGENT_ELICITATION_EXTENSION_ID,
+        RELAY_ASK_EXTENSION_ID,
+        RELAY_CHOICE_EXTENSION_ID,
     }
     assert all(entry.reason is None for entry in declaration.entries)
 
@@ -71,11 +77,18 @@ def test_proxy_clio_declarations_preserve_apps_and_input_ads() -> None:
     """Native SDK controls its own task suppression; CLIO has no custom task entry."""
     declaration = extensions_declaration(ProxyClient, object())
     by_id = {entry.identifier: entry for entry in declaration.entries}
-    assert set(by_id) == {UI_EXTENSION_ID, AGENT_ELICITATION_EXTENSION_ID}
+    assert set(by_id) == {
+        UI_EXTENSION_ID,
+        AGENT_ELICITATION_EXTENSION_ID,
+        RELAY_ASK_EXTENSION_ID,
+        RELAY_CHOICE_EXTENSION_ID,
+    }
     assert all(entry.extension is not None and entry.reason is None for entry in by_id.values())
     assert [ext.identifier for ext in declaration.extensions] == [
         UI_EXTENSION_ID,
         AGENT_ELICITATION_EXTENSION_ID,
+        RELAY_ASK_EXTENSION_ID,
+        RELAY_CHOICE_EXTENSION_ID,
     ]
 
 
@@ -117,7 +130,7 @@ def test_extensions_declaration_is_called_fresh_every_construction() -> None:
     target = object()
     first = extensions_declaration(Client, target)
     second = extensions_declaration(Client, target)
-    assert len(first.entries) == len(second.entries) == 2
+    assert len(first.entries) == len(second.entries) == 4
     for left, right in zip(first.entries, second.entries, strict=True):
         assert left.identifier == right.identifier
         assert left.extension is not None and right.extension is not None
@@ -136,6 +149,8 @@ def test_known_extensions_catalog_covers_every_active_entry_and_the_two_enumerat
         UI_EXTENSION_ID,
         AGENT_ELICITATION_EXTENSION_ID,
         A2UI_EXTENSION_ID,
+        RELAY_ASK_EXTENSION_ID,
+        RELAY_CHOICE_EXTENSION_ID,
         OAUTH_CLIENT_CREDENTIALS_EXTENSION_ID,
         ENTERPRISE_MANAGED_AUTH_EXTENSION_ID,
     }

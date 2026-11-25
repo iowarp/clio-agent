@@ -75,6 +75,8 @@ from clio_agent.tools.mcp_errors import typed_mcp_protocol_error
 from clio_agent.tools.mcp_executor import AsyncMCPToolExecutor
 from clio_agent.tools.mcp_extension_registry import (
     AGENT_ELICITATION_EXTENSION_ID,
+    RELAY_ASK_EXTENSION_ID,
+    RELAY_CHOICE_EXTENSION_ID,
     UI_EXTENSION_ID,
     extensions_declaration,
 )
@@ -896,7 +898,12 @@ def test_clio_extension_registry_composes_apps_and_agent_elicitation() -> None:
     """CLIO adds Apps/input declarations; native SDK owns Tasks negotiation."""
     declaration = extensions_declaration(Client, object())
     by_id = {entry.identifier: entry for entry in declaration.entries}
-    assert set(by_id) == {UI_EXTENSION_ID, AGENT_ELICITATION_EXTENSION_ID}
+    assert set(by_id) == {
+        UI_EXTENSION_ID,
+        AGENT_ELICITATION_EXTENSION_ID,
+        RELAY_ASK_EXTENSION_ID,
+        RELAY_CHOICE_EXTENSION_ID,
+    }
     assert all(entry.extension is not None and entry.reason is None for entry in by_id.values())
     assert {ext.identifier for ext in declaration.extensions} == set(by_id)
 
@@ -905,7 +912,12 @@ def test_clio_proxy_extensions_preserve_apps_and_agent_elicitation() -> None:
     """Proxy clients keep Apps/input declarations without a custom Tasks owner."""
     declaration = extensions_declaration(ProxyClient, object())
     by_id = {entry.identifier: entry for entry in declaration.entries}
-    assert set(by_id) == {UI_EXTENSION_ID, AGENT_ELICITATION_EXTENSION_ID}
+    assert set(by_id) == {
+        UI_EXTENSION_ID,
+        AGENT_ELICITATION_EXTENSION_ID,
+        RELAY_ASK_EXTENSION_ID,
+        RELAY_CHOICE_EXTENSION_ID,
+    }
     assert all(entry.extension is not None and entry.reason is None for entry in by_id.values())
     assert {ext.identifier for ext in declaration.extensions} == set(by_id)
 

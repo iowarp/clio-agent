@@ -38,6 +38,8 @@ __all__ = [
     "MCP_APPS_PROTOCOL_REVISION",
     "MCP_APP_MIME_TYPE",
     "OAUTH_CLIENT_CREDENTIALS_EXTENSION_ID",
+    "RELAY_ASK_EXTENSION_ID",
+    "RELAY_CHOICE_EXTENSION_ID",
     "TASKS_EXTENSION_ID",
     "UI_EXTENSION_ID",
     "ExtensionsDeclaration",
@@ -77,6 +79,14 @@ ENTERPRISE_MANAGED_AUTH_EXTENSION_ID = "io.modelcontextprotocol/enterprise-manag
 #: ``x-clio-agent/*`` vendor namespace (the same convention as
 #: ``AGENT_AUDIENCE_META_KEY``), which satisfies SEP-2133's reverse-DNS-prefix rule.
 AGENT_ELICITATION_EXTENSION_ID = "x-clio-agent/agent-driven-elicitation"
+
+#: clio-relay's typed ask facts: ``_meta["io.iowarp.clio-relay/ask"][ask_id]`` is
+#: ``{detail, evidence}`` and ``.../choice`` a choice's options. A client that declares
+#: either gets the question sentence alone as the message and shows the facts itself
+#: (the web question card's Evidence disclosure); one that does not gets them inlined
+#: in the message. See clio-relay ``docs/mcp-tasks.md`` ("what a question says").
+RELAY_ASK_EXTENSION_ID = "io.iowarp.clio-relay/ask"
+RELAY_CHOICE_EXTENSION_ID = "io.iowarp.clio-relay/choice"
 
 
 @dataclass(frozen=True)
@@ -155,6 +165,40 @@ def _build_agent_elicitation(client_cls: Any, target: Any) -> MCPExtensionDeclar
     )
 
 
+def _build_relay_ask(client_cls: Any, target: Any) -> MCPExtensionDeclaration:  # noqa: ARG001 - uniform entry signature
+    """Registry entry: CLIO reads clio-relay's typed ask facts (:data:`RELAY_ASK_EXTENSION_ID`).
+
+    Ad-only and unconditional, like ``ui``: a server that does not know the id
+    ignores it. The elicitation path keeps a request's namespaced ``_meta`` on the
+    question (``metadata.elicitation.meta``) and the question card renders the
+    detail and evidence behind a closed disclosure.
+    """
+
+    from mcp.client.extension import advertise  # noqa: PLC0415
+
+    return MCPExtensionDeclaration(
+        identifier=RELAY_ASK_EXTENSION_ID,
+        extension=advertise(RELAY_ASK_EXTENSION_ID),
+        reason=None,
+    )
+
+
+def _build_relay_choice(client_cls: Any, target: Any) -> MCPExtensionDeclaration:  # noqa: ARG001 - uniform entry signature
+    """Registry entry: CLIO reads clio-relay's typed choices (:data:`RELAY_CHOICE_EXTENSION_ID`).
+
+    The question card draws each declared option with its label, meaning, note and
+    recommendation; see :func:`_build_relay_ask`.
+    """
+
+    from mcp.client.extension import advertise  # noqa: PLC0415
+
+    return MCPExtensionDeclaration(
+        identifier=RELAY_CHOICE_EXTENSION_ID,
+        extension=advertise(RELAY_CHOICE_EXTENSION_ID),
+        reason=None,
+    )
+
+
 def _build_a2ui(catalogs: tuple[str, ...]) -> MCPExtensionDeclaration:
     """The A2UI client ad (HS1a): the A2UI versions and catalogs this host renders for a server.
 
@@ -187,6 +231,8 @@ def _build_a2ui(catalogs: tuple[str, ...]) -> MCPExtensionDeclaration:
 _ACTIVE_ENTRIES: tuple[Callable[[Any, Any], MCPExtensionDeclaration], ...] = (
     _build_ui,
     _build_agent_elicitation,
+    _build_relay_ask,
+    _build_relay_choice,
 )
 
 
@@ -262,6 +308,21 @@ KNOWN_EXTENSIONS: tuple[MCPKnownExtension, ...] = (
             "declared only for a server whose plugin ships A2UI catalogs; settings name "
             "the versions and the plugin's catalog ids"
         ),
+    ),
+    MCPKnownExtension(
+        identifier=RELAY_ASK_EXTENSION_ID,
+        spec_reference="clio-relay docs/mcp-tasks.md (what a question says)",
+        actively_declared=True,
+        note=(
+            "declared ad-only and unconditionally; relay then sends the question sentence "
+            "alone and its detail and evidence typed in _meta, which the question card shows"
+        ),
+    ),
+    MCPKnownExtension(
+        identifier=RELAY_CHOICE_EXTENSION_ID,
+        spec_reference="clio-relay docs/mcp-tasks.md (what a question says)",
+        actively_declared=True,
+        note="declared ad-only and unconditionally; the question card draws relay's typed choices",
     ),
     MCPKnownExtension(
         identifier=OAUTH_CLIENT_CREDENTIALS_EXTENSION_ID,

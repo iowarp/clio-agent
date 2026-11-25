@@ -395,6 +395,7 @@ def build_url_metadata(
     plugin: str = "",
     server: str = "",
     plugin_title: str = "",
+    meta: Mapping[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Assemble the url-mode ``metadata.elicitation`` block for a new question.
 
@@ -409,11 +410,14 @@ def build_url_metadata(
     (see :func:`classify_url_trust`) say why the origin was accepted, and
     ``plugin``/``server`` name the plugin server that asked ("" when none), and
     ``plugin_title`` its plugin's display title (left out when it has none).
+    ``meta`` is the request's namespaced ``_meta``, as for :func:`build_form_metadata`
+    (a sign-in's detail and evidence from a server that types them).
     """
 
     warning, display_host, raw_host = punycode_warning(url)
     return {
         "elicitation": {
+            **({"meta": dict(meta)} if meta else {}),
             "mode": "url",
             "url": url,
             "origin": _origin(url),

@@ -197,6 +197,8 @@ async def test_capability_envelope_always_declares_the_tasks_extension() -> None
     from clio_agent.tools.mcp_extension_registry import (
         AGENT_ELICITATION_EXTENSION_ID,
         MCP_APP_MIME_TYPE,
+        RELAY_ASK_EXTENSION_ID,
+        RELAY_CHOICE_EXTENSION_ID,
         UI_EXTENSION_ID,
     )
 
@@ -205,6 +207,8 @@ async def test_capability_envelope_always_declares_the_tasks_extension() -> None
         "io.modelcontextprotocol/tasks": {},
         UI_EXTENSION_ID: {"mimeTypes": [MCP_APP_MIME_TYPE]},
         AGENT_ELICITATION_EXTENSION_ID: {},
+        RELAY_ASK_EXTENSION_ID: {},
+        RELAY_CHOICE_EXTENSION_ID: {},
     }
 
 
