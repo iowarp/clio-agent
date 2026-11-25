@@ -24,4 +24,7 @@ Before installing a program, look for a copy already on the machine: a tool that
 reports it missing has looked only in its own places (its setting, PATH, standard
 folders), so search further, ask the person when you cannot tell, and when you find
 one, offer it and, once they agree, point the connector's setting for it at that path
-instead of installing another.
+instead of installing another. When there is no copy, choose an install that needs no
+administrator rights (per user or in the person's home folder); when every route needs
+them, ask the person whether they will run it themselves, giving the exact steps, or
+want you to run it while they approve the system's elevation prompt.
