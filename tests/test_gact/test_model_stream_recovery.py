@@ -213,6 +213,50 @@ def test_partial_public_answer_does_not_restart_or_duplicate(tmp_path: Path) -> 
         assert len(requests) == 1
 
 
+def test_narration_before_a_cut_tool_call_is_regenerated(tmp_path: Path) -> None:
+    """Live (muse-spark-bf16, ALCF): the model says what it will do, then streams a
+    long tool call; the gateway cut the stream mid-call and the turn failed."""
+    ran: list[str] = []
+
+    def note(text: str) -> str:
+        """Record a note."""
+        ran.append(text)
+        return "ok"
+
+    def call(args: str) -> dict[str, Any]:
+        return {
+            "index": 0,
+            "id": "n1",
+            "type": "function",
+            "function": {"name": "note", "arguments": args},
+        }
+
+    script = [
+        Attempt(
+            [{"content": "Now I'll write the script."}, {"tool_calls": [call('{"te')]}],
+            truncate=True,
+        ),
+        Attempt(
+            [
+                {"content": "Now I'll write the script."},
+                {"tool_calls": [call(json.dumps({"text": "x"}))]},
+            ]
+        ),
+        Attempt([{"content": "Done."}]),
+    ]
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+    with endpoint(script) as (base, requests), _plane(arc):
+        lm = lm_for(base, provider="vllm")
+        try:
+            with dspy.context(lm=lm):
+                result = ClioReAct("question -> answer", tools=[note])(question="Note it")
+        finally:
+            run_on_lm_loop(lm.aclose)
+    assert result.answer == "Done."
+    assert ran == ["x"]  # the cut call never ran; the regenerated one ran once
+    assert len(requests) == 3
+
+
 def test_recovery_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CLIO_LM_TRANSIENT_RETRIES", "1")
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))

@@ -56,6 +56,7 @@ def call_lm(lm: Any, request: Request) -> Response:
             async with receive:
                 async for chunk in receive:
                     progress.emitted = True
+                    progress.saw(chunk)
                     if snapshots is not None:
                         stream.route_pieces(progress.observe(snapshots.feed(chunk)))
                         progress.answer |= bool(snapshots.canvas)

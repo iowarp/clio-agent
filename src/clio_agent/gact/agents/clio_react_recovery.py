@@ -16,7 +16,7 @@ from typing import Any
 from dspy.lm15 import FunctionTool, Request, Response
 from dspy.utils.exceptions import LMStreamAssemblyError, LMTimeoutError, LMTransportError
 
-from clio_agent.gact.reasoning_extract import ANSWER, Piece
+from clio_agent.gact.reasoning_extract import ANSWER, Piece, _get, chunk_delta
 
 
 def transport_failure(exc: BaseException) -> LMTransportError | LMTimeoutError | None:
@@ -43,11 +43,18 @@ class StreamProgress:
 
     emitted: bool = False
     answer: bool = False
+    #: The attempt had begun a tool call: its text so far is narration before an
+    #: action, not the final answer (nothing runs until the reply completes).
+    tool_call: bool = False
 
     def observe(self, pieces: list[Piece]) -> list[Piece]:
         """Track routed answer text without retaining another copy of the stream."""
         self.answer |= any(p.kind == ANSWER and bool(p.text) for p in pieces)
         return pieces
+
+    def saw(self, chunk: Any) -> None:
+        """Note whether a streamed chunk carries a tool-call delta."""
+        self.tool_call |= bool(_get(chunk_delta(chunk), "tool_calls"))
 
 
 class InterruptedModelStream(Exception):
@@ -71,6 +78,12 @@ def interrupted_stream(
     ends the HTTP response without a finish reason, so the transport reports no
     error. Before public prose nothing was accepted or executed, so it is the
     same interrupted generation, retried under the same bound.
+
+    Prose that precedes a tool call the attempt had begun is narration ("Now I'll
+    write the script."), not the answer: a model that narrates every step
+    (muse-spark on ALCF) would otherwise lose the whole turn to one cut stream
+    while writing a long file. The retry may repeat that sentence live; the
+    recorded step comes from the completed reply only.
     """
     from clio_agent.lm.hooked_lm import effective_lm_for_call  # noqa: PLC0415
 
@@ -81,7 +94,7 @@ def interrupted_stream(
         and isinstance(engine, str)
         and engine in {"auto", "lm15"}
         and progress.emitted
-        and not progress.answer
+        and (not progress.answer or progress.tool_call)
         and isinstance(exc, (LMTransportError, LMTimeoutError, LMStreamAssemblyError))
         and all(isinstance(tool, FunctionTool) for tool in request.tools)
     ):
