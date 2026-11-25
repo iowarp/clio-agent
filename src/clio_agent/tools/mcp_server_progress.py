@@ -10,6 +10,8 @@ Every MCP connect/list wait here measures exactly the awaited server:
   is starting, keep waiting; flat while the server process is still alive -> a visible
   ``mcp_server_stalled`` report, and the wait goes on with the same process (a cold
   import from a network filesystem can look flat, and a respawn would only start over);
+  a flat server while one of this process's provisions is working is a server queued
+  behind that build's uv lock, so the build's work counts as its progress;
   no server process alive at all -> :class:`NoProgressTimeout`, typed, unless the server
   is still queued behind a live holder of the shared launcher cache
   (:func:`queued_behind`), whose own liveness rules govern that queue. There is no
@@ -210,6 +212,19 @@ def install_spawn_tracking() -> None:
     _SPAWN_TRACKING_INSTALLED = True
 
 
+def _provision_work(builds: ProcessTreeWork) -> float | None:
+    """Work of this process's running provisions, followed into ``builds``.
+
+    ``None`` while none has run during this wait. A build that ends reads as progress
+    (its members' exit), so the server it held up is waited for once more.
+    """
+    from clio_agent.tools.mcp_prepare import running_provisions  # noqa: PLC0415
+
+    for running in running_provisions():
+        builds.follow(running)
+    return builds.sample()
+
+
 async def wait_while_server_works(
     awaitable: Any,
     *,
@@ -220,7 +235,9 @@ async def wait_while_server_works(
     """Await ``awaitable`` while the MCP server it starts is alive.
 
     Each ``slice_s`` (default :func:`mcp_no_progress_s`) without an answer is checked
-    against the server's own process tree: work advancing keeps waiting; a flat window
+    against the server's own process tree: work advancing keeps waiting, and so does
+    work in a provision this process is running (the server queues behind its uv lock,
+    :func:`~clio_agent.tools.mcp_prepare.running_provisions`); a flat window
     while a server process is still alive is reported (``mcp_server_stalled``, and
     ``on_stall(waited_s, roots)`` for a visible state) and the wait goes on with that
     same process; a window with no server process alive raises
@@ -237,6 +254,8 @@ async def wait_while_server_works(
         _SERVER_TREE.reset(token)
     started = time.monotonic()
     last = tree.sample()
+    builds = ProcessTreeWork()
+    last_build: float | None = None
     try:
         while True:
             done, _pending = await asyncio.wait({task}, timeout=window)
@@ -260,6 +279,17 @@ async def wait_while_server_works(
                     waited,
                 )
                 last = work
+                continue
+            build = await run_preparation_step(_provision_work, builds)
+            if progressed(build, last_build):
+                # The server's uv run queues behind a build's uv lock: that build is its work.
+                logger.info(
+                    "mcp_server_busy op=%s reason=provision_in_progress waited_s=%.0f roots=%s",
+                    op_name,
+                    waited,
+                    builds.roots,
+                )
+                last, last_build = work, build
                 continue
             if not await run_preparation_step(tree.alive):
                 raise NoProgressTimeout(op_name, NO_PROGRESS, waited, window)

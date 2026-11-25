@@ -796,6 +796,23 @@ def _kill_tree(process: subprocess.Popen[bytes]) -> None:
     process.wait()
 
 
+#: The process trees of this process's provisions now running, by provisioning pid.
+_RUNNING: dict[int, Any] = {}
+_RUNNING_LOCK = threading.Lock()
+
+
+def running_provisions() -> tuple[Any, ...]:
+    """The :class:`~clio_agent.runtime.progress.ProcessTreeWork` of each running provision.
+
+    A server whose ``uv run`` queues behind a build's uv lock does no work of its own
+    while that build does; its wait measures these trees too
+    (:func:`clio_agent.tools.mcp_server_progress.wait_while_server_works`).
+    """
+
+    with _RUNNING_LOCK:
+        return tuple(_RUNNING.values())
+
+
 def _run_provision(
     namespace: str, plan: ProvisionPlan, env: dict[str, str], cwd: str
 ) -> dict[str, Any] | None:
@@ -848,6 +865,8 @@ def _run_provision(
     window, ceiling = mcp_no_progress_s(), provision_max_wait_s()
     started = last_check = time.monotonic()
     last = tree.sample()
+    with _RUNNING_LOCK:
+        _RUNNING[process.pid] = tree
     try:
         while process.poll() is None:
             time.sleep(_POLL_S)
@@ -863,6 +882,8 @@ def _run_provision(
                 )
             last, last_check = work, now
     finally:
+        with _RUNNING_LOCK:
+            _RUNNING.pop(process.pid, None)
         for reader in readers:
             reader.join(timeout=5)
         confined.release()

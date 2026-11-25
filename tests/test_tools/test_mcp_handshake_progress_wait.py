@@ -112,6 +112,46 @@ def test_a_silent_live_server_is_reported_stalled_and_waited_on_beside_a_busy_da
     assert busy_sibling.poll() is None
 
 
+def test_a_silent_server_behind_a_running_provision_is_busy_not_stalled(
+    server_script: Path,
+    busy_sibling: subprocess.Popen[bytes],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A server whose ``uv run`` waits on a running provision's uv lock is flat itself
+    while that build works: no stall is reported while it works, and once it is gone
+    the silent server is reported again (the ParaView list read stalled for 360 s while
+    its 481 s provision built the very environment it waited on).
+
+    **Sabotage:** drop the ``running_provisions`` sample -> stalls while the build works.
+    """
+    from clio_agent.runtime.progress import ProcessTreeWork
+    from clio_agent.tools import mcp_prepare
+
+    monkeypatch.setitem(mcp_prepare._RUNNING, busy_sibling.pid, ProcessTreeWork(busy_sibling.pid))
+    stalls: list[float] = []
+
+    async def watched() -> None:
+        waiting = wait_while_server_works(
+            _list(server_script, "hung"),
+            op_name="list",
+            slice_s=0.5,
+            on_stall=lambda waited, _roots: stalls.append(waited),
+        )
+        task = asyncio.ensure_future(waiting)
+        await asyncio.sleep(3.0)
+        assert stalls == [], "a working provision is the queued server's progress"
+        mcp_prepare._RUNNING.pop(busy_sibling.pid)
+        busy_sibling.kill()
+        while len(stalls) < 2:
+            assert not task.done(), task
+            await asyncio.sleep(0.1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(watched())
+
+
 def test_no_ceiling_ends_the_wait_for_a_working_server(
     server_script: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
