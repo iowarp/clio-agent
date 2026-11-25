@@ -29,12 +29,16 @@ def answer_fields(context: Mapping[str, Any] | None) -> dict[str, Any]:
 
     A call from inside a run_code script shows the script and offers its grant. A
     question that names its own answers (a command outside the sandbox: allow once or
-    deny, never a standing rule) offers only those.
+    deny, never a standing rule) offers only those. A question whose allow outlasts the
+    call (a connector's server outside the sandbox) says so in its ``consent``, which
+    the row carries so the card words the allow as kept, not once.
     """
     answers = list((context or {}).get("answers") or STANDARD_ANSWERS)
     fields: dict[str, Any] = {}
     if answers != list(STANDARD_ANSWERS):
         fields["actions"] = answers
+    if isinstance(consent := (context or {}).get("consent"), Mapping):
+        fields["consent"] = dict(consent)
     fields.update(script_grants.row_fields(answers))
     return fields
 

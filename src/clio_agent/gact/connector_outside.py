@@ -157,6 +157,8 @@ def _ask(
         "kind": "native",
         "summary": card_summary(connector),
         "answers": ["allow", "deny"],
+        # An allow is kept for the connector, not used once: the card words it so.
+        "consent": {"scope": "connector_outside_sandbox", "connector": connector, "lasting": True},
     }
     decision = gate._ask_person(
         app,

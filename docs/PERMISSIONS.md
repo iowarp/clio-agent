@@ -693,7 +693,9 @@ before the call reaches the server, the gate asks the person whether that server
 outside CLIO's sandbox (`gact/connector_outside.py`). As with a command outside the
 sandbox, only the person answers, whatever the approval mode, rules or AI reviewer; the
 card states what the server starts and what running outside the sandbox means, and offers
-only **allow** or **deny**. The answer is kept for that connector and its server
+only **allow** or **deny**. The row's `consent` (`scope: connector_outside_sandbox`,
+`lasting: true`) tells the card the allow is kept, so it reads **Allow**, not "Allow
+once". The answer is kept for that connector and its server
 declaration (`connectors/outside_sandbox.py`, in `connectors.yaml`), so a new command or
 pinned release is asked again. An allow starts the connector's server again, unconfined,
 in every resident fleet (mechanism `none`, reason `outside_sandbox_allowed_for_connector`,
