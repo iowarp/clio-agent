@@ -497,15 +497,17 @@ def _joined(
 
 
 def _here_matching(app: Any, session_id: str, search: str) -> list[dict[str, Any]]:
-    """The plugins already in this conversation that ``search`` names: by id, description,
-    server name or the instructions its servers last sent. A search for what is already
-    here must not read as "there is none" (the agent would then work around it)."""
+    """The plugins already in this conversation that ``search`` finds as it finds the
+    person's others (:func:`offer_search.found_by`): by id, description, declared
+    keywords, server name or the instructions its servers last sent. A search for what
+    is already here must not read as "there is none" (the agent would then work around
+    it)."""
 
     from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
         SessionAgentUnavailable,
         session_resolution,
     )
-    from clio_agent.gact.offer_search import words_of  # noqa: PLC0415
+    from clio_agent.gact.offer_search import found_by, words_of  # noqa: PLC0415
     from clio_agent.plugins.recorded_instructions import plugin_instructions  # noqa: PLC0415
 
     words = words_of(search)
@@ -515,16 +517,25 @@ def _here_matching(app: Any, session_id: str, search: str) -> list[dict[str, Any
         resolution = session_resolution(app, session_id)
     except (SessionAgentUnavailable, RuntimeError):
         return []
+    try:
+        keywords = {record.id: list(record.keywords) for record in library(app)}
+    except Exception:  # noqa: BLE001 - the library is a hint here, never a failure
+        keywords = {}
     out: list[dict[str, Any]] = []
     for plugin in resolution.plugins:
         pid = str(plugin.get("id") or "")
-        if (plugin.get("provenance") or {}).get("source") == "core":
+        if not pid or (plugin.get("provenance") or {}).get("source") == "core":
             continue  # always here, and named in the prompt already
         servers = sorted(
             name for name, row in resolution.mcp_servers.items() if row.get("plugin") == pid
         )
-        said = [pid, str(plugin.get("description") or ""), *servers, plugin_instructions(pid)]
-        if pid and all(word in " ".join(said).casefold() for word in words):
+        row = {
+            "id": pid,
+            "about": " ".join([str(plugin.get("description") or ""), *servers]),
+            "keywords": keywords.get(pid) or list(plugin.get("keywords") or ()),
+            "instructions": plugin_instructions(pid),
+        }
+        if found_by(row, words):
             out.append({"id": pid, "servers": servers})
     return out
 

@@ -318,6 +318,17 @@ def test_a_search_names_what_is_already_here_and_why_it_did_not_start(
     assert plugin_offer._here_note(here).startswith(
         "Already in this conversation, so not offered: compute."
     )
+    # A declared keyword finds it as offer_plugin's search does: "ssh" for a relay that
+    # is already here must not read as "there is none".
+    monkeypatch.setattr(
+        plugin_offer,
+        "library",
+        lambda _app: [SimpleNamespace(id="compute", keywords=("cluster", "remote compute"))],
+    )
+    assert [row["id"] for row in plugin_offer._here_matching(None, "s", "cluster")] == ["compute"]
+    assert [
+        row["id"] for row in plugin_offer._here_matching(None, "s", "remote compute on ares")
+    ] == ["compute"]
     mount_failures.record("/w/root", "runner", RuntimeError("working directory gone"))
     note = plugin_offer._here_note(here)
     assert "The runner server is in this conversation but did not start" in note
@@ -326,3 +337,27 @@ def test_a_search_names_what_is_already_here_and_why_it_did_not_start(
                     "in_this_conversation": ["compute"], "message": note})  # fmt: skip
     blocks = {block["id"]: block for block in shown["blocks"]}
     assert blocks["here"]["text"] == "compute" and shown["summary"] == note
+
+
+@pytest.mark.marketplace
+@pytest.mark.parametrize(
+    "search", ["ssh", "cluster", "HPC", "Slurm", "remote compute", "an ssh cluster called ares"]
+)
+def test_a_remote_compute_search_finds_relay(search: str) -> None:
+    """Run 2 of the RF trial: with the ssh plugin retired, "ssh" found nothing, so the
+    agent ran raw ssh through the shell instead of offering relay."""
+
+    import json
+
+    from tests._marketplace import MARKETPLACE_ROOT
+
+    manifest = json.loads(
+        (MARKETPLACE_ROOT / "plugins" / "clio-relay" / "plugin.json").read_text("utf-8")
+    )
+    row = {
+        "id": manifest["name"],
+        "name": manifest["name"],
+        "about": manifest["description"],
+        "keywords": manifest["keywords"],
+    }
+    assert offer_search.found_by(row, offer_search.words_of(search))
