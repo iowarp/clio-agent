@@ -225,6 +225,9 @@ class ClioAgent(dspy.Module):
             server_id="gateway:default",
             client_factory=_execution_client_factory(),
         )
+        from clio_agent.tools.fleet_server_merge import stamp_default_fleet  # noqa: PLC0415
+
+        stamp_default_fleet(self, self.tool_executor, self._tool_gateway)
         # Cache of workspace root -> sync tool executor (lazy, one per workspace).
         # Guarded by _workspace_executor_lock (shared with the #933 reaper);
         # _workspace_leases counts LIVE TURNS pinning a root (never reaped).

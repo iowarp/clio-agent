@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import nullcontext
 from typing import Any
 
 
@@ -25,17 +26,18 @@ def resolve_active_base_agent_tool_executor(
             workspaces.get(workspace_id) if workspaces is not None and workspace_id else None
         )
         workspace_root = str(getattr(workspace, "root_path", "") or "")
-        if workspace_root:
-            assert app is not None
+        if session is not None:
             from clio_agent.gact.agents.resolution import session_server_set  # noqa: PLC0415
             from clio_agent.tools.execution import (  # noqa: PLC0415
                 tool_server_set_context,
                 tool_workspace_context,
             )
 
+            # A workspace without a root folder resolves the default executor, which
+            # still mounts the session's plugin servers (``workspace_fleet``).
             server_set = session_server_set(app, session_id)
             with (
-                tool_workspace_context(workspace_root),
+                tool_workspace_context(workspace_root) if workspace_root else nullcontext(),
                 tool_server_set_context(server_set),
             ):
                 executor = resolver()

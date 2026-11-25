@@ -71,7 +71,7 @@ def resolve_workspace_executor(agent: Any) -> Any:
     # the gateway cwd below all file this workspace under the same key.
     root = canonical_workspace_root(get_active_tool_workspace_root())
     if not root:
-        return agent.tool_executor
+        return _rootless_executor(agent, get_active_tool_server_set().strip())
     server_set = get_active_tool_server_set().strip()
     # CV-D3: a conversation with its own connector values has its own fleet at this root.
     key = fleet_key(root, server_set_variant(server_set))
@@ -102,6 +102,37 @@ def resolve_workspace_executor(agent: Any) -> Any:
                 raise RuntimeError("CLIO is shutting down")
             trace.event("TOOLS", "workspace_fleet_resolve_raced root=%s key=%s", root, key)
     raise RuntimeError("CLIO's tools for this workspace kept restarting; retry the request")
+
+
+def _rootless_executor(agent: Any, server_set: str) -> Any:
+    """The default executor, carrying a rootless session's plugin server set.
+
+    A workspace without a root folder has no fleet of its own, so its stdio servers
+    run in the process cwd on the default executor. That executor already declares
+    the user-scope ``mcp.yaml`` servers (``fleet_server_merge.stamp_default_fleet``);
+    the session's plugin servers merge into it here, spawn-free, the same way a
+    second server set joins a workspace fleet. The gateway refresh lock keeps the
+    merge off an executor that a configuration change is replacing.
+    """
+
+    from clio_agent.tools.fleet_server_merge import (  # noqa: PLC0415
+        _mounted_server_sets,
+        merge_server_set_namespaces,
+    )
+
+    refresh_lock = getattr(agent, "_tool_gateway_refresh_lock", None)
+    if not server_set or refresh_lock is None:
+        return agent.tool_executor
+    with refresh_lock:
+        executor = agent.tool_executor
+        if executor is not None and server_set not in _mounted_server_sets(executor):
+            merge_server_set_namespaces(
+                executor,
+                agent._build_tool_gateway(server_set=server_set),
+                server_set=server_set,
+                root="<no root folder>",
+            )
+        return executor
 
 
 def _resolve_locked(

@@ -220,6 +220,23 @@ def stamp_fresh_fleet(
         _stamp(inner, "_clio_namespace_specs", declared_specs)
 
 
+def stamp_default_fleet(agent: Any, executor: Any, gateway: Any) -> None:
+    """Stamp the default (no-root) executor like a fresh workspace fleet.
+
+    A workspace without a root folder runs on this executor. Its declared specs carry
+    the user-scope ``mcp.yaml`` servers, so ``always_load`` services mount there too,
+    and :func:`clio_agent.tools.workspace_fleet.resolve_workspace_executor` merges a
+    rootless session's plugin server set into it.
+    """
+
+    stamp_fresh_fleet(
+        executor,
+        server_set="",
+        mcp_configuration_revision=getattr(agent, "_mcp_configuration_revision", 0),
+        declared_specs=dict(namespace_specs(gateway)),
+    )
+
+
 def _mounted_server_sets(executor: Any) -> set[str]:
     """The executor's mounted-server set set, upgraded from the legacy stamp."""
 

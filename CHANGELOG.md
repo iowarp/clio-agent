@@ -65,6 +65,10 @@ TUI/HTTP surface aren't tracked here.
 
 ### Fixed
 
+- A session in a workspace without a root folder now mounts its MCP servers. The
+  default executor declares the user-scope `mcp.yaml` servers, so `always_load`
+  services attach there as they do in a rooted workspace, and the session's
+  plugin servers merge into it instead of failing as `mcp_server_not_declared`.
 - An MCP app whose text wraps past its declared height is no longer cut off. The
   sandbox watches the view's content and, when it overflows the frame, sends the
   host `clio/notifications/view-content-height` so the card grows to fit.
