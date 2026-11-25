@@ -31,7 +31,7 @@ from clio_agent.gact.a2ui import (
 )
 from clio_agent.gact.events import Event
 from clio_agent.gact.plugin_page_startup import page_startups
-from clio_agent.gact.plugin_tab_revisions import carry_revisions
+from clio_agent.gact.plugin_tab_revisions import carry_revisions, new_lifecycle
 from clio_agent.gact.server_actions import (
     ServerActionError,
     deliver_server_action,
@@ -325,6 +325,7 @@ class PluginTabs:
 
         surfaces: Surfaces = {}
         uri = str(state.declared["resource"])
+        lifecycle = new_lifecycle()
         first = True
         for item in contents:
             if not is_a2ui_contents(item):
@@ -344,6 +345,7 @@ class PluginTabs:
                     catalogs=session_catalog_resolver(self._app, state.session_id),
                     producible=state.scope.producible,
                     owner=state.scope.owner,
+                    part_id=lifecycle,
                 )
             except ServerSurfaceRefusal as exc:
                 outcome.reason, outcome.detail = exc.reason, exc.detail
@@ -667,6 +669,7 @@ class PluginTabs:
         resources = a2ui_resources(result_blocks(raw_result))
         if not resources:
             return None
+        lifecycle = new_lifecycle()
         outcomes: list[PayloadOutcome] = []
         for resource in resources:
             with self._lock:
@@ -685,6 +688,7 @@ class PluginTabs:
                         catalogs=session_catalog_resolver(self._app, state.session_id),
                         producible=state.scope.producible,
                         owner=state.scope.owner,
+                        part_id=lifecycle,
                     )
                     state.surfaces = after
                     touched = {(state.session_id, surface_id) for _, surface_id, _ in applied}
