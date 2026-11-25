@@ -628,6 +628,9 @@ class ClioAgent(dspy.Module):
         # and clear() (not rebind) keeps every holder seeing the same registry.
         lock, workspace_executors, _leases = self._workspace_state()
         with lock:
+            # A fleet resolve in flight (its lock released across a loop wait) closes
+            # what it built instead of registering it (``tools.workspace_fleet``).
+            self._workspace_fleet_closed = True
             executors = [self.tool_executor, *workspace_executors.values()]
             workspace_executors.clear()
         close_tool_executors(executors)

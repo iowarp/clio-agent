@@ -591,10 +591,11 @@ class SyncNamespacePreparationMixin:
         ``tools.mcp.no_progress_s`` window with no answer and no server process alive
         raises the typed :class:`~clio_agent.tools.mcp_server_progress.NoProgressTimeout`.
         """
+        from clio_agent.tools.loop_wait import loop_result  # noqa: PLC0415
         from clio_agent.tools.mcp_server_progress import wait_while_server_works  # noqa: PLC0415
 
         waiting = wait_while_server_works(coro, op_name=action, on_stall=on_stall)
-        return asyncio.run_coroutine_threadsafe(waiting, self._loop).result()
+        return loop_result(asyncio.run_coroutine_threadsafe(waiting, self._loop))
 
     def merge_namespace_tools(self, namespace: str, tools: Mapping[str, Any]) -> None:
         """Merge freshly mounted definitions into the live async executor."""
@@ -671,22 +672,29 @@ class SyncNamespacePreparationMixin:
         """Stop the server ``namespace`` runs now, before its proxy is replaced (MI1)."""
 
         from clio_agent.tools import namespace_instances  # noqa: PLC0415
+        from clio_agent.tools.loop_wait import loop_result  # noqa: PLC0415
 
         proxy = self._async_executor._namespace_servers.get(namespace)
         if self._closed or proxy is None:
             return 0
-        return asyncio.run_coroutine_threadsafe(
-            namespace_instances.stop_instance(proxy, reason), self._loop
-        ).result()
+        return loop_result(
+            asyncio.run_coroutine_threadsafe(
+                namespace_instances.stop_instance(proxy, reason), self._loop
+            )
+        )
 
     def reset_namespace(self, namespace: str) -> None:
         """Close ``namespace``'s persistent connection (its server process stops)."""
 
+        from clio_agent.tools.loop_wait import loop_result  # noqa: PLC0415
+
         if self._closed:
             raise RuntimeError("SyncMCPToolExecutor is closed")
-        asyncio.run_coroutine_threadsafe(
-            self._async_executor.reset_namespace(namespace), self._loop
-        ).result()
+        loop_result(
+            asyncio.run_coroutine_threadsafe(
+                self._async_executor.reset_namespace(namespace), self._loop
+            )
+        )
 
     def set_resource_subscription(self, namespace: str, uri: str, *, subscribed: bool) -> bool:
         """Start or stop watching one resource on exactly ``namespace`` for updates (HS3)."""

@@ -26,6 +26,7 @@ joined namespace is never seen as a changed spec there (CV-N3).
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 from collections.abc import Mapping
 from typing import Any
@@ -36,6 +37,14 @@ from clio_agent.tools.fleet_key import fleet_root
 _PLUGIN_ENV = ("PLUGIN_ROOT", "PLUGIN_DATA")
 
 
+def _on_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
 def _executors(agent: Any) -> list[tuple[str, Any]]:
     out: list[tuple[str, Any]] = []
     default = getattr(agent, "tool_executor", None)
@@ -44,8 +53,18 @@ def _executors(agent: Any) -> list[tuple[str, Any]]:
     state = getattr(agent, "_workspace_state", None)
     if callable(state):
         lock, executors, _leases = state()
-        with lock:
-            out.extend(executors.items())
+        if not _on_event_loop():
+            with lock:
+                out.extend(executors.items())
+        elif lock.acquire(blocking=False):
+            try:
+                out.extend(executors.items())
+            finally:
+                lock.release()
+        else:
+            # Never wait for the registry lock on the loop: its holder may be waiting
+            # on this loop. A dict copy is atomic under the GIL.
+            out.extend(dict(executors).items())
     return out
 
 

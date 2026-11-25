@@ -919,9 +919,11 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             self._thread.join(timeout=5)
 
     def _run_coroutine(self, coro: Any, *, timeout: float, action: str) -> Any:
+        from clio_agent.tools.loop_wait import loop_result  # noqa: PLC0415
+
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
         try:
-            return future.result(timeout=timeout)
+            return loop_result(future, timeout)
         except concurrent.futures.TimeoutError as exc:
             if future.done():
                 raise

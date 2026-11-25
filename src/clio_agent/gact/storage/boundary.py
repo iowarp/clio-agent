@@ -40,6 +40,7 @@ def source_policy_change(agent: Any) -> Iterator[None]:
         if (
             getattr(agent, "_source_policy_changing", False)
             or turn_leased
+            or getattr(agent, "_fleet_resolves_in_flight", 0)
             or any(executor.busy for executor in executors.values())
         ):
             raise ValueError("Wait for active CLIO turns to finish before changing data access")
