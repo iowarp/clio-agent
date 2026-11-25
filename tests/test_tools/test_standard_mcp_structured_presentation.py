@@ -21,14 +21,12 @@ def test_structured_only_and_duplicate_text_have_one_readable_exact_result() -> 
         result = present_mcp_result("any_unregistered_mcp", {}, raw)
         assert len(result["blocks"]) == 1
         assert result["blocks"][0]["type"] == "markdown"
-        assert (
-            result["blocks"][0]["text"] == "- **Account:** Synthetic account\n- **Read only:** true"
-        )
+        assert result["blocks"][0]["text"] == "- Account: Synthetic account\n- Read only: yes"
         assert result.get("status") is None
         assert raw == original
 
 
-def test_nested_values_are_bounded_and_cannot_inject_markdown_actions() -> None:
+def test_records_read_by_name_bounded_and_cannot_inject_markdown_actions() -> None:
     raw = {
         "content": [],
         "structuredContent": {
@@ -39,10 +37,25 @@ def test_nested_values_are_bounded_and_cannot_inject_markdown_actions() -> None:
     }
     result = present_mcp_result("another_mcp", {}, raw)
     text = result["blocks"][0]["text"]
-    assert "Devices › 1 › name" in text
+    assert text.startswith("- Devices (100):\n  - **")
     assert r"\[click\]\(https://example\.test\)" in text
-    assert ":** null" in text
-    assert "More recorded values" in text and text.count("\n- ") < 24
+    assert "null" not in text and "›" not in text
+    assert text.endswith("  - 92 more")
+
+
+def test_technical_keys_and_empty_values_leave_the_reading() -> None:
+    raw = {
+        "content": [],
+        "structuredContent": {
+            "schema": "relay.sites.v1",
+            "op": "list",
+            "_cursor": "abc",
+            "site": {"name": "ares", "address": None},
+            "sites": [{"name": "ares", "version": "1.2", "sha256": "f" * 64, "alternatives": []}],
+        },
+    }
+    text = present_mcp_result("relay_sites", {}, raw)["blocks"][0]["text"]
+    assert text == "- Site: **ares**\n- Sites (1):\n  - **ares** `1.2`"
 
 
 def test_existing_human_content_and_explicit_failures_keep_their_contract() -> None:

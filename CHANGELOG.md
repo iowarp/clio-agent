@@ -65,6 +65,11 @@ TUI/HTTP surface aren't tracked here.
 
 ### Fixed
 
+- A structured MCP result without text now reads as what the call found, not a
+  key-path outline ("Site › address: null"). Records read by name and version,
+  envelope and integrity fields (`schema`, `op`, `sha256`, `_*`, cursors) and
+  empty values drop, and long lists are bounded. The exact value stays in
+  Technical details.
 - A session in a workspace without a root folder now mounts its MCP servers. The
   default executor declares the user-scope `mcp.yaml` servers, so `always_load`
   services attach there as they do in a rooted workspace, and the session's
