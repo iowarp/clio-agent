@@ -245,6 +245,37 @@ async def test_shell_bash_runs_simple_command(
 
 
 @pytest.mark.asyncio
+async def test_shell_bash_drops_clio_own_core_pool_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The model's shell must not inherit the server's clio-core indexer binding.
+
+    A clio-core program run there against another runtime would route to CLIO's
+    indexer pool, which that runtime lacks, and hang on its first call.
+    """
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    monkeypatch.setenv("CLIO_CTE_POOL", "564.0")
+    monkeypatch.setenv("CLIO_CTE_POOL_BOUND_BY", "clio-agent")
+    conf.reload()
+    probe = "import os; print(os.environ.get('CLIO_CTE_POOL', '-'), os.environ.get('CLIO_CTE_POOL_BOUND_BY', '-'))"
+    prefix = "& " if os.name == "nt" else ""
+    command = f"{prefix}'{sys.executable}' -c \"{probe}\""
+    try:
+        async with Client(shell_server) as client:
+            result = await client.call_tool(
+                "bash", {"command": command, "cwd": str(tmp_path), "timeout_s": 5}
+            )
+    finally:
+        conf.reload()
+
+    data = _parse_result(result)
+    assert data["exit_code"] == 0
+    assert data["stdout"].strip() == "- -"
+
+
+@pytest.mark.asyncio
 async def test_shell_bash_pins_default_cwd_to_active_workspace_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

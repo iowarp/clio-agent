@@ -613,6 +613,10 @@ async def execute_shell(
             run_env.pop(internal_credential, None)
         # Secrets meant for plugin servers (``${CLIO_SECRET_*}``) never reach the shell.
         run_env = {k: v for k, v in run_env.items() if not k.startswith("CLIO_SECRET_")}
+        # CLIO's own clio-core client binding must not steer the model's programs.
+        from clio_agent.arc.clio_core_indexer import release_agent_binding  # noqa: PLC0415
+
+        release_agent_binding(run_env)
         # Prepared scratch (the session's own folder) is already writable territory.
         run_env.update({key: prepared[key] for key in ("TEMP", "TMP", "TMPDIR") if key in prepared})
         from clio_agent.paths import workspace_state_dir  # noqa: PLC0415

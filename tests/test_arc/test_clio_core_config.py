@@ -298,3 +298,29 @@ def test_a_pool_clio_bound_is_recomputed_for_a_config_without_the_indexer(tmp_pa
     child = dict(env)  # a child process inherits the parent's binding and its marker
     assert clio_core_indexer.bind_client_to_indexer(str(bare), child) == ""
     assert "CLIO_CTE_POOL" not in child
+
+
+def test_a_model_process_does_not_inherit_clio_own_pool_binding(tmp_path):
+    """A program the model runs against another runtime must not route to CLIO's pool.
+
+    Live: an agent's shell ran a clio-core reader with its own CLIO_SERVER_CONF; the
+    inherited CLIO_CTE_POOL=564.0 sent it to a pool that runtime lacks and the first
+    call hung for the whole turn.
+    """
+    with_indexer = tmp_path / "with.yaml"
+    with_indexer.write_text(
+        "compose:\n  - mod_name: clio_cte_core\n    pool_id: '512.0'\n"
+        + clio_core_indexer.indexer_block("idx.log"),
+        encoding="utf-8",
+    )
+    server: dict[str, str] = {"PATH": "/bin"}
+    clio_core_indexer.bind_client_to_indexer(str(with_indexer), server)
+    model = dict(server)
+    clio_core_indexer.release_agent_binding(model)
+    assert model == {"PATH": "/bin"}
+    # A clio-agent child started from that shell still binds itself on attach.
+    assert clio_core_indexer.bind_client_to_indexer(str(with_indexer), model) == "564.0"
+
+    explicit = {"CLIO_CTE_POOL": "563.0"}  # an operator's own choice is kept
+    clio_core_indexer.release_agent_binding(explicit)
+    assert explicit == {"CLIO_CTE_POOL": "563.0"}

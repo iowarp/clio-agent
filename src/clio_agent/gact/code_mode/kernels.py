@@ -109,6 +109,10 @@ def _environment(
         env.pop(internal, None)
     # Host credentials (CLIO's own secrets, and cloud keys a source may use) stay host-side.
     env = {k: v for k, v in env.items() if not k.startswith(("CLIO_SECRET_", "AWS_"))}
+    # CLIO's own clio-core client binding must not steer the model's programs.
+    from clio_agent.arc.clio_core_indexer import release_agent_binding  # noqa: PLC0415
+
+    release_agent_binding(env)
     env["CLIO_AGENT_WORKSPACE_STATE_DIR"] = str(workspace_state_dir(workspace))
     return python, env
 
