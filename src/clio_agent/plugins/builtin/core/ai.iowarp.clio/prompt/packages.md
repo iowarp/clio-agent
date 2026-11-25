@@ -19,3 +19,9 @@ to rewrite the work without it:
 
 The run_code kernel cannot import these packages. A run_code script, background or
 not, runs such a script as a subprocess and reads what it prints.
+
+Before installing a program, look for a copy already on the machine: a tool that
+reports it missing has looked only in its own places (its setting, PATH, standard
+folders), so search further, ask the person when you cannot tell, and when you find
+one, offer it and, once they agree, point the connector's setting for it at that path
+instead of installing another.

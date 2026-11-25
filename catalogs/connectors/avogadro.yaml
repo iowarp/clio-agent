@@ -20,6 +20,6 @@
       label: Where Avogadro is
       required: false
       agent_settable: true
-      help: Leave empty to find avogadro2 on this machine. Otherwise the path to avogadro2, or to the AppRun of an unpacked Avogadro AppImage.
+      help: Leave empty to look for avogadro2 on PATH and where the avogadro plugin installs it. Otherwise the path to avogadro2, or to the AppRun of an unpacked Avogadro AppImage.
   requires: Avogadro 2, and on Linux Xvfb and x11vnc (the avogadro plugin installs them with your consent)
   plugin: avogadro
