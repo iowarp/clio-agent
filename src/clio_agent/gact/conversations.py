@@ -284,7 +284,7 @@ class Conversations:
                             )
                 staged = self.mail.stage(caller)
                 latest = self.history.latest_assignment(sid)
-                trigger = admission_trigger(sid, staged.items, latest)
+                trigger = admission_trigger(sid, staged.items, latest, self.history.read_content)
                 if trigger is None:
                     return None
                 value = self.history.read_content(trigger.content)
