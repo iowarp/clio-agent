@@ -33,6 +33,9 @@ from tests.test_gact.test_context_projection import _plane
 class Attempt:
     deltas: list[dict[str, Any]]
     drop: bool = False
+    #: End the HTTP response cleanly but without a finish reason or ``[DONE]``
+    #: (a gateway cutting a long generation).
+    truncate: bool = False
 
 
 @contextmanager
@@ -72,6 +75,10 @@ def endpoint(script: list[Attempt]) -> Iterator[tuple[str, list[dict[str, Any]]]
             if attempt.drop:
                 self.close_connection = True
                 return
+            if attempt.truncate:
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+                return
             finish = {
                 "id": f"attempt_{index}",
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
@@ -92,14 +99,38 @@ def endpoint(script: list[Attempt]) -> Iterator[tuple[str, list[dict[str, Any]]]
         thread.join(5)
 
 
-def lm_for(base: str) -> Any:
+def lm_for(base: str, provider: str = "openai") -> Any:
     """Use CLIO's actual factory, stateless native HTTP engine and no inference service."""
     from clio_agent.config import LMProviderConfig
     from clio_agent.lm.factory import create_lm
 
     return create_lm(
-        LMProviderConfig(provider="openai", model="gpt-4o-mini", api_base=base, api_key="test")
+        LMProviderConfig(provider=provider, model="gpt-4o-mini", api_base=base, api_key="test")
     )
+
+
+def test_a_vllm_stream_that_ends_without_completing_is_regenerated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live: the ALCF gateway closed mistral-large-4's reasoning stream after 120 s
+    with no finish reason; the turn failed with LMStreamAssemblyError, unretried."""
+    monkeypatch.setenv("CLIO_LM_TRANSIENT_RETRIES", "2")
+    script = [
+        Attempt([{"reasoning_content": "Planning fig10.py."}], truncate=True),
+        Attempt([{"content": "Done."}]),
+    ]
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+    with endpoint(script) as (base, requests), _plane(arc):
+        lm = lm_for(base, provider="vllm")
+        assert lm._clio_stream_recovery is True
+        try:
+            with dspy.context(lm=lm):
+                result = ClioReAct("question -> answer", tools=[])(question="Plan it")
+        finally:
+            run_on_lm_loop(lm.aclose)
+        assert result.answer == "Done."
+        assert len(requests) == 2
+        assert requests[0]["messages"] == requests[1]["messages"]
 
 
 @pytest.mark.parametrize(

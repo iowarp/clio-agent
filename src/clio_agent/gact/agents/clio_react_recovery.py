@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from dspy.lm15 import FunctionTool, Request, Response
-from dspy.utils.exceptions import LMTimeoutError, LMTransportError
+from dspy.utils.exceptions import LMStreamAssemblyError, LMTimeoutError, LMTransportError
 
 from clio_agent.gact.reasoning_extract import ANSWER, Piece
 
@@ -65,6 +65,12 @@ def interrupted_stream(
 
     Custom/stateful engines and provider-native tools own their own recovery. A
     stream that never forwarded a chunk has already used DSPy's retry policy.
+
+    A stream that closed cleanly but never completed (DSPy's typed
+    ``LMStreamAssemblyError``) counts too: a gateway that cuts a long generation
+    ends the HTTP response without a finish reason, so the transport reports no
+    error. Before public prose nothing was accepted or executed, so it is the
+    same interrupted generation, retried under the same bound.
     """
     from clio_agent.lm.hooked_lm import effective_lm_for_call  # noqa: PLC0415
 
@@ -76,7 +82,7 @@ def interrupted_stream(
         and engine in {"auto", "lm15"}
         and progress.emitted
         and not progress.answer
-        and isinstance(exc, (LMTransportError, LMTimeoutError))
+        and isinstance(exc, (LMTransportError, LMTimeoutError, LMStreamAssemblyError))
         and all(isinstance(tool, FunctionTool) for tool in request.tools)
     ):
         return InterruptedModelStream(exc)

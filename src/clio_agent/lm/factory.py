@@ -160,9 +160,15 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     lm._clio_cache_history = _resolved_litellm_prefix(config) == "anthropic"
     # These stateless chat requests propose local function calls; the loop
     # executes them only after receiving a complete response. SDK/native-tool
-    # engines retain their own recovery policy.
-    lm._clio_stream_recovery = _resolved_litellm_prefix(config) == "openai"
+    # engines retain their own recovery policy. vLLM-served presets (local vLLM,
+    # the Argonne gateways) speak the same stateless chat-completions protocol.
+    lm._clio_stream_recovery = _resolved_litellm_prefix(config) in _STATELESS_CHAT_PREFIXES
     return _record_identity(lm, config)
+
+
+#: LiteLLM prefixes whose engine is a stateless OpenAI-compatible chat-completions
+#: request: a generation interrupted before any answer can be requested again.
+_STATELESS_CHAT_PREFIXES = frozenset({"openai", "hosted_vllm"})
 
 
 def _record_identity(lm: Any, config: LMProviderConfig) -> Any:
