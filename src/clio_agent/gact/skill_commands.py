@@ -101,4 +101,33 @@ def load_skill_for_person(app: "FastAPI", sid: str, skill_id: str) -> str:
             gact_context.reset(token)
 
 
-__all__ = ["load_skill_for_person", "skill_rows"]
+def plugin_skills(app: "FastAPI", sid: str, plugin: str) -> list[Any]:
+    """The skills (``SkillRef``) the session's agent resolves from ``plugin``, by id."""
+
+    try:
+        _agent_def, runtime = _runtime(app, sid)
+    except SessionAgentUnavailable:
+        return []
+    refs = [res.skill for _id, res in sorted(runtime.resolved.items())]
+    return [
+        ref for ref in refs if ref is not None and ref.scope == "plugin" and ref.source == plugin
+    ]
+
+
+def load_skill_for_agent(app: "FastAPI", sid: str, skill_id: str) -> str:
+    """``load_skill(skill_id)`` through the agent's own tool, recorded as the agent's load
+    (a tool that finds the skill the agent needs hands it over the same way)."""
+
+    from clio_agent.gact.agents.skill_runtime import build_load_skill_tool  # noqa: PLC0415
+
+    agent_def, runtime = _runtime(app, sid)
+    tool = build_load_skill_tool(agent_def, runtime)
+    tokens = (gact_context.set_app(app), gact_context.set_session_id(sid))
+    try:
+        return str(tool.func(skill_id=skill_id))
+    finally:
+        for token in reversed(tokens):
+            gact_context.reset(token)
+
+
+__all__ = ["load_skill_for_agent", "load_skill_for_person", "plugin_skills", "skill_rows"]

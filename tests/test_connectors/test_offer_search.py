@@ -308,9 +308,10 @@ def test_a_search_names_what_is_already_here_and_why_it_did_not_start(
     monkeypatch.setattr(
         "clio_agent.tools.execution.get_active_tool_workspace_root", lambda: "/w/root"
     )
+    monkeypatch.setattr("clio_agent.gact.skill_commands.plugin_skills", lambda *_a: [])
 
     assert plugin_offer._here_matching(None, "s", "remote sites") == [
-        {"id": "compute", "servers": ["runner"]}
+        {"id": "compute", "servers": ["runner"], "skills": []}
     ]
     here = plugin_offer._here_matching(None, "s", "SOLVER lab")
     assert [row["id"] for row in here] == ["compute"]
@@ -337,6 +338,69 @@ def test_a_search_names_what_is_already_here_and_why_it_did_not_start(
                     "in_this_conversation": ["compute"], "message": note})  # fmt: skip
     blocks = {block["id"]: block for block in shown["blocks"]}
     assert blocks["here"]["text"] == "compute" and shown["summary"] == note
+
+
+def test_a_plugin_found_here_hands_over_its_skill(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run 3 of the RF trial: a plugin already in the conversation was found but its how-to
+    skill never loaded, so the agent went to the shell. A search that finds it names its
+    skills and loads the one the search points to (else its only one)."""
+
+    from types import SimpleNamespace
+
+    from clio_agent.gact import skill_commands
+    from clio_agent.gact.agents import resolution
+    from clio_agent.plugins import recorded_instructions
+
+    joined = SimpleNamespace(
+        plugins=[{"id": "compute", "description": "Run jobs on remote sites.", "provenance": {}}],
+        mcp_servers={"runner": {"plugin": "compute"}},
+    )
+    monkeypatch.setattr(resolution, "session_resolution", lambda _app, _sid: joined)
+    monkeypatch.setattr(recorded_instructions, "plugin_instructions", lambda _p: "")
+    monkeypatch.setattr(plugin_offer, "library", lambda _app: [])
+
+    def skill(sid: str, title: str, description: str) -> Any:
+        return SimpleNamespace(id=sid, title=title, description=description)
+
+    two = [
+        skill("use-compute", "Use compute", "Reach a cluster and run work there."),
+        skill("tune-jobs", "Tune jobs", "Pick wall time."),
+    ]
+    monkeypatch.setattr(skill_commands, "plugin_skills", lambda *_a: two)
+    here = plugin_offer._here_matching(None, "s", "remote sites cluster")
+    assert here[0]["skill"] == "use-compute"
+    assert [row["id"] for row in here[0]["skills"]] == ["use-compute", "tune-jobs"]
+    # Two skills and none named by the search: both are named, none is chosen.
+    assert "skill" not in plugin_offer._here_matching(None, "s", "remote sites")[0]
+    monkeypatch.setattr(skill_commands, "plugin_skills", lambda *_a: two[:1])
+    only = plugin_offer._here_matching(None, "s", "remote sites")
+    assert only[0]["skill"] == "use-compute"
+
+    loads: list[str] = []
+    monkeypatch.setattr(
+        skill_commands,
+        "load_skill_for_agent",
+        lambda _app, _sid, skill_id: loads.append(skill_id) or f"# {skill_id} body",
+    )
+    loaded = plugin_offer._load_here_skill(None, "s", only)
+    assert loaded == {"plugin": "compute", "id": "use-compute", "content": "# use-compute body"}
+    assert loads == ["use-compute"]
+    note = plugin_offer._here_note(only, loaded)
+    assert "compute (skills: use-compute)" in note
+    assert "Its skill use-compute is loaded below (skill_loaded): follow it." in note
+
+    def broken(*_a: Any) -> str:
+        raise ValueError("unknown skill")
+
+    monkeypatch.setattr(skill_commands, "load_skill_for_agent", broken)
+    assert plugin_offer._load_here_skill(None, "s", only) == {}
+
+
+def test_a_search_that_finds_nothing_says_to_search_by_kind() -> None:
+    """A name only the person uses ("Ares") matched nothing; the miss says how to search."""
+
+    assert "the kind of thing it is" in plugin_offer.MISS_HINT
+    assert "ares" not in plugin_offer.MISS_HINT.casefold()
 
 
 @pytest.mark.marketplace

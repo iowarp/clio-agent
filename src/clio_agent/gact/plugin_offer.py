@@ -536,24 +536,99 @@ def _here_matching(app: Any, session_id: str, search: str) -> list[dict[str, Any
             "instructions": plugin_instructions(pid),
         }
         if found_by(row, words):
-            out.append({"id": pid, "servers": servers})
+            out.append(
+                {"id": pid, "servers": servers, **_relevant_skills(app, session_id, pid, words)}
+            )
     return out
 
 
-def _here_note(here: list[dict[str, Any]]) -> str:
+def _relevant_skills(app: Any, session_id: str, plugin: str, words: list[str]) -> dict[str, Any]:
+    """A matching plugin's skills, and the one the search points to (``skill``): the one
+    whose id, title or description holds the search, else the plugin's only skill. A
+    plugin found by what it does hands over its how-to, not only its name."""
+
+    from clio_agent.gact.offer_search import found_by  # noqa: PLC0415
+    from clio_agent.gact.skill_commands import plugin_skills  # noqa: PLC0415
+
+    try:
+        refs = plugin_skills(app, session_id, plugin)
+    except Exception:  # noqa: BLE001 - the skills are a hint here, never a failure
+        return {"skills": []}
+    named = [
+        ref
+        for ref in refs
+        if found_by({"id": ref.id, "name": ref.title, "summary": ref.description}, words)
+    ]
+    chosen = named[0] if named else (refs[0] if len(refs) == 1 else None)
+    out: dict[str, Any] = {
+        "skills": [{"id": ref.id, "description": summary(ref.description)} for ref in refs]
+    }
+    if chosen is not None:
+        out["skill"] = chosen.id
+    return out
+
+
+def _load_here_skill(app: Any, session_id: str, here: list[dict[str, Any]]) -> dict[str, Any]:
+    """Load the skill the first matching plugin here points to, as ``load_skill`` would
+    (``{}`` when none, or when it does not load)."""
+
+    from clio_agent.gact.skill_commands import load_skill_for_agent  # noqa: PLC0415
+
+    for row in here:
+        if skill_id := row.get("skill"):
+            try:
+                content = load_skill_for_agent(app, session_id, str(skill_id))
+            except Exception as exc:  # noqa: BLE001 - the note still names it to load
+                trace.event("TOOLS", "plugin_offer_skill_load_failed skill=%s (%s)", skill_id, exc)
+                return {}
+            return {"plugin": row["id"], "id": str(skill_id), "content": content}
+    return {}
+
+
+def _here_note(here: list[dict[str, Any]], loaded_skill: Mapping[str, Any] | None = None) -> str:
     """What the agent can use of the matching plugins already here, and any that failed."""
 
     from clio_agent.tools import mount_failures  # noqa: PLC0415
     from clio_agent.tools.execution import get_active_tool_workspace_root  # noqa: PLC0415
 
-    ids = ", ".join(row["id"] for row in here)
+    def named(row: dict[str, Any]) -> str:
+        skills = ", ".join(skill["id"] for skill in row.get("skills") or ())
+        return f"{row['id']} (skills: {skills})" if skills else str(row["id"])
+
+    ids = "; ".join(named(row) for row in here)
     servers = [server for row in here for server in row["servers"]]
     failed = mount_failures.note(get_active_tool_workspace_root(), servers)
+    loaded = (
+        f" Its skill {loaded_skill['id']} is loaded below (skill_loaded): follow it."
+        if loaded_skill
+        else ""
+    )
     return (
         f"Already in this conversation, so not offered: {ids}. Its skills load with "
         "load_skill and its tools are in your tool list or found with search_tools."
+        + loaded
         + (f" {failed}" if failed else "")
     )
+
+
+def here_matching(app: Any, session_id: str, query: str) -> tuple[list[str], str]:
+    """The plugins already in this conversation a search finds, with the note naming their
+    skills (``([], "")`` when none): a tool search that misses still points to them."""
+
+    if not session_id or getattr(getattr(app, "state", None), "sessions", None) is None:
+        return [], ""
+    here = _here_matching(app, session_id, query)
+    return [row["id"] for row in here], (_here_note(here) if here else "")
+
+
+#: What a search that finds nothing at all says: a plugin is found by what it says it
+#: does, so a name only the person uses (a machine, a site, a project) may belong to one
+#: that does not name it yet.
+MISS_HINT = (
+    "A plugin is found by what it says it does: a name only the person uses (a machine, "
+    "a site, a project) may be reached by one that does not name it yet, so search for "
+    "the kind of thing it is or what it does too."
+)
 
 
 async def _offer_plugin(
@@ -683,7 +758,12 @@ async def offer_plugin(
         )
         if here := await asyncio.to_thread(_here_matching, app, session_id, search):
             found["in_this_conversation"] = [row["id"] for row in here]
-            found["message"] += f" {_here_note(here)}"
+            loaded = await asyncio.to_thread(_load_here_skill, app, session_id, here)
+            if loaded:
+                found["skill_loaded"] = loaded
+            found["message"] += f" {_here_note(here, loaded)}"
+        elif search.strip() and not found.get("count"):
+            found["message"] += f" {MISS_HINT}"
         return found
     from clio_agent.gact.connector_needs_offer import optional_needs  # noqa: PLC0415
 

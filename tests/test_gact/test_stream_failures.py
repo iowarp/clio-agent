@@ -335,3 +335,42 @@ def test_a_turn_that_fails_while_the_server_stops_reads_as_stopped_by_the_shutdo
         assert info.details["session_id"] == "sess_stop"
         assert "exit code 143" in info.details["diagnostic"]
         assert info.recoverable is True
+
+
+def test_a_provider_error_after_the_persons_stop_settles_as_stopped() -> None:
+    """Run 3 of the RF trial: the person pressed Stop and the model provider answered
+    "servers are currently overloaded"; the run showed failed. A stop asked for is the
+    outcome; the error stays in the details (and the log), and no stop changes nothing.
+
+    SABOTAGE: drop the ``stop_requested`` check in ``stopped_error_info`` and the last
+    case reads as cancelled with no stop asked.
+    """
+    from clio_agent.gact.runtime.turn_cancellation_info import stopped_error_info
+    from clio_agent.gact.types import ErrorInfo
+
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            uvicorn_server=SimpleNamespace(should_exit=False),
+            turn_runner=SimpleNamespace(closing=False),
+        )
+    )
+    failed = ErrorInfo(
+        error="provider_error",
+        message="Our servers are currently overloaded.",
+        details={"reason": "provider_overloaded"},
+        recoverable=True,
+    )
+    info = stopped_error_info("sess_stop", failed, stop_requested=True, app=app)
+    assert info is not None and info.error == "cancelled"
+    assert info.message == "turn cancelled by client"
+    assert info.details["session_id"] == "sess_stop"
+    assert "overloaded" in info.details["diagnostic"]
+    assert info.details["error_after_stop"] == {
+        "error": "provider_error",
+        "message": "Our servers are currently overloaded.",
+        "reason": "provider_overloaded",
+    }
+    cancelled = ErrorInfo(error="cancelled", message="turn cancelled by client", recoverable=True)
+    assert stopped_error_info("sess_stop", cancelled, stop_requested=True, app=app) is None
+    assert stopped_error_info("sess_stop", None, stop_requested=True, app=app) is None
+    assert stopped_error_info("sess_stop", failed, stop_requested=False, app=app) is None

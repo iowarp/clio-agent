@@ -325,12 +325,16 @@ def build_search_tools_tool() -> Any:
                 text, structured["not_started"] = f"{text}\n\n{failed}", failed
         if not structured["tools"]:  # it may name a plugin or connector to add instead
             from clio_agent.gact.plugin_offer import (  # noqa: PLC0415
+                here_matching,
                 offerable_matching,
                 search_note,
             )
 
             if rows := offerable_matching(_ctx.active_app(), _ctx.active_session_id(), query):
                 text, structured["offerable"] = f"{text}\n\n{search_note(rows)}", rows
+            here, note = here_matching(_ctx.active_app(), _ctx.active_session_id(), query)
+            if here:
+                text, structured["in_this_conversation"] = f"{text}\n\n{note}", here
         names = [row["name"] for row in structured["tools"]]
         _record_loaded(_ctx.active_app(), _ctx.active_session_id(), names)
         if (list_loaded := getattr(loop, "list_loaded", None)) is not None:

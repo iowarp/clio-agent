@@ -61,6 +61,29 @@ def shutdown_error_info(sid: str, exc: BaseException, *, app: Any | None = None)
     return info
 
 
+def stopped_error_info(sid: str, info: Any, *, stop_requested: bool, app: Any | None = None) -> Any:
+    """The cancellation a turn that failed after a stop gets, or ``None``.
+
+    Once the person (or the server) asked the turn to stop, the stop is the outcome: a
+    model or tool error that lands after it (a provider overloaded, a stream cut by the
+    stop itself) reads as ``cancelled``, and keeps the error it saw as
+    ``details.diagnostic`` and ``details.error_after_stop``. ``None`` when no stop was
+    asked, or the turn already ended cancelled.
+    """
+    if not stop_requested or info is None or getattr(info, "error", "") == "cancelled":
+        return None
+    out = _cancelled_error_info(sid, execution_cancellation="best_effort", app=app)
+    message = str(getattr(info, "message", "") or "")
+    out.details["diagnostic"] = f"{info.error}: {message}"[:500]
+    reason = (getattr(info, "details", None) or {}).get("reason")
+    out.details["error_after_stop"] = {
+        "error": info.error,
+        "message": message[:500],
+        **({"reason": reason} if reason else {}),
+    }
+    return out
+
+
 def cancellation_outcome(
     details: dict[str, Any], *, app: Any | None = None
 ) -> tuple[str, dict[str, Any]]:

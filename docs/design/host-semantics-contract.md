@@ -643,6 +643,15 @@ the first message, without the agent having to find and offer it.
   what the server reaches now. Owners:
   `plugins/recorded_instructions.py`, `gact/offer_search.py`, `gact/plugin_offer.py`,
   `gact/server_instructions_refresh.py`.
+- **A plugin that is already here.** The same words find the plugins already in the
+  conversation (core ones aside). `offer_plugin` search and a tool search that finds no
+  tool name them (`in_this_conversation`) with their skills. `offer_plugin` also loads
+  the skill the search points to through the agent's own `load_skill`: the one whose id,
+  title or description holds the search, else the plugin's only skill. It returns that
+  skill as `skill_loaded`. A search that finds nothing at all says that a plugin is found
+  by what it does, so a name only the person uses should be searched as the kind of thing
+  it is too. Owners: `gact/plugin_offer.py`, `gact/skill_commands.py`,
+  `gact/search_tools.py`.
 
 ## Events for the UI
 
