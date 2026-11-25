@@ -629,7 +629,8 @@ def test_an_optional_offer_shows_the_card_and_returns_at_once(
     mail = _mail_app(app)
     result = asyncio.run(plugin_offer.offer_plugin(plugin="Alpha", reason="A second source."))
     assert result["outcome"] == "plugin_offer_shown" and result["offered"] is True
-    assert "Go on with what you can do without it" in result["message"]
+    assert "While the offer waits, do not do Alpha's work some other way" in result["message"]
+    assert "Go on only with the work that does not need it" in result["message"]
     card = next(c for c in connector_setup.projected(app, {"sess_a"}) if c.status == "pending")
     assert card.payload["reason"] == "A second source."
     # Offered again while the card is pending: no second card.
@@ -674,3 +675,23 @@ def test_the_row_of_an_offer_on_screen_says_the_work_goes_on() -> None:
     outcome = next(b for b in shown["blocks"] if b["id"] == "outcome")
     assert outcome["text"] == "Not answered yet; the work goes on without it"
     assert shown.get("status") != "failed"
+
+
+def test_an_offer_on_screen_carries_what_the_plugin_is_for(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.gact import offer_detached
+    from clio_agent.plugins import recorded_instructions
+
+    monkeypatch.setattr(
+        recorded_instructions,
+        "plugin_instructions",
+        lambda plugin: "Reach the sites only through me." if plugin == "Alpha" else "",
+    )
+    row = offer_detached.shown_result(
+        {"plugin_id": "Alpha", "connector_name": "Alpha", "reason": "r", "description": "D."},
+        outcome=offer_detached.OFFER_SHOWN,
+    )
+    assert row["instructions"] == "Reach the sites only through me."
+    assert row["description"] == "D."
+    assert "Its description and instructions here say what it is for" in row["message"]

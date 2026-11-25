@@ -91,6 +91,12 @@ TUI/HTTP surface aren't tracked here.
 
 ### Fixed
 
+- An offer the turn does not wait for now tells the agent what the plugin is for
+  (its description and the opening of the instructions its servers last sent), and
+  that while the offer waits it must not do that plugin's work some other way, by
+  shell, script or another tool. Before, "go on with what you can do without it"
+  let the agent probe a compute site over ssh while the offer of the plugin that
+  reaches it was still on screen. Other work goes on as before.
 - CLIO launches `clio-kit`, and every other launcher its own environment ships,
   from that environment (or a scoped install's own `uv-tools`), never from PATH.
   Before, a `clio-kit` the person had installed themselves (a global uv tool, an
