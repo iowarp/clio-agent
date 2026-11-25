@@ -9,8 +9,9 @@ version with different servers, so a run depended on the person's PATH.
 
 1. a scoped installation's own tool folder (``<prefix>/uv-tools/bin``,
    :mod:`clio_agent.runtime.installation_tools`);
-2. the scripts folder of the environment running CLIO, for a console script one of its
-   installed distributions declares.
+2. the scripts folder of the environment running CLIO, for a launcher one of its
+   installed distributions provides: a console script it declares, or a file its wheel
+   installs straight into that folder (``uv`` ships ``uv`` and ``uvx`` so).
 
 A launcher CLIO's environment declares but whose script is missing is not looked up on
 PATH (``None``: the caller reports it missing). Only a command CLIO does not ship is
@@ -22,8 +23,10 @@ from __future__ import annotations
 import os
 import sys
 import sysconfig
+from collections.abc import Iterable
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from clio_agent.runtime import trace
 
@@ -32,15 +35,41 @@ __all__ = ["managed_launcher", "resolve_launcher", "ships_launcher"]
 
 @lru_cache(maxsize=1)
 def _declared_scripts() -> frozenset[str]:
-    """The console scripts the distributions of CLIO's environment declare."""
+    """The launchers the distributions of CLIO's environment install.
+
+    Console-script entry points, plus the files a wheel installs straight into the
+    environment's scripts folder (its ``.data/scripts``): ``uv`` ships ``uv`` and ``uvx``
+    that way, with no entry point.
+    """
 
     from importlib import metadata  # noqa: PLC0415
 
     try:
-        return frozenset(point.name for point in metadata.entry_points(group="console_scripts"))
+        names = {point.name for point in metadata.entry_points(group="console_scripts")}
+        names.update(_installed_script_names(metadata.distributions()))
+        return frozenset(names)
     except Exception as exc:  # noqa: BLE001 - a broken distribution must not stop spawns
         trace.event("TOOLS", "managed_launchers_unreadable error=%s", exc)
         return frozenset()
+
+
+def _installed_script_names(distributions: Iterable[Any]) -> set[str]:
+    """The command names of files the distributions recorded in a scripts folder."""
+
+    folders = {folder.resolve() for folder in _environment_script_dirs()}
+    names: set[str] = set()
+    for distribution in distributions:
+        for record in distribution.files or ():
+            if ".." not in record.parts:
+                continue  # inside site-packages: not a script
+            located = Path(distribution.locate_file(record)).resolve()
+            if located.parent not in folders:
+                continue
+            name = located.name
+            if os.name == "nt" and name.lower().endswith(".exe"):
+                name = name[:-4]
+            names.add(name)
+    return names
 
 
 def _script_names(command: str) -> tuple[str, ...]:

@@ -109,6 +109,10 @@ TUI/HTTP surface aren't tracked here.
   older checkout) ran instead of CLIO's pinned one, with other servers and a much
   slower first ParaView start. Spawns, provisioning, the listing cache, the doctor
   and fleet paths share the one resolver on every OS.
+- The same holds for `uv` and `uvx`, which CLIO's environment installs from the
+  `uv` wheel as plain scripts rather than entry points. Before, a connector
+  declared as `uvx ...` (KiCad's, for one) and the server-runtime Python install
+  ran the person's own `uv`/`uvx` from PATH.
 - Connectors and plugins the person adds in answer to offers made together in one
   step all reach that turn. Before, when the turn had taken no server's tools
   whole, each join made its own tool refresher and only the last one's tools

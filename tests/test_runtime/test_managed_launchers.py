@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -67,3 +67,22 @@ def test_a_scoped_installations_own_tool_folder_comes_first(
     monkeypatch.setattr(installation_tools, "installation_prefix", lambda prefix_=None: prefix)
 
     assert managed_launchers.resolve_launcher("kitx") == str(installed)
+
+
+class _Wheel:
+    """A distribution whose wheel put a launcher straight into the scripts folder."""
+
+    def __init__(self, site: Path, files: list[str]) -> None:
+        self._site = site
+        self.files = [PurePosixPath(name) for name in files]
+
+    def locate_file(self, record: PurePosixPath) -> Path:
+        return self._site / record
+
+
+def test_a_launcher_a_wheel_installs_as_a_script_is_clios_own(environment: Path) -> None:
+    exe = ".exe" if os.name == "nt" else ""
+    site = environment.parent / "lib" / "site-packages"
+    wheel = _Wheel(site, [f"../../scripts/uvx{exe}", "uv/__init__.py", "../../share/uvx"])
+
+    assert managed_launchers._installed_script_names([wheel]) == {"uvx"}

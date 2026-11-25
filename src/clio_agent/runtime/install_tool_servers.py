@@ -16,7 +16,6 @@ import hashlib
 import importlib.util
 import json
 import os
-import shutil
 import subprocess
 import time
 from collections.abc import Callable
@@ -171,7 +170,9 @@ def _prefetch_server_python(
         or env.get("UV_PYTHON_DOWNLOADS", "automatic").lower() != "automatic"
     ):
         return {"status": "skipped", "reason": "python_choice_overridden"}
-    uv = shutil.which("uv", path=env.get("PATH"))
+    from clio_agent.runtime.managed_launchers import resolve_launcher  # noqa: PLC0415
+
+    uv = resolve_launcher("uv", path=env.get("PATH"))
     if not uv:
         return {"status": "skipped", "reason": "uv_missing"}
     emit(f"Installing Python {request} for the agents' data tools...")
