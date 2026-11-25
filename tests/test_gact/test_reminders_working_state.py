@@ -209,7 +209,7 @@ _CONTRACT_TAIL = (
     "the requested result will be made and checked after approval. The deliverable's names "
     "and places come from the person's request; the plan file's path is CLIO's own.\n"
     "- Keep what you know apart from what you still must find out: findings carry their "
-    "references, and what is unknown stays an open thread until you look it up.\n"
+    "references, and what is unknown stays an open issue until you look it up.\n"
     "- If a plan already exists, judge whether it still fits this task before editing it; "
     "a new task gets a fresh plan.\n"
     "- Show the plan to the person in your reply as well; they read your reply, not the file.\n"
