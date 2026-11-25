@@ -1021,9 +1021,9 @@ def provision(namespace: str, spec: Any, *, cwd: str | None = None) -> str:
     if bundled is not None:
         plan = bundled_provision_plan(bundled)
     else:
-        from clio_agent.runtime.macos_clt import real_which  # noqa: PLC0415
+        from clio_agent.runtime.managed_launchers import resolve_launcher  # noqa: PLC0415
 
-        resolved = real_which(str(spec.command))
+        resolved = resolve_launcher(str(spec.command))
         if not resolved:
             raise PrepareError(LAUNCHER_MISSING, f"{spec.command!r} is not on PATH")
         plan = provision_plan(spec, resolved)

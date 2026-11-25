@@ -79,13 +79,13 @@ class FleetGrant:
 def _resolve_uv_tool_bin_dir() -> Optional[Path]:
     """Resolve the uv tool bin dir (where the clio-kit launcher exe lives) robustly.
 
-    Prefer the launcher's real location (``shutil.which('clio-kit')`` → its parent); else the uv
-    default tool-bin ``~/.local/bin``. Returns ``None`` only if neither can be formed (the executor
+    Prefer the real location of the launcher CLIO runs (its own copy, :mod:`.managed_launchers`);
+    else the uv default tool-bin ``~/.local/bin``. Returns ``None`` only if neither can be formed (the executor
     then simply omits the entry — never fails setup).
     """
-    import shutil  # noqa: PLC0415 - cheap, only on this path
+    from clio_agent.runtime.managed_launchers import resolve_launcher  # noqa: PLC0415
 
-    found = shutil.which(_CLIO_KIT_LAUNCHER)
+    found = resolve_launcher(_CLIO_KIT_LAUNCHER)
     if found:
         try:
             return Path(found).resolve().parent

@@ -91,6 +91,12 @@ TUI/HTTP surface aren't tracked here.
 
 ### Fixed
 
+- CLIO launches `clio-kit`, and every other launcher its own environment ships,
+  from that environment (or a scoped install's own `uv-tools`), never from PATH.
+  Before, a `clio-kit` the person had installed themselves (a global uv tool, an
+  older checkout) ran instead of CLIO's pinned one, with other servers and a much
+  slower first ParaView start. Spawns, provisioning, the listing cache, the doctor
+  and fleet paths share the one resolver on every OS.
 - Connectors and plugins the person adds in answer to offers made together in one
   step all reach that turn. Before, when the turn had taken no server's tools
   whole, each join made its own tool refresher and only the last one's tools

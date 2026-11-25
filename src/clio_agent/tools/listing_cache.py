@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import threading
 import time
@@ -94,7 +93,9 @@ def _cache_path() -> Path:
 def _launcher_fingerprint(command: str) -> str | None:
     """size:mtime of the resolved launcher binary; ``None`` when unresolvable."""
 
-    resolved = shutil.which(command) or (command if Path(command).exists() else None)
+    from clio_agent.runtime.managed_launchers import resolve_launcher  # noqa: PLC0415
+
+    resolved = resolve_launcher(command) or (command if Path(command).exists() else None)
     if resolved is None:
         return None
     try:

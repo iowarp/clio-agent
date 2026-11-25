@@ -16,7 +16,6 @@ remediation names that exact command plus the ``uv tool dir --bin`` PATH step.
 
 from __future__ import annotations
 
-import shutil
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -88,7 +87,7 @@ def _remediation_for(command: str) -> str:
 def probe_mcp_launchers(
     *,
     specs: Mapping[str, MCPServerSpec] | None = None,
-    which: WhichChecker = shutil.which,
+    which: WhichChecker | None = None,
     env: Mapping[str, str] | None = None,
 ) -> list[IntegrationStatus]:
     """Report a structured finding for each declared stdio MCP launcher missing on PATH.
@@ -103,7 +102,9 @@ def probe_mcp_launchers(
     Args:
         specs: Declared servers to check; discovered via
             :func:`discover_declared_mcp_servers` when ``None`` (injected for tests).
-        which: PATH resolver (defaults to :func:`shutil.which`; injected for tests).
+        which: Launcher resolver (defaults to the one spawns use,
+            :func:`clio_agent.runtime.managed_launchers.resolve_launcher`; injected for
+            tests).
         env: Environment used for declaration discovery when ``specs`` is ``None``.
 
     Returns:
@@ -130,6 +131,10 @@ def probe_mcp_launchers(
                 )
             ]
 
+    if which is None:
+        from clio_agent.runtime.managed_launchers import resolve_launcher  # noqa: PLC0415
+
+        which = resolve_launcher
     findings: list[IntegrationStatus] = []
     seen_commands: set[str] = set()
     for spec in specs.values():
