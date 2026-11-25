@@ -20,7 +20,7 @@ from clio_agent.gact.permission_delivery import attended_session_id
 from clio_agent.gact.permission_gate import GRANTOR_USER, resolve_permission
 from clio_agent.gact.permission_timeout import REASON_PERMISSION_CANCELLED
 from clio_agent.gact.question_surface import question_row
-from clio_agent.gact.question_titles import question_title
+from clio_agent.gact.question_titles import question_asker, question_title
 from clio_agent.gact.routes.interaction_surface_projection import (
     _latest_action_record as _latest_action_record,
 )
@@ -397,6 +397,7 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
             "metadata": question.metadata,
             "answer_metadata": question.answer_metadata,
             **(question.metadata.get("elicitation") or {}),
+            **({"plugin_title": asker} if (asker := question_asker(question.metadata)) else {}),
             **(
                 {"mode": "form", "fields": bundle["fields"], "additional_properties": False}
                 if isinstance(bundle, dict)

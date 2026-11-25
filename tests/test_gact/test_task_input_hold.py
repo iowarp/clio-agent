@@ -9,7 +9,12 @@ from typing import Any
 import pytest
 
 from clio_agent.gact import task_input_hold
-from clio_agent.gact.question_titles import ASK_LIMIT, GENERIC_TITLE, question_title
+from clio_agent.gact.question_titles import (
+    ASK_LIMIT,
+    GENERIC_TITLE,
+    question_asker,
+    question_title,
+)
 from clio_agent.plugins import host_semantics
 
 
@@ -130,27 +135,32 @@ def _remembered(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.usefixtures("_remembered")
-def test_a_server_question_is_titled_by_its_plugin_and_first_sentence() -> None:
+def test_a_server_question_is_titled_by_its_first_sentence_and_names_its_plugin() -> None:
     metadata = {"elicitation": {"namespace": "runner"}}
     prompt = "## Submit the job to **cluster-a**? It will use 4 nodes.\n\nDetails follow."
 
-    assert question_title(prompt, metadata) == "Batch jobs: Submit the job to cluster-a?"
-    assert question_title("", metadata) == "Batch jobs"
+    assert question_title(prompt, metadata) == "Submit the job to cluster-a?"
+    assert question_title("", metadata) == GENERIC_TITLE
+    assert question_asker(metadata) == "Batch jobs"
 
 
 @pytest.mark.usefixtures("_remembered")
-def test_a_title_falls_back_to_the_server_name_and_stays_bounded() -> None:
+def test_an_asker_falls_back_to_the_server_name_and_a_title_stays_bounded() -> None:
     long_ask = "Review " + "the package manifest and its build recipe " * 6
-    title = question_title(long_ask, {"elicitation": {"namespace": "bare"}})
+    metadata = {"elicitation": {"namespace": "bare"}}
+    title = question_title(long_ask, metadata)
 
-    assert title.startswith("bare: Review the package")
+    assert title.startswith("Review the package")
     assert title.endswith("\u2026")
-    assert len(title) <= len("bare: ") + ASK_LIMIT
+    assert len(title) <= ASK_LIMIT
     assert "\n" not in title
+    assert question_asker(metadata) == "bare"
 
 
 def test_a_url_question_uses_its_recorded_plugin_title_and_others_stay_generic() -> None:
     url = {"elicitation": {"server": "s", "plugin_title": "Sign-in helper"}}
 
-    assert question_title("Open the sign-in page.", url) == "Sign-in helper: Open the sign-in page."
+    assert question_title("Open the sign-in page.", url) == "Open the sign-in page."
+    assert question_asker(url) == "Sign-in helper"
     assert question_title("Pick one", {}) == GENERIC_TITLE
+    assert question_asker({}) == ""

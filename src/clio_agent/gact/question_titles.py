@@ -1,9 +1,10 @@
-"""A question card's title: who asks, then what they ask.
+"""A question card's title (what is asked) and its asker (who asks).
 
-A server's elicitation is titled with its plugin's display title (or the server name when
-it has none) and the first sentence of its message, so a card reads as
-``Compute: Submit the job to the cluster?`` instead of a generic ``Question``. The
-title is one bounded line; the full message stays the card's prompt.
+A server's elicitation is titled with the first sentence of its message, so the bell,
+notifications and cards read ``Submit the job to the cluster?`` instead of a generic
+``Question``. Who asks stays a separate field: its plugin's display title, or the server
+name when it has none, for attribution beside the title. The title is one bounded line;
+the full message stays the card's prompt.
 """
 
 from __future__ import annotations
@@ -43,12 +44,19 @@ def asker_name(elicitation: dict[str, Any]) -> str:
     return title or server
 
 
-def question_title(prompt: str, metadata: dict[str, Any]) -> str:
-    """The title of a question with ``prompt`` and ``metadata`` (``Question`` when unknown)."""
+def question_asker(metadata: dict[str, Any]) -> str:
+    """Who asked a question with ``metadata`` ("" when no server asked it)."""
 
     elicitation = metadata.get("elicitation")
-    name = asker_name(elicitation) if isinstance(elicitation, dict) else ""
-    if not name:
+    return asker_name(elicitation) if isinstance(elicitation, dict) else ""
+
+
+def question_title(prompt: str, metadata: dict[str, Any]) -> str:
+    """The title of a question with ``prompt`` and ``metadata`` (``Question`` when unknown).
+
+    The title is the question alone; :func:`question_asker` names who asked it.
+    """
+
+    if not question_asker(metadata):
         return GENERIC_TITLE
-    ask = _first_sentence(prompt or "")
-    return f"{name}: {ask}" if ask else name
+    return _first_sentence(prompt or "") or GENERIC_TITLE
