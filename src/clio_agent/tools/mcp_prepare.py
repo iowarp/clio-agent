@@ -46,6 +46,7 @@ A failure is never remembered as terminal: the next preparation starts fresh.
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import logging
@@ -1038,27 +1039,53 @@ def provision(namespace: str, spec: Any, *, cwd: str | None = None) -> str:
         leading = flight is None
         if flight is None:
             flight = _FLIGHTS[key] = _Flight()
-    if not leading:
-        return _join_flight(namespace, plan, flight)
+    if leading:
+        # The build runs on its own thread: a caller whose turn is stopped stops waiting
+        # and the build goes on for whoever needs it next (its watchdog still bounds it).
+        context = contextvars.copy_context()
+        threading.Thread(
+            target=context.run,
+            args=(_lead_flight, key, flight, namespace, spec, plan, cwd),
+            name=f"clio-provision-flight-{namespace}",
+            daemon=True,
+        ).start()
+        return _lead_outcome(plan, flight)
+    return _join_flight(namespace, plan, flight)
+
+
+def _lead_flight(
+    key: str, flight: _Flight, namespace: str, spec: Any, plan: ProvisionPlan, cwd: str | None
+) -> None:
     try:
         flight.outcome, flight.result = _provision_plan(namespace, spec, plan, cwd)
-    except BaseException as exc:
+    except BaseException as exc:  # noqa: BLE001 - handed to every caller of the flight
         flight.error = exc
-        raise
     finally:
         with _FLIGHTS_LOCK:
             _FLIGHTS.pop(key, None)
         flight.done.set()
+
+
+def _lead_outcome(plan: ProvisionPlan, flight: _Flight) -> str:
+    """Wait for the build this call started; its own error is raised as it was."""
+
+    from clio_agent.tools.call_cancellation import wait_event  # noqa: PLC0415
+
+    wait_event(flight.done, stage=f"provision {_plan_label(plan)}")
+    if flight.error is not None:
+        raise flight.error
     return flight.outcome
 
 
 def _join_flight(namespace: str, plan: ProvisionPlan, flight: _Flight) -> str:
     """Wait for the provision already building ``plan`` and take its outcome as ours."""
 
+    from clio_agent.tools.call_cancellation import wait_event  # noqa: PLC0415
+
     label = _plan_label(plan)
     trace.event("TOOLS", "mcp_prepare_provision_joined namespace=%s command=%s", namespace, label)
     ceiling = provision_max_wait_s()
-    if not flight.done.wait(ceiling + 60.0):
+    if not wait_event(flight.done, ceiling + 60.0, stage=f"provision {label}"):
         raise PrepareError(
             PROVISION_NO_PROGRESS, f"{label}: the build it waited on ran past {ceiling:.0f}s"
         )

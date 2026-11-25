@@ -50,13 +50,27 @@ def holding(lock: threading.Lock) -> Iterator[None]:
         lock.release()
 
 
-def loop_result(future: concurrent.futures.Future[Any], timeout: float | None = None) -> Any:
-    """``future.result(timeout)`` with the thread's :func:`holding` locks released meanwhile."""
+def loop_result(
+    future: concurrent.futures.Future[Any],
+    timeout: float | None = None,
+    *,
+    stopped_by_turn: str = "",
+) -> Any:
+    """``future.result(timeout)`` with the thread's :func:`holding` locks released meanwhile.
+
+    A ``stopped_by_turn`` stage makes the wait end with ``CancellationError`` once the
+    calling turn is stopped; the loop's work is left to finish on its own
+    (:func:`clio_agent.tools.call_cancellation.wait_future`).
+    """
 
     held = list(_held())
     for lock in reversed(held):
         lock.release()
     try:
+        if stopped_by_turn:
+            from clio_agent.tools.call_cancellation import wait_future  # noqa: PLC0415
+
+            return wait_future(future, timeout, stage=stopped_by_turn)
         return future.result(timeout=timeout)
     finally:
         for lock in held:

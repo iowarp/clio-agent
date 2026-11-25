@@ -479,30 +479,48 @@ def ensure_namespace(namespace: str, spec: MCPServerSpec) -> dict[str, Any]:
     Raises whatever ``_list_one_namespace`` raises (a real, typed failure —
     e.g. a missing launcher executable) so the caller (builders.py's expert-
     tool resolve, or mcp_executor.py's dispatch-time race) can name the
-    server + reason for THIS one attempt.
+    server + reason for THIS one attempt. A caller whose turn is stopped ends
+    with ``CancellationError``: an owner stops its own listing, and the callers
+    that joined it start a fresh attempt instead of taking that stop as theirs.
     """
 
-    with _ensure_lock:
-        future = _ensure_inflight.get(namespace)
-        if future is None:
-            future = concurrent.futures.Future()
-            _ensure_inflight[namespace] = future
-            owns = True
-        else:
-            owns = False
-    if not owns:
-        return future.result()
-    try:
-        result = _list_one_namespace(namespace, spec)
-    except Exception as exc:  # noqa: BLE001 - propagate to every joiner, never cache the failure
+    from clio_agent.errors import CancellationError  # noqa: PLC0415
+    from clio_agent.tools.call_cancellation import wait_future  # noqa: PLC0415
+
+    while True:
+        with _ensure_lock:
+            future = _ensure_inflight.get(namespace)
+            if future is None:
+                future = concurrent.futures.Future()
+                _ensure_inflight[namespace] = future
+                owns = True
+            else:
+                owns = False
+        if not owns:
+            try:
+                return wait_future(future, stage=f"join listing {namespace}")
+            except _OwnerStopped:
+                continue
+        try:
+            result = _list_one_namespace(namespace, spec)
+        except CancellationError:
+            with _ensure_lock:
+                _ensure_inflight.pop(namespace, None)
+            future.set_exception(_OwnerStopped(namespace))
+            raise
+        except Exception as exc:  # noqa: BLE001 - propagate to every joiner, never cache the failure
+            with _ensure_lock:
+                _ensure_inflight.pop(namespace, None)
+            future.set_exception(exc)
+            raise
         with _ensure_lock:
             _ensure_inflight.pop(namespace, None)
-        future.set_exception(exc)
-        raise
-    with _ensure_lock:
-        _ensure_inflight.pop(namespace, None)
-    future.set_result(result)
-    return result
+        future.set_result(result)
+        return result
+
+
+class _OwnerStopped(Exception):
+    """The attempt a caller joined ended because its owner's turn was stopped."""
 
 
 async def ensure_namespace_async(namespace: str, spec: MCPServerSpec) -> dict[str, Any]:

@@ -307,6 +307,7 @@ def join_namespace(
     """
 
     from clio_agent.connectors import listing  # noqa: PLC0415
+    from clio_agent.errors import CancellationError  # noqa: PLC0415
     from clio_agent.tools.mcp_config import spec_from_declaration  # noqa: PLC0415
     from clio_agent.tools.mcp_discovery import ensure_namespace  # noqa: PLC0415
     from clio_agent.tools.mcp_tools_changed import prefixed_namespace_tools  # noqa: PLC0415
@@ -338,6 +339,8 @@ def join_namespace(
         tools = (
             prefixed_namespace_tools(namespace, kept) if kept else ensure_namespace(namespace, spec)
         )
+    except CancellationError:
+        raise  # the person stopped the turn: not a listing failure
     except Exception as exc:  # noqa: BLE001 - typed for the caller
         raise ConnectorJoinError("connector_join_listing_failed", type(exc).__name__) from exc
     merge(namespace, tools)

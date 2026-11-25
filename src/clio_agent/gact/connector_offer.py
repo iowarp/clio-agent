@@ -464,6 +464,33 @@ def _plugin_skills(app: Any, plugins: list[str]) -> list[dict[str, str]]:
     ]
 
 
+def _stopped(found: Any, reason: str, when: str) -> dict[str, Any]:
+    """The offer's result when the person stopped the turn (``when`` names the moment)."""
+
+    return {
+        "error": OFFER_CANCELLED,
+        "outcome": "cancelled",
+        "connector": found.id,
+        "connector_name": found.name,
+        "reason": reason,
+        "message": f"The turn was stopped {when.format(name=found.name)}.",
+    }
+
+
+async def _turned_on_unless_stopped(
+    app: Any, found: Any, reason: str, **kwargs: Any
+) -> dict[str, Any]:
+    """:func:`_turned_on`, or the cancelled result when Stop ended its join's wait."""
+
+    from clio_agent.errors import CancellationError  # noqa: PLC0415
+
+    try:
+        return await asyncio.to_thread(_turned_on, app, found, **kwargs)
+    except CancellationError:
+        trace.event("TOOLS", "connector_join_stopped connector=%s", found.id)
+        return _stopped(found, reason, "while {name}'s tools were joining it")
+
+
 async def offer_connector(
     connector: str = "", reason: str = "", *, required: bool = True
 ) -> dict[str, Any]:
@@ -504,8 +531,8 @@ async def offer_connector(
     here = await asyncio.to_thread(conversation_connectors, app, session_id)
     present = (here or {}).get(found.id) or []
     if present and state.choice(found.id).enabled:
-        return await asyncio.to_thread(
-            _turned_on, app, found, enabled_now=False, already=True, plugins=present
+        return await _turned_on_unless_stopped(
+            app, found, reason, enabled_now=False, already=True, plugins=present
         )
     from clio_agent.gact import offer_detached  # noqa: PLC0415
 
@@ -517,14 +544,7 @@ async def offer_connector(
     if not required:
         return await asyncio.to_thread(offer_detached.show, app, row)
     if await asyncio.to_thread(wait_for_card, app, row):
-        return {
-            "error": OFFER_CANCELLED,
-            "outcome": "cancelled",
-            "connector": found.id,
-            "connector_name": found.name,
-            "reason": reason,
-            "message": f"The turn was stopped while the offer of {found.name} waited.",
-        }
+        return _stopped(found, reason, "while the offer of {name} waited")
     if row["status"] != "submitted":
         # The offer was made and answered: "Not now" is the person's refusal, not the
         # tool failing, so it is a typed ``refusal`` the row shows as declined.
@@ -536,14 +556,16 @@ async def offer_connector(
             "message": f"The person chose not to add {found.name} ({found.id}) now. "
             "Nothing changed.",
         }
-    result = await asyncio.to_thread(
-        _turned_on,
+    result = await _turned_on_unless_stopped(
         app,
         found,
+        reason,
         enabled_now=bool(row.get("enabled_now")),
         already=False,
         plugins=list(row.get("plugins") or ()),
     )
+    if result.get("error") == OFFER_CANCELLED:
+        return result
     if row.get("plugins"):  # its plugin's own tools join this turn (turn_rebuild)
         from clio_agent.gact.agents.turn_rebuild import (  # noqa: PLC0415
             DEFAULT_APPLY,

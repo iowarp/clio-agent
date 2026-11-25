@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextvars
 import functools
 import inspect
 import logging
@@ -568,8 +569,9 @@ def _run_coro_sync(factory: Callable[[], Any]) -> Any:
         asyncio.get_running_loop()
     except RuntimeError:
         return run_in_new_loop(factory())
+    context = contextvars.copy_context()  # the pool thread sees this call's turn and stop
     with concurrent.futures.ThreadPoolExecutor() as pool:
-        return pool.submit(lambda: run_in_new_loop(factory())).result()
+        return pool.submit(context.run, lambda: run_in_new_loop(factory())).result()
 
 
 def _list_tools_sync(gw: FastMCP) -> list[Any]:
@@ -617,6 +619,7 @@ def _list_declared_tools(
     library-side logger; this reaches CLIO's trace instead. Best-effort,
     never affects ``listed`` itself.
     """
+    from clio_agent.tools.call_cancellation import until_cancelled  # noqa: PLC0415
     from clio_agent.tools.mcp_header_mismatch import (  # noqa: PLC0415
         trace_dropped_x_mcp_header_tools,
     )
@@ -641,7 +644,12 @@ def _list_declared_tools(
                 with suppress(Exception):
                     await disconnect()
 
-    return _run_coro_sync(lambda: wait_while_server_works(_list(), op_name=f"list {spec.name}"))
+    return _run_coro_sync(
+        lambda: until_cancelled(
+            wait_while_server_works(_list(), op_name=f"list {spec.name}"),
+            stage=f"list {spec.name}",
+        )
+    )
 
 
 def _namespace_of(tool_name: str) -> str:

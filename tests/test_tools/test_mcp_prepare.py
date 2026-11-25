@@ -313,6 +313,48 @@ def test_concurrent_provisions_of_one_build_are_single_flight(
     assert outcomes == [mcp_prepare.PROVISIONED, mcp_prepare.PROVISIONED]
 
 
+def test_a_stopped_turn_stops_waiting_and_leaves_the_build_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.errors import CancellationError
+    from clio_agent.runtime.cancellation import cancellation_checker
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    spec = _uv_spec(project)
+    started, release, finished, stop = (threading.Event() for _ in range(4))
+
+    def slow_build(*_args: Any) -> None:
+        started.set()
+        assert release.wait(10)
+        finished.set()
+
+    monkeypatch.setattr("clio_agent.runtime.macos_clt.real_which", lambda _c: "/bin/uv")
+    monkeypatch.setattr(mcp_prepare, "_run_provision", slow_build)
+    errors: list[BaseException] = []
+
+    def stopped_caller() -> None:
+        with cancellation_checker(stop.is_set):
+            try:
+                mcp_prepare.provision("spot", spec)
+            except BaseException as exc:  # noqa: BLE001 - recorded for the assertion
+                errors.append(exc)
+
+    caller = threading.Thread(target=stopped_caller)
+    caller.start()
+    assert started.wait(10)
+    stop.set()
+    caller.join(2)
+
+    assert not caller.is_alive(), "Stop settles while the build still runs"
+    assert len(errors) == 1 and isinstance(errors[0], CancellationError)
+    assert errors[0].details.get("left_behind") is True
+    assert not finished.is_set()
+    release.set()
+    assert finished.wait(10), "the build goes on and completes"
+
+
 def test_a_missing_launcher_is_typed(tmp_path: Path) -> None:
     spec = _uv_spec(tmp_path / "p", uv=str(tmp_path / "nowhere" / "uv"))
     with pytest.raises(mcp_prepare.PrepareError) as raised:

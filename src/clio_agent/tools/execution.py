@@ -236,6 +236,16 @@ def recorded_tool_runtime_reasons() -> list[dict[str, Any]]:
         return list(_TOOL_RUNTIME_REASONS)
 
 
+def resolved_tool_runtime() -> ToolRuntimeHooks | None:
+    """The live turn's hooks when an app resolves them, else ``None`` (no fallback, no reason).
+
+    For a probe that only reads a hook when one is bound (a wait that ends on Stop).
+    """
+
+    resolver = _TOOL_RUNTIME_RESOLVER
+    return resolver() if resolver is not None else None
+
+
 def current_tool_runtime() -> ToolRuntimeHooks:
     """Resolve the live tool-runtime hook bundle for THIS tool call (#735 seam).
 
@@ -516,7 +526,11 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             self.close()
             raise
         except Exception as exc:
+            from clio_agent.errors import CancellationError  # noqa: PLC0415
+
             self.close()
+            if isinstance(exc, CancellationError):
+                raise  # the person stopped the turn; it is not a setup failure
             raise RuntimeError(f"SyncMCPToolExecutor setup failed: {exc}") from exc
 
     @property

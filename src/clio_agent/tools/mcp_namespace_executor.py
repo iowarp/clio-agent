@@ -609,12 +609,15 @@ class SyncNamespacePreparationMixin:
         alive is reported (``on_stall``) and waited on, never restarted. A whole
         ``tools.mcp.no_progress_s`` window with no answer and no server process alive
         raises the typed :class:`~clio_agent.tools.mcp_server_progress.NoProgressTimeout`.
+        A stopped turn ends the wait (``CancellationError``); the start goes on.
         """
         from clio_agent.tools.loop_wait import loop_result  # noqa: PLC0415
         from clio_agent.tools.mcp_server_progress import wait_while_server_works  # noqa: PLC0415
 
         waiting = wait_while_server_works(coro, op_name=action, on_stall=on_stall)
-        return loop_result(asyncio.run_coroutine_threadsafe(waiting, self._loop))
+        return loop_result(
+            asyncio.run_coroutine_threadsafe(waiting, self._loop), stopped_by_turn=action
+        )
 
     def merge_namespace_tools(self, namespace: str, tools: Mapping[str, Any]) -> None:
         """Merge freshly mounted definitions into the live async executor."""
