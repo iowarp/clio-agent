@@ -115,7 +115,10 @@ async def start(app: Any) -> None:
 
     def authorize(submission: SubmissionContext) -> None:
         from clio_agent.gact.permission_gate import _policy_action_for_tool
-        from clio_agent.tools.task_call_context import permission_snapshot
+        from clio_agent.tools.task_call_context import (
+            permission_snapshot,
+            permissions_only_widened,
+        )
 
         session = session_store.get(submission.owner.session_id)
         assignment = history.task_snapshot(submission.owner.assignment_id)
@@ -175,8 +178,12 @@ async def start(app: Any) -> None:
         )
         if action == "deny":
             raise PermissionError("Execution permission was revoked")
+        # Grants the person adds meanwhile (another card's "allow for this session")
+        # cannot narrow this call; only a posture change or a removed rule can.
         current_permissions = permission_snapshot(app, session.id)
-        if current_permissions != submission.permissions and action != "allow":
+        if action != "allow" and not permissions_only_widened(
+            submission.permissions, current_permissions
+        ):
             raise PermissionError("Execution permissions changed; obtain new approval")
 
     async def cancel_owner(task: TaskSnapshot, caller: TaskCaller) -> dict[str, Any]:
