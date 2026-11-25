@@ -634,8 +634,15 @@ the first message, without the agent having to find and offer it.
   plugin on those words too, so a request naming a site, dataset or package a plugin's
   server reaches finds the plugin while none of its servers runs. A search result row
   matched that way carries `mentions`, the line of the instructions that holds the word
-  (at most 240 characters), shown as "Its server says: ...". Owners:
-  `plugins/recorded_instructions.py`, `gact/offer_search.py`, `gact/plugin_offer.py`.
+  (at most 240 characters), shown as "Its server says: ...". The kept text follows the
+  server as it changes: each turn re-reads every kept-alive server's text when it starts,
+  and an action on a plugin's page or tab (a site added, edited or removed on a page, say)
+  or a `notifications/resources/updated` for a resource an open tab or page watches
+  re-reads that server's text at once (`server/discover` over the same connection,
+  bounded by `tools.instructions_refresh_s`), so a search later in a running turn finds
+  what the server reaches now. Owners:
+  `plugins/recorded_instructions.py`, `gact/offer_search.py`, `gact/plugin_offer.py`,
+  `gact/server_instructions_refresh.py`.
 
 ## Events for the UI
 

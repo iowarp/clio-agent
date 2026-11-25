@@ -38,6 +38,7 @@ from clio_agent.gact.server_actions import (
     login_context,
     login_provider,
 )
+from clio_agent.gact.server_instructions_refresh import refresh_server, refresh_soon
 from clio_agent.gact.server_surfaces import (
     PayloadOutcome,
     ServerScope,
@@ -538,6 +539,8 @@ class PluginTabs:
             keys = [key for key, state in self._open.items() if state.watch_key == (namespace, uri)]
         if keys:
             loop.call_soon_threadsafe(self._start_refreshes, keys)
+            # What the server reaches may have changed with what it shows.
+            refresh_soon(self._app, namespace, loop)
 
     def _start_refreshes(self, keys: list[TabKey]) -> None:
         for key in keys:
@@ -800,6 +803,9 @@ class PluginTabs:
                     with self._lock:
                         self._handles[outcome.task_handle] = key
                 result = outcome.wire(action_id)
+                # The action may change what the server says it reaches (a site added on
+                # a page, say): the next search in a running turn reads it as it is now.
+                await refresh_server(self._app, state.scope.namespace)
         except ServerActionError as exc:
             raise PluginTabError(exc.status, exc.reason, str(exc)) from exc
         with self._lock:
@@ -811,9 +817,12 @@ class PluginTabs:
 
         with self._lock:
             key = self._handles.pop(handle, None)
+            state = self._open.get(key) if key is not None else None
         if key is None:
             return False
         self._apply_result(key, result)
+        if state is not None:
+            refresh_soon(self._app, state.scope.namespace, self._loop)
         return True
 
 

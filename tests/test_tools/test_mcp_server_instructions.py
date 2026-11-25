@@ -230,6 +230,47 @@ async def test_a_turn_asks_each_kept_alive_server_once() -> None:
     assert instructions_for("grid") == _GRID and instructions_for("home") == _INSTRUCTIONS
 
 
+def _kept_alive(**clients: Any) -> Any:
+    fleet = ("", "", "in-process:1")
+    return SimpleNamespace(
+        connections={
+            server: SimpleNamespace(
+                client=client,
+                pool=fleet,
+                cache_key=(server, "", "in-process:1"),
+                closing=False,
+                superseded=False,
+                broken=False,
+            )
+            for server, client in clients.items()
+        }
+    )
+
+
+async def test_a_change_asks_only_the_server_that_owns_it() -> None:
+    from clio_agent.gact.external_task_connections import refresh_instructions
+
+    grid, home = _HeldClient(_GRID), _HeldClient(_INSTRUCTIONS)
+    tasks = _kept_alive(grid=grid, home=home)
+    assert await refresh_instructions(tasks, timeout=1, servers={"grid"}) == 1
+    assert grid.asked == 1 and home.asked == 0
+
+
+async def test_a_page_change_reads_the_servers_text_at_once_and_coalesces() -> None:
+    from clio_agent.gact.server_instructions_refresh import refresh_server
+
+    record_instructions("grid", "Sites configured: none.")
+    grid = _HeldClient(_GRID, delay=0.05)
+    app = SimpleNamespace(state=SimpleNamespace(external_tasks=_kept_alive(grid=grid)))
+    first = asyncio.ensure_future(refresh_server(app, "grid"))
+    await asyncio.sleep(0)
+    # A second change while the first read runs asks for one more read, not a parallel one.
+    assert await refresh_server(app, "grid") is False
+    assert await first is True
+    assert grid.asked == 2
+    assert instructions_for("grid") == _GRID
+
+
 def test_a_cached_listing_never_replaces_what_a_live_connection_said() -> None:
     record_instructions("grid", _GRID)
     record_instructions("grid", "Sites configured: none.", cached=True)

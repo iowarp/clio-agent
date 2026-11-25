@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import weakref
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Collection, Iterable
 from contextlib import suppress
 from functools import partial
 from typing import TYPE_CHECKING, Any
@@ -384,12 +384,15 @@ def note_failure(host: ExternalConnection, error: BaseException) -> None:
         host.broken = True
 
 
-async def refresh_instructions(self: ExternalTasks, *, timeout: float) -> int:
+async def refresh_instructions(
+    self: ExternalTasks, *, timeout: float, servers: Collection[str] | None = None
+) -> int:
     """Ask each kept-alive direct connection's server for its instructions now.
 
     One ``server/discover`` per server, in parallel, each bounded by ``timeout``
     (:func:`~clio_agent.tools.mcp_server_instructions.rediscover_instructions`); a
-    turn reads the result in its prompt and ``search_tools``. Returns how many answered.
+    turn reads the result in its prompt and ``search_tools``. ``servers`` limits the
+    asking to those namespaces. Returns how many answered.
     """
     from clio_agent.tools.mcp_server_instructions import (  # noqa: PLC0415
         rediscover_instructions,
@@ -397,6 +400,8 @@ async def refresh_instructions(self: ExternalTasks, *, timeout: float) -> int:
 
     clients: dict[str, Any] = {}
     for host in tuple(self.connections.values()):
+        if servers is not None and host.cache_key[0] not in servers:
+            continue
         if host.pool is not None and _usable(host):
             clients.setdefault(host.cache_key[0], host.client)
     if not clients:
