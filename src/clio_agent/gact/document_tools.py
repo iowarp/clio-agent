@@ -24,21 +24,25 @@ def _workspace() -> Path:
 
 
 def _is_workspace_document(source: Path, root: Path) -> bool:
-    """Whether ``source`` is a workspace file or one of the workspace's uploaded inputs.
+    """Whether ``source`` is a workspace file, an uploaded input or CLIO's own tool output.
 
-    Attachments are materialized under the workspace's state ``inputs/`` folder,
-    outside the project root, but they belong to this workspace all the same.
+    Attachments are materialized under the workspace's state ``inputs/`` folder, and
+    the tools' own outputs (fetched documents, spilled output) under its
+    ``tool-output/`` folder. Both sit outside the project root but belong to this
+    workspace all the same.
     """
     if source.is_relative_to(root):
         return True
     from clio_agent import paths  # noqa: PLC0415
     from clio_agent.gact.resource_materialization import MANAGED_INPUT_DIRECTORY  # noqa: PLC0415
+    from clio_agent.tools.servers.shell_spill_store import SPILL_DIRNAME  # noqa: PLC0415
 
     try:
-        inputs = (paths.workspace_state_dir(root) / MANAGED_INPUT_DIRECTORY).resolve()
+        state = paths.workspace_state_dir(root)
+        owned = [(state / folder).resolve() for folder in (MANAGED_INPUT_DIRECTORY, SPILL_DIRNAME)]
     except (OSError, paths.HomeDirectoryUnavailable):
         return False
-    return source.is_relative_to(inputs)
+    return any(source.is_relative_to(folder) for folder in owned)
 
 
 def _session_skill_folders() -> dict[str, str]:
@@ -209,8 +213,8 @@ def build_prepare_document_tool() -> Any:
         args={
             "path": {
                 "type": "string",
-                "description": "Path to an existing workspace document or an attachment's "
-                "working copy.",
+                "description": "Path to an existing workspace document, an attachment's "
+                "working copy, or a file a CLIO tool saved (such as a fetched PDF).",
             },
             "action": {
                 "type": "string",

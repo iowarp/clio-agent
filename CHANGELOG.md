@@ -99,6 +99,14 @@ TUI/HTTP surface aren't tracked here.
 
 ### Fixed
 
+- `prepare_document` now accepts files CLIO's own tools saved for the workspace, such
+  as a PDF that `web_fetch` downloaded into the workspace's `tool-output/` state. It
+  used to refuse them as "not inside the active workspace", so the agent had to copy
+  them into the project first. Other workspace state stays refused.
+- The KiCad connector (kicad-mcp-pro b17c3fd4) registers the symbol libraries it
+  generates in the project's sym-lib-table, makes footprints without 3D bodies when
+  CadQuery cannot install, and says only "KiCad was not found" when KiCad is missing,
+  without a misleading IPC cause.
 - `set_connector_value` no longer cuts off the connector's running calls. Its new
   server replaces the old one, which used to stop under a call still in flight (the
   call ended as `mcp_server_stopped_under_call`). A value the agent sets now waits
