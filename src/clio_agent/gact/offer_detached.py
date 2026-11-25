@@ -126,7 +126,12 @@ def shown_result(row: Mapping[str, Any], *, outcome: str) -> dict[str, Any]:
     )
     result["message"] = (
         f"The offer of {name} is {'already ' if again else ''}on screen for the person. "
-        + (f"Its {said} here say what it is for and how that work is done. " if said else "")
+        + (
+            f"Its {said} here {'say' if ' and ' in said else 'says'} what it is for and how "
+            "that work is done. "
+            if said
+            else ""
+        )
         + f"While the offer waits, do not do {name}'s work some other way (a shell "
         "command, a script, another tool or a substitute you make): the person's answer "
         "decides how it is done. Go on only with the work that does not need it. If they "

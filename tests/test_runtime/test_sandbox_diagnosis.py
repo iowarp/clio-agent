@@ -230,6 +230,38 @@ def test_elevation_is_its_own_kind(exit_code: int, stderr: str) -> None:
 
 
 @pytest.mark.parametrize(
+    "stderr",
+    [
+        "Program 'winget.exe' failed to run: The file cannot be accessed by the systemAt line:1 char:269",
+        "OSError: [WinError 1920] Le fichier ne peut pas être accédé par le système",
+        "CreateProcess failed: 0x80070780",
+    ],
+)
+def test_a_packaged_app_the_fence_cannot_start_is_its_own_kind(stderr: str) -> None:
+    """SABOTAGE: drop the 1920 signature and winget's refusal gets no diagnosis at all."""
+    diagnosis = _windows(stderr, command="winget install --id Some.App -e --scope user")
+    assert diagnosis is not None
+    assert diagnosis.kind == sd.KIND_LAUNCH_BLOCKED
+    assert diagnosis.request_roots == ()
+    assert "outside_sandbox=true" in diagnosis.message
+    assert "access_paths" not in diagnosis.message
+    assert sd.BoundaryDiagnosis.from_payload(diagnosis.to_payload()) == diagnosis
+
+
+def test_the_same_text_off_windows_is_not_a_launch_block(tmp_path: Path) -> None:
+    diagnosis = sd.diagnose_boundary(
+        exit_code=1,
+        stderr="The file cannot be accessed by the system",
+        command="tool",
+        cwd=tmp_path,
+        write_roots=(tmp_path,),
+        mechanism="landlock",
+        platform="linux",
+    )
+    assert diagnosis is None
+
+
+@pytest.mark.parametrize(
     ("platform", "wrapper"),
     [("darwin", "with administrator privileges"), ("linux", "pkexec <command>")],
 )

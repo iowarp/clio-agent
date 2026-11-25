@@ -490,7 +490,7 @@ async def bash(
     outside_sandbox: Annotated[
         bool,
         Field(
-            description="Run this one command outside CLIO's sandbox. Use it only when the sandbox, not the account, blocked the command (a boundary of kind privilege_denied, or a system install the sandbox cannot run even with folders allowed), and give access_reason. CLIO shows the person the exact command and runs it only if they allow; it never takes a password."
+            description="Run this one command outside CLIO's sandbox. Use it only when the sandbox, not the account, blocked the command (a boundary of kind privilege_denied or launch_blocked, or a system install the sandbox cannot run even with folders allowed), and give access_reason. CLIO shows the person the exact command and runs it only if they allow; it never takes a password."
         ),
     ] = False,
 ) -> dict[str, Any]:

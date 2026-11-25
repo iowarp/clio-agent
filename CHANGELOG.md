@@ -91,6 +91,12 @@ TUI/HTTP surface aren't tracked here.
 
 ### Fixed
 
+- On Windows, a shell command whose program the sandbox cannot start at all
+  (`ERROR_CANT_ACCESS_FILE`, 1920, which is what a packaged app such as winget
+  gives inside the fence) now has a `launch_blocked` boundary. It tells the agent to
+  run the command again outside the sandbox with the person's allow. Before, the
+  failure had no diagnosis, so the agent asked for folders or turned to a manual
+  installer instead.
 - An offer the turn does not wait for now tells the agent what the plugin is for
   (its description and the opening of the instructions its servers last sent), and
   that while the offer waits it must not do that plugin's work some other way, by
