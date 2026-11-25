@@ -75,6 +75,10 @@ TUI/HTTP surface aren't tracked here.
 - `routing_mode` in the Python client, and the `"main"` default of a session
   request's `agent.id`.
 
+- Pin `clio-kit==2.13.1` (802172ea, clio-kit#448): paraview 3.3.0, which joins a
+  running pvserver, keeps its last picture when its server stops and says
+  "stopped" plainly, with 2.13.0's ocean, weather, grids and copernicus servers.
+
 - Pin `clio-kit==2.12.7`. Every MCP server picks up opentelemetry-api 1.45.2
   (CVE-2026-126360). The adios and paraview servers install ADIOS2 from wheels
   on macOS, the hdf5 server keeps its metrics under its granted cache directory
