@@ -91,6 +91,10 @@ TUI/HTTP surface aren't tracked here.
 
 ### Fixed
 
+- Connectors and plugins the person adds in answer to offers made together in one
+  step all reach that turn. Before, when the turn had taken no server's tools
+  whole, each join made its own tool refresher and only the last one's tools
+  reached the agent; the others joined the fleet but stayed out of its tool list.
 - A choice question from any MCP elicitation keeps what each option means and
   which one is recommended. A titled option's `description` reaches the
   question's option, and the recommended option is the field's `default`, or

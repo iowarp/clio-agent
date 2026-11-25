@@ -33,6 +33,7 @@ person chose and the tools that joined, or the typed refusal.
 from __future__ import annotations
 
 import asyncio
+import threading
 import uuid
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -46,6 +47,8 @@ TOOL_NAME = "offer_plugin"
 OFFER_DECLINED = "connector_offer_declined"
 #: Typed outcome: the turn was stopped while the card waited.
 OFFER_CANCELLED = "connector_offer_cancelled"
+#: Serializes joins into the running turn's tool refresher (parallel offers).
+_JOIN_LOCK = threading.Lock()
 
 
 # ------------------------------------------------------------- what is offerable
@@ -368,13 +371,19 @@ def join_running_turn(
     except ConnectorJoinError as exc:
         trace.event("TOOLS", "%s connector=%s", exc.reason, connector_id)
         return [], exc.reason
-    if inner is None:
-        inner = LiveToolRefresher(executor, set())
-        refresher.inner = inner
-    if own is not None and own is not inner.executor:
-        inner.move(connector_id, own)
-    else:
-        inner.take(connector_id)
+    with _JOIN_LOCK:
+        # Offers made in parallel in one step each join here. The turn's refresher is
+        # read again now: the first join of a turn that took no namespace whole makes
+        # it, and the others take their namespace in that same one (a refresher made
+        # per call would keep only the last join's tools).
+        inner = refresher.inner
+        if inner is None:
+            inner = LiveToolRefresher(executor, set())
+            refresher.inner = inner
+        if own is not None and own is not inner.executor:
+            inner.move(connector_id, own)
+        else:
+            inner.take(connector_id)
     return sorted(tools), ""
 
 
