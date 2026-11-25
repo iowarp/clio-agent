@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from clio_agent.gact.plugin_tabs import PluginTabError, plugin_tabs
+from clio_agent.tools.request_locale import localized
 
 #: Session metadata marking a page's context: ``{"plugin", "page"}``.
 PAGE_METADATA_KEY = "plugin_page"
@@ -78,7 +79,7 @@ def declared_pages(app: Any) -> list[dict[str, Any]]:
             "id": f"{record.id}/{navigation['id']}",
             "plugin": record.id,
             "page": str(navigation["id"]),
-            "title": str(navigation["title"]),
+            "title": localized(navigation.get("titles"), str(navigation["title"])),
             "icon": str(navigation.get("icon") or ""),
             "server": str(navigation["server"]),
             "resource": str(navigation["resource"]),

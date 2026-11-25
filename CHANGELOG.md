@@ -8,6 +8,10 @@ TUI/HTTP surface aren't tracked here.
 
 ### Added
 
+- A plugin's page and tabs can name their title in other languages: an optional
+  `titles` map of language tags (`{"es": "Cómputo", "pt-BR": "..."}`) beside `title`.
+  CLIO lists each page and tab in the language of the request's `X-Clio-Locale`
+  (`pt-BR` falls back to `pt`), and uses `title` for any other language.
 - Run CLIO agents and flows from Python: `pip install clio-agent` ships the `clio`
   module (`ClioClient`, `AsyncClioClient`, `ClioOptions`, `RunResult`). Opening a
   client attaches to the CLIO server at `options.url` or starts one on this machine

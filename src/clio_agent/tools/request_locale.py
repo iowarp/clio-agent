@@ -60,6 +60,26 @@ def current() -> str | None:
     return _LOCALE.get()
 
 
+def localized(texts: Any, default: str, tag: str | None = None) -> str:
+    """``texts[tag]`` for the held (or given) locale, else ``default``.
+
+    ``texts`` maps locale tags to text. An exact tag wins, matched without case, then
+    the tag with its last subtags dropped in turn (``pt-BR`` falls back to ``pt``).
+    """
+
+    wanted = normalize(tag) if tag is not None else current()
+    if not wanted or not isinstance(texts, Mapping) or not texts:
+        return default
+    by_tag = {str(key).lower(): value for key, value in texts.items()}
+    parts = wanted.lower().split("-")
+    while parts:
+        text = by_tag.get("-".join(parts))
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+        parts.pop()
+    return default
+
+
 def locale_meta() -> dict[str, Any] | None:
     """The ``_meta`` entry naming the locale, or ``None`` when no locale is held."""
 
@@ -109,6 +129,7 @@ __all__ = [
     "current",
     "install",
     "locale_meta",
+    "localized",
     "normalize",
     "scope",
     "with_locale",

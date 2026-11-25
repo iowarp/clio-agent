@@ -78,6 +78,7 @@ today.
 | `title` | Optional. The plugin's readable name, text of 1 to 60 characters, sent as `plugin_title` on its tabs, its surface owners, its `a2ui.server_surface.refused` events and its URL questions. It lives here because Agent Plugins 1.0.0 has no display-name field (a top-level `title` is ignored with a warning). Without it CLIO sends no `plugin_title` and the client shows the id read as words | Not text, or empty |
 | `tabs[].id` | `[a-z0-9][a-z0-9-]{0,31}`, unique in the plugin. The host id is `<plugin>/<id>` | Missing, bad shape, duplicate |
 | `tabs[].title` | Text, 1 to 40 characters | Missing or empty |
+| `tabs[].titles` | Optional, the title in other languages: an object mapping BCP 47 tags (`es`, `pt-BR`) to text of 1 to 40 characters. A listing answers in the request's `X-Clio-Locale`: the exact tag (any case), then the tag with its last subtags dropped (`pt-BR`, then `pt`), else `title` | Not an object, a key that is not a tag, or a value that is not 1 to 40 characters of text |
 | `tabs[].icon` | A Lucide icon name. An unknown name renders a generic icon | Not text |
 | `tabs[].server` | A server name in this plugin's `mcp.json`. May be omitted when the plugin has exactly one server | Unknown, or omitted with several servers |
 | `tabs[].resource` | An `a2ui://` URI | Other scheme |
@@ -425,11 +426,13 @@ global: it belongs to no conversation and the same page is shown from every sess
 
 ```json
 "navigation": {"id": "compute", "title": "Compute", "icon": "server",
+               "titles": {"es": "Cómputo", "el": "Υπολογισμός"},
                "resource": "a2ui://example/page"}
 ```
 
 - `id` is optional (default `page`), matches the tab id pattern and differs from every
-  tab id of the plugin. `title` is 1 to 40 characters. `server` defaults to the plugin's
+  tab id of the plugin. `title` is 1 to 40 characters, and `titles` words it in other
+  languages as a tab's does. `server` defaults to the plugin's
   only server, as for a tab. One page per plugin.
 - Context: the host keeps one hidden session per page, its context. It is created on the
   first `open` and reused after that (and across restarts). Its agent is the default

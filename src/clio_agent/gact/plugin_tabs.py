@@ -167,6 +167,7 @@ def declared_tabs(app: Any, session_id: str) -> list[dict[str, Any]]:
                 "plugin": plugin,
                 "tab": str(tab["id"]),
                 "title": str(tab.get("title") or tab["id"]),
+                "titles": dict(tab.get("titles") or {}),
                 "icon": str(tab.get("icon") or ""),
                 "server": str(namespace),
                 "resource": str(tab["resource"]),
@@ -179,8 +180,9 @@ def declared_tabs(app: Any, session_id: str) -> list[dict[str, Any]]:
 
 
 def _tab_wire(declared: Mapping[str, Any], *, reason: str = "") -> dict[str, Any]:
-    keys = ("id", "plugin", "title", "icon", "server", "resource")
+    keys = ("id", "plugin", "icon", "server", "resource")
     row = {key: declared[key] for key in keys}
+    row["title"] = request_locale.localized(declared.get("titles"), str(declared["title"]))
     row["placement"] = declared.get("placement", "tab")
     if declared.get("plugin_title"):
         row["plugin_title"] = declared["plugin_title"]
@@ -788,7 +790,11 @@ class PluginTabs:
                     context,
                     apply=lambda raw: self._apply_result(key, raw),
                     place="page" if state.declared.get("placement") == "primary" else "tab",
-                    place_title=str(state.declared.get("title") or ""),
+                    place_title=request_locale.localized(
+                        state.declared.get("titles"),
+                        str(state.declared.get("title") or ""),
+                        state.locale,
+                    ),
                 )
                 if outcome.task_handle:
                     with self._lock:

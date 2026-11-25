@@ -56,7 +56,7 @@ _EXTENSION_FIELDS = (
 )
 #: Providers a plugin may ask account grants from (HS4); CLIO's own sign-in covers each.
 ACCOUNT_PROVIDERS = ("github", "google_drive", "globus", "ndp")
-_TAB_FIELDS = {"id", "title", "icon", "server", "resource"}
+_TAB_FIELDS = {"id", "title", "titles", "icon", "server", "resource"}
 #: The id of a plugin's ``navigation`` page when it names none.
 NAVIGATION_ID = "page"
 _TAB_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
@@ -237,6 +237,7 @@ def _check_host_semantics(ext: Mapping[str, Any], plugin: str) -> None:
         title = tab.get("title")
         if not isinstance(title, str) or not 1 <= len(title.strip()) <= 40:
             raise ManifestError(f"{where}.title must be text of 1 to 40 characters")
+        _check_titles(tab.get("titles"), f"{where}.titles")
         if "icon" in tab and not isinstance(tab["icon"], str):
             raise ManifestError(f"{where}.icon must be an icon name")
         if "server" in tab and (not isinstance(tab["server"], str) or not tab["server"]):
@@ -293,6 +294,24 @@ def _check_host_semantics(ext: Mapping[str, Any], plugin: str) -> None:
         )
 
 
+def _check_titles(titles: Any, where: str) -> None:
+    """``titles``: optional, the ``title`` in other languages, ``{BCP 47 tag: text}``."""
+    from clio_agent.tools.request_locale import normalize  # noqa: PLC0415
+
+    if titles is None:
+        return
+    if not isinstance(titles, dict) or not all(
+        isinstance(tag, str)
+        and normalize(tag) == tag
+        and isinstance(text, str)
+        and 1 <= len(text.strip()) <= 40
+        for tag, text in titles.items()
+    ):
+        raise ManifestError(
+            f"{where} must map language tags (such as es or pt-BR) to text of 1 to 40 characters"
+        )
+
+
 def _data_relative(path: Any) -> bool:
     """A relative path that stays inside ``PLUGIN_DATA`` (no root, drive or ``..``)."""
 
@@ -329,13 +348,16 @@ def host_semantics(
             server = next(iter(servers))
         elif server not in servers:
             raise ManifestError(f"{plugin}: tab {tab['id']!r} names unknown server {server!r}")
-        return {
+        row = {
             "id": tab["id"],
             "title": tab["title"].strip(),
             "icon": str(tab.get("icon") or ""),
             "server": server,
             "resource": tab["resource"],
         }
+        if tab.get("titles"):
+            row["titles"] = {tag: text.strip() for tag, text in tab["titles"].items()}
+        return row
 
     tabs = [normalized(tab) for tab in ext.get("tabs") or []]
     if tabs:
