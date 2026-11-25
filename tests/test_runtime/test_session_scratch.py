@@ -403,6 +403,27 @@ def test_clio_core_ipc_past_the_socket_limit_gets_a_short_owned_folder(
     assert explicit == {"CLIO_MEMFD_DIR": "/srv/mine"}  # an explicit value is respected
 
 
+def test_a_missing_temp_folder_is_created_for_the_clio_core_ipc_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.arc import clio_core_config  # noqa: PLC0415
+    from clio_agent.arc.init_degradation import classify_init_failure  # noqa: PLC0415
+
+    gone = tmp_path / "deleted-temp" / "clio_someone"
+    monkeypatch.setattr(clio_core_config, "core_default_memfd_dir", lambda env: gone)
+    assert clio_core_config.ensure_core_memfd_dir({}) == gone and gone.is_dir()
+    pinned = tmp_path / "pinned" / "ipc"
+    assert clio_core_config.ensure_core_memfd_dir({"CLIO_MEMFD_DIR": str(pinned)}) == pinned
+    assert pinned.is_dir()
+
+    blocker = tmp_path / "a-file"
+    blocker.write_text("x", encoding="utf-8")
+    with pytest.raises(clio_core_config.ClioCoreIpcDirUnavailableError) as info:
+        clio_core_config.ensure_core_memfd_dir({"CLIO_MEMFD_DIR": str(blocker / "ipc")})
+    assert str(blocker / "ipc") in str(info.value) and "CLIO_MEMFD_DIR" in str(info.value)
+    assert classify_init_failure(info.value) == "clio_core_ipc_dir_unavailable"
+
+
 def test_a_short_uv_cache_never_takes_a_folder_it_does_not_own(
     tmp_path: Path, short_temp: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

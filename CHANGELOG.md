@@ -59,6 +59,13 @@ TUI/HTTP surface aren't tracked here.
   there instead. This cuts the first ADIOS prepare on a new Windows install from
   minutes to seconds. `install.sh` keeps its own pin.
 
+### Fixed
+
+- A missing temporary folder no longer crashes clio-core with a ZeroMQ "Bad file
+  descriptor". CLIO creates the daemon's IPC folder (`<TEMP>\clio_<user>` or
+  `CLIO_MEMFD_DIR`) before it starts. When the folder can't be created, ARC reports
+  `clio_core_ipc_dir_unavailable`, naming the folder and the OS error.
+
 ## [0.9.7] - 2026-11-13
 
 ### Added

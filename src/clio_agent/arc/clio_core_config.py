@@ -278,6 +278,45 @@ def pin_core_memfd_dir(env: MutableMapping[str, str]) -> None:
         logger.info("clio-core IPC folder %s stands in for %s", short, default)
 
 
+#: A clio-core child's IPC folder could not be created (ARC init degrade reason).
+CLIO_CORE_IPC_DIR_UNAVAILABLE = "clio_core_ipc_dir_unavailable"
+
+
+class ClioCoreIpcDirUnavailableError(RuntimeError):
+    """clio-core's IPC folder cannot be created, so the daemon could not start."""
+
+    degradation_reason = CLIO_CORE_IPC_DIR_UNAVAILABLE
+
+    def __init__(self, folder: Path, error: OSError, env: Mapping[str, str]) -> None:
+        self.folder = folder
+        temp = ", ".join(f"{key}={env[key]}" for key in ("TMP", "TEMP", "TMPDIR") if env.get(key))
+        super().__init__(
+            f"clio-core cannot create its IPC folder {folder}: "
+            f"{error.strerror or error}. It keeps its sockets and shared memory there, "
+            f"under the temporary folder ({temp or 'no TMP/TEMP set'}) or "
+            f"{CORE_MEMFD_DIR_ENV}. Point them at a folder this user can write."
+        )
+
+
+def ensure_core_memfd_dir(env: Mapping[str, str]) -> Path:
+    """Create the IPC folder a clio-core child started with ``env`` uses, parents included.
+
+    clio-core creates only the last level of ``<temp>\\clio_<user>`` itself, so a missing
+    temporary folder crashed the daemon with a ZeroMQ "Bad file descriptor" instead of
+    a named cause. Call after :func:`pin_core_child_env`.
+
+    Raises:
+        ClioCoreIpcDirUnavailableError: The folder cannot be created.
+    """
+    pinned = (env.get(CORE_MEMFD_DIR_ENV) or "").strip()
+    folder = Path(pinned) if pinned else core_default_memfd_dir(env)
+    try:
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ClioCoreIpcDirUnavailableError(folder, exc, env) from exc
+    return folder
+
+
 # The path suffix identifying a ram data tier (hand-authored or older configs; the
 # generated config has none) inside a clio-core ``compose`` block.
 _RAM_TIER_PATH_SUFFIX = "cte_ram_tier"
