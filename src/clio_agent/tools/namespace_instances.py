@@ -297,6 +297,16 @@ def begin_proxy_call(executor: Any, namespace: str) -> Callable[[], None]:
     return end
 
 
+def proxy_calls_in_flight(namespace: str) -> int:
+    """How many calls are in flight on ``namespace``'s proxy route, over every fleet."""
+
+    with _LOCK:
+        tracked = tuple(_EXECUTORS)
+    return sum(
+        int(executor.__dict__.get(_PROXY_CALLS, {}).get(namespace, 0)) for executor in tracked
+    )
+
+
 def in_use(executor: Any, namespace: str) -> str:
     """Why ``namespace``'s server behind ``executor`` must keep running ("" if it need not)."""
 
@@ -677,6 +687,7 @@ __all__ = [
     "in_use",
     "launch_key",
     "may_go_direct",
+    "proxy_calls_in_flight",
     "register",
     "retained_owners",
     "retire_superseded",

@@ -91,6 +91,13 @@ TUI/HTTP surface aren't tracked here.
 
 ### Fixed
 
+- `set_connector_value` no longer cuts off the connector's running calls. Its new
+  server replaces the old one, which used to stop under a call still in flight (the
+  call ended as `mcp_server_stopped_under_call`). A value the agent sets now waits
+  for the connector's calls to finish (up to `connectors.values_drain_s`, default
+  120 s). If they don't, nothing changes and the tool returns
+  `connector_calls_in_flight`. A value the person types in a setup card still
+  applies at once.
 - On Windows, a shell command whose program the sandbox cannot start at all
   (`ERROR_CANT_ACCESS_FILE`, 1920, which is what a packaged app such as winget
   gives inside the fence) now has a `launch_blocked` boundary. It tells the agent to

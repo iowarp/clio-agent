@@ -3,7 +3,9 @@
 The agent uses it when the person gives a value in the conversation ("connect to
 the server on node08") or another tool just produced one. Several values of one
 connector go in one call (``values``): each apply restarts the connector's server
-and lists its tools again, so three separate calls cost three restarts. It is refused for a
+and lists its tools again, so three separate calls cost three restarts. The restart
+waits for the connector's calls in flight to finish, so none is cut off
+(``connector_values.drain_calls``). It is refused for a
 secret and for a sign-in (only the person types or signs in, in the setup card)
 and for a need not marked ``agent_settable``. Like any built-in it passes the
 session's tool permission rules (``tool_permission_layers.native_gate``). The value
@@ -224,7 +226,9 @@ def build_set_connector_value_tool() -> Any:
             "theirs. Only needs the connector marks as settable by the agent; never a secret "
             "or a sign-in, which the person enters in the setup card. The connector "
             "restarts with the values and lists its tools again, once per call: set "
-            "several values of one connector together with `values`."
+            "several values of one connector together with `values`. It first waits for the "
+            "connector's running calls to finish; if they do not, nothing changes "
+            "(connector_calls_in_flight) and you set it again after them."
         ),
         args={
             "connector": {"type": "string", "description": "The connector's id or name."},

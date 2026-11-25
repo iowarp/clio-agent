@@ -18,6 +18,12 @@ Applying a conversation's values never touches another conversation's server:
   agent's next step calls the server with the new values.
 
 A fleet left without conversations is reaped on the normal idle path.
+
+Moving to the new server stops the connector's old one (one server per folder and
+connector), and a call still running on it would end unanswered. So a value the agent
+sets waits for the connector's calls in flight to finish first (:func:`drain_calls`);
+if they do not finish within the bound, nothing is changed and the refusal says so.
+A value the person types applies at once: it may be what replaces a hung server.
 """
 
 from __future__ import annotations
@@ -25,15 +31,22 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import threading
+import time
 from collections.abc import Collection, Mapping
 from typing import Any
 
+from clio_agent import conf
 from clio_agent.connectors import overlay, state
 from clio_agent.connectors.entries import Entry
 from clio_agent.runtime import trace
 
 #: Typed reason: the session's fleet variant could not be resolved (plain fleet used).
 VARIANT_UNRESOLVED = "connector_values_variant_unresolved"
+#: Typed refusal: the connector's server still answers calls, so its values were not moved.
+CALLS_IN_FLIGHT = "connector_calls_in_flight"
+
+_DRAIN_S = 120.0
+_DRAIN_POLL_S = 0.25
 
 _LOCK = threading.Lock()
 
@@ -222,6 +235,55 @@ def session_fleet(app: Any, sid: str) -> Any:
         return resolve()
 
 
+def calls_in_flight(app: Any, connector_id: str) -> int:
+    """How many calls the connector's servers are answering now, over every fleet."""
+
+    from clio_agent.tools import namespace_instances  # noqa: PLC0415
+
+    count = namespace_instances.proxy_calls_in_flight(connector_id)
+    tasks = getattr(getattr(app, "state", None), "external_tasks", None)
+    connections = getattr(tasks, "connections", None) or {}
+    for _ in range(3):  # the connections live on the app loop: copy, retry if one moved
+        try:
+            hosts = tuple(connections.values())
+            return count + sum(
+                sum(1 for rpc in tuple(host.rpcs) if not rpc.done())
+                for host in hosts
+                if host.cache_key[0] == connector_id and not host.closing
+            )
+        except RuntimeError:
+            continue
+    return count
+
+
+def drain_s() -> float:
+    """How long an agent-set value waits for the connector's calls to finish."""
+
+    return float(
+        conf.resolve(
+            "connectors.values_drain_s",
+            env="CLIO_CONNECTOR_VALUES_DRAIN_S",
+            default=_DRAIN_S,
+            cast=conf.as_float,
+        )
+    )
+
+
+async def drain_calls(app: Any, connector_id: str, timeout_s: float) -> int:
+    """Wait until no call is in flight on the connector; return how many still are."""
+
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    busy = calls_in_flight(app, connector_id)
+    if busy:
+        trace.event(
+            "TOOLS", "connector_values_drain_wait connector=%s calls=%d", connector_id, busy
+        )
+    while busy and time.monotonic() < deadline:
+        await asyncio.sleep(_DRAIN_POLL_S)
+        busy = calls_in_flight(app, connector_id)
+    return busy
+
+
 async def set_session_values(
     app: Any,
     sid: str,
@@ -254,12 +316,22 @@ async def set_session_values(
     own: dict[str, str | None] = {
         key: (None if key in save_as_default else value) for key, value in plain.items()
     }
+    defaults = {key: plain[key] for key in save_as_default}
+    restarts = bool(secret or defaults) or overlay.merged(before, own) != before
+    if by_agent and restarts and state.choice(found.id).enabled:
+        busy = await drain_calls(app, found.id, drain_s())
+        if busy:
+            raise service.ConnectorError(
+                CALLS_IN_FLIGHT,
+                f"{found.name} is still answering {busy} call(s); its server restarts "
+                "with new values, which would cut them off, so nothing was changed. "
+                "Set the value again once those calls finish.",
+            )
     if secret:
         await asyncio.to_thread(service.secrets.save, found.id, secret)
     after = before
     if own:
         after = await asyncio.to_thread(write_overlay, app, sid, found.id, own)
-    defaults = {key: plain[key] for key in save_as_default}
     if defaults:
         await asyncio.to_thread(state.update, found.id, values=defaults)
     if secret or defaults:

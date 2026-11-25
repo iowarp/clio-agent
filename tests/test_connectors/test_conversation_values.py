@@ -283,6 +283,55 @@ def test_a_turn_lease_on_the_workspace_protects_every_fleet_there() -> None:
 # ---------------------------------------------------------- setting values
 
 
+def test_an_agent_value_waits_for_running_calls_and_refuses_when_they_stay(
+    fixture_catalog: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = _app()
+    state.update("fixture-secret", enabled=True, values={"where": "this-machine"})
+    moved: list[str] = []
+    monkeypatch.setattr(
+        connector_values,
+        "move_session_fleet",
+        lambda _app, sid, found, move_turn: moved.append(sid)
+        or {"status": "ready", "tool_count": 3, "reason": None},
+    )
+    monkeypatch.setattr(connector_values, "_DRAIN_POLL_S", 0.0)
+    running = [2]
+
+    def calls(_app: Any, connector_id: str) -> int:
+        assert connector_id == "fixture-secret"
+        running[0] = max(0, running[0] - 1)
+        return running[0]
+
+    monkeypatch.setattr(connector_values, "calls_in_flight", calls)
+    asyncio.run(
+        connector_values.set_session_values(
+            app, "sess_a", "fixture-secret", {"where": "node08"}, by_agent=True
+        )
+    )
+    assert moved == ["sess_a"] and running == [0]  # moved once its calls finished
+
+    monkeypatch.setattr(connector_values, "calls_in_flight", lambda _app, _cid: 1)
+    monkeypatch.setattr(connector_values, "drain_s", lambda: 0.0)
+    with pytest.raises(service.ConnectorError) as busy:
+        asyncio.run(
+            connector_values.set_session_values(
+                app, "sess_a", "fixture-secret", {"where": "node09"}, by_agent=True
+            )
+        )
+    assert busy.value.code == connector_values.CALLS_IN_FLIGHT
+    assert connector_values.session_overlay(app, "sess_a") == {
+        "fixture-secret": {"where": "node08"}
+    }  # nothing changed
+    assert moved == ["sess_a"]
+    asyncio.run(  # the person's own value applies at once
+        connector_values.set_session_values(
+            app, "sess_a", "fixture-secret", {"where": "node09"}, by_agent=False
+        )
+    )
+    assert moved == ["sess_a", "sess_a"]
+
+
 def test_a_conversation_value_is_not_a_default_and_save_as_default_is(
     fixture_catalog: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
