@@ -61,6 +61,9 @@ TUI/HTTP surface aren't tracked here.
 
 ### Fixed
 
+- An MCP app whose text wraps past its declared height is no longer cut off. The
+  sandbox watches the view's content and, when it overflows the frame, sends the
+  host `clio/notifications/view-content-height` so the card grows to fit.
 - A missing temporary folder no longer crashes clio-core with a ZeroMQ "Bad file
   descriptor". CLIO creates the daemon's IPC folder (`<TEMP>\clio_<user>` or
   `CLIO_MEMFD_DIR`) before it starts. When the folder can't be created, ARC reports

@@ -37,3 +37,13 @@ def test_a_view_may_evaluate_code_but_reach_only_what_it_declared() -> None:
     # A declared source cannot smuggle a keyword in.
     smuggled = mcp_app_sandbox._csp_header({"resourceDomains": ["'unsafe-hashes'"]}, "x")
     assert "unsafe-hashes" not in smuggled
+
+
+def test_the_sandbox_tells_the_host_when_a_view_outgrows_its_frame() -> None:
+    """#70: wrapped text inside a fixed-height view must reach the host, not be cut."""
+
+    document = mcp_app_sandbox._SANDBOX_DOCUMENT
+    assert "@@" not in document
+    assert mcp_app_sandbox.CONTENT_HEIGHT_METHOD == "clio/notifications/view-content-height"
+    assert mcp_app_sandbox.CONTENT_HEIGHT_METHOD in document
+    assert "ResizeObserver" in document and "MutationObserver" in document

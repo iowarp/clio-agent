@@ -145,6 +145,34 @@ iframe{border:0;flex:1;width:100%;height:100%;background:transparent}
   const base = 'allow-scripts allow-same-origin allow-forms';
   inner.setAttribute('sandbox', base);
   document.body.appendChild(inner);
+  // A view whose content outgrows its frame (text that wraps on a narrow screen after
+  // it reported its size) would be cut off: the host is told the height it needs.
+  const watched = new WeakSet();
+  let pending = false;
+  const watchOverflow = () => {
+    let doc = null;
+    try { doc = inner.contentDocument; } catch { doc = null; }
+    if (!doc || !doc.documentElement || watched.has(doc)) return;
+    watched.add(doc);
+    const check = () => {
+      pending = false;
+      const root = doc.documentElement;
+      const need = Math.ceil(Math.max(root.scrollHeight, doc.body ? doc.body.scrollHeight : 0));
+      if (need > root.clientHeight + 1) {
+        window.parent.postMessage({jsonrpc: '2.0', method: '@@CONTENT_HEIGHT_METHOD@@',
+          params: {height: need}}, parentTarget);
+      }
+    };
+    const soon = () => { if (!pending) { pending = true; requestAnimationFrame(check); } };
+    const sizes = new ResizeObserver(soon);
+    sizes.observe(doc.documentElement);
+    new MutationObserver(() => {
+      if (doc.body) sizes.observe(doc.body);
+      soon();
+    }).observe(doc.documentElement, {childList: true, subtree: true, characterData: true});
+    if (doc.body) sizes.observe(doc.body);
+    soon();
+  };
   window.addEventListener('message', (event) => {
     if (event.source === window.parent) {
       if (event.origin !== expected) return;
@@ -169,6 +197,8 @@ iframe{border:0;flex:1;width:100%;height:100%;background:transparent}
         let doc = null;
         try { doc = inner.contentDocument; } catch { doc = null; }
         if (doc) { doc.open(); doc.write(html); doc.close(); } else { inner.srcdoc = html; }
+        watchOverflow();
+        inner.addEventListener('load', watchOverflow);
       } else if (event.data?.method === '@@SNAPSHOT_METHOD@@' && event.data.id !== undefined) {
         // The host asks for a snapshot of the view: answered here, never sent to the view.
         const id = event.data.id;
@@ -207,13 +237,20 @@ iframe{border:0;flex:1;width:100%;height:100%;background:transparent}
 })();
 </script></body></html>"""
 
+#: The sandbox's own notice to the host: ``{height}``, the content height of a view that
+#: overflows its frame. Sent by CLIO's proxy, not the view (its size-changed stands).
+CONTENT_HEIGHT_METHOD = "clio/notifications/view-content-height"
+
 #: The outer sandbox document: the frame proxy plus the view snapshot (CM1).
-_SANDBOX_DOCUMENT = _SANDBOX_TEMPLATE.replace("@@SNAPSHOT_SCRIPT@@", SNAPSHOT_SCRIPT).replace(
-    "@@SNAPSHOT_METHOD@@", SNAPSHOT_METHOD
+_SANDBOX_DOCUMENT = (
+    _SANDBOX_TEMPLATE.replace("@@SNAPSHOT_SCRIPT@@", SNAPSHOT_SCRIPT)
+    .replace("@@SNAPSHOT_METHOD@@", SNAPSHOT_METHOD)
+    .replace("@@CONTENT_HEIGHT_METHOD@@", CONTENT_HEIGHT_METHOD)
 )
 
 
 __all__ = [
+    "CONTENT_HEIGHT_METHOD",
     "_SANDBOX_DOCUMENT",
     "_csp_header",
     "_host_origin",
