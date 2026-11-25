@@ -502,6 +502,7 @@ class QuestionOption(TaskRecord):
     label: str
     value: str
     description: str = ""
+    recommended: bool = False
 
     @model_validator(mode="before")
     @classmethod

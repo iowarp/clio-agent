@@ -96,6 +96,9 @@ TUI/HTTP surface aren't tracked here.
   question's option, and the recommended option is the field's `default`, or
   the one a server's `io.iowarp.clio-relay/choice` `_meta` names. Options gain
   `recommended`; form fields carry `enum_descriptions` and `recommended`.
+- An MCP elicitation with a choice field reaches the person again. The stored
+  question's options now keep `recommended`; before, every such elicitation
+  failed validation and its task sat in `input_required` with no card.
 - A structured MCP result without text now reads as what the call found, not a
   key-path outline ("Site › address: null"). Records read by name and version,
   envelope and integrity fields (`schema`, `op`, `sha256`, `_*`, cursors) and
