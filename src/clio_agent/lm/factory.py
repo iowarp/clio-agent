@@ -163,7 +163,20 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     # engines retain their own recovery policy. vLLM-served presets (local vLLM,
     # the Argonne gateways) speak the same stateless chat-completions protocol.
     lm._clio_stream_recovery = _resolved_litellm_prefix(config) in _STATELESS_CHAT_PREFIXES
+    lm._clio_max_request_images = _max_request_images()
     return _record_identity(lm, config)
+
+
+def _max_request_images() -> int:
+    """The per-request image cap the serving endpoint enforces (0 = none known)."""
+    from clio_agent import conf  # noqa: PLC0415 - read when the LM is built
+
+    return max(
+        0,
+        conf.resolve(
+            "lm.max_request_images", env="CLIO_LM_MAX_REQUEST_IMAGES", default=0, cast=conf.as_int
+        ),
+    )
 
 
 #: LiteLLM prefixes whose engine is a stateless OpenAI-compatible chat-completions

@@ -23,6 +23,37 @@ def _media_part(item: Any) -> ImagePart | DocumentPart:
     return DocumentPart(data=data, media_type=media_type or "application/pdf")
 
 
+def _within_image_budget(messages: list[Message], limit: int) -> list[Message]:
+    """At most ``limit`` images in the request: the latest ones (``limit`` <= 0: all).
+
+    A server can cap images per prompt (vLLM ``--limit-mm-per-prompt``; ALCF's
+    nemotron: "At most 1 image(s) may be provided in one prompt", HTTP 400). A
+    model that looks at a second figure would then fail every later step, so the
+    request keeps the newest images and an older one becomes a one-line note.
+    The recorded transcript is unchanged.
+    """
+    if limit <= 0:
+        return messages
+    keep = limit
+    note = TextPart(text=f"[earlier image omitted: this model takes at most {limit} per request]")
+
+    def budget(parts: tuple[Any, ...]) -> tuple[Any, ...]:
+        nonlocal keep
+        out: list[Any] = []
+        for part in reversed(parts):
+            if isinstance(part, ToolResultPart):
+                part = dataclasses.replace(part, content=budget(tuple(part.content)))
+            elif isinstance(part, ImagePart):
+                if keep <= 0:
+                    part = note
+                keep -= 1
+            out.append(part)
+        return tuple(reversed(out))
+
+    out = [dataclasses.replace(m, parts=budget(tuple(m.parts))) for m in reversed(messages)]
+    return list(reversed(out))
+
+
 def _place_tool_media(messages: list[Message], placement: str) -> list[Message]:
     """Put tool-result images/documents where the LM's API takes them.
 

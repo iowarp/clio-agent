@@ -74,7 +74,11 @@ from clio_agent.gact.agents import clio_react_stream as stream
 from clio_agent.gact.agents.clio_react_inputs import MEDIA_INPUTS as _MEDIA_INPUTS
 from clio_agent.gact.agents.clio_react_inputs import SYSTEM_INPUT as _SYSTEM_INPUT
 from clio_agent.gact.agents.clio_react_inputs import bind_task_inputs
-from clio_agent.gact.agents.clio_react_media import _media_part, _place_tool_media
+from clio_agent.gact.agents.clio_react_media import (
+    _media_part,
+    _place_tool_media,
+    _within_image_budget,
+)
 from clio_agent.gact.agents.clio_react_recovery import recover_stream
 from clio_agent.gact.agents.clio_react_stream_call import call_lm as _call_lm
 from clio_agent.gact.agents.clio_react_submit import active_react_scope_safe, record_submit_audit
@@ -310,6 +314,7 @@ class _Loop:
         self.tools = self._listed_tools()
         self.config = _with_cache_key(config_from_lm_kwargs(sendable_lm_kwargs(self.lm)), self.lm)
         self.tool_media = str(getattr(self.lm, "_clio_tool_result_media", "native"))
+        self.max_images = int(getattr(self.lm, "_clio_max_request_images", 0) or 0)
         self.arc, self.session, self.scope = record.arc_scope()
         if self.arc is None:
             raise NoContextStoreError()
@@ -588,7 +593,12 @@ class _Loop:
         return Request(
             model=self.lm.model,
             system=self.system or None,  # a bare agent sends no system message
-            messages=tuple(_place_tool_media(without_wire_tags(self._context()), self.tool_media)),
+            messages=tuple(
+                _place_tool_media(
+                    _within_image_budget(without_wire_tags(self._context()), self.max_images),
+                    self.tool_media,
+                )
+            ),
             tools=self.tools,
             config=self.config,
         )
