@@ -235,15 +235,24 @@ async def probe(app: Any, found: Entry, choice: state.Choice, *, force: bool = F
     if cached and cached["key"] == key and not force:
         return cached
     declared = materialize.resolved(found, choice.values)
-    try:
-        live = await _live_tools(app, found, declared)
-    except TimeoutError:
-        live, error = None, f"timed out after {int(PROBE_SECONDS)} s"
-    except (MCPError, OSError, RuntimeError, ValueError, LookupError) as exc:
-        # The running server's own failure is the check's outcome.
-        live, error = None, f"{type(exc).__name__}: {exc}"
-    else:
-        error = None
+    live, error = None, None
+    for attempt in range(2):
+        try:
+            live = await _live_tools(app, found, declared)
+        except TimeoutError:
+            live, error = None, f"timed out after {int(PROBE_SECONDS)} s"
+            break
+        except (MCPError, OSError, RuntimeError, ValueError, LookupError) as exc:
+            # The running server's own failure is the check's outcome. But a read whose
+            # kept-alive connection was retired under it (the server's calls moved to its
+            # proxy route) is no answer at all, so it reads once more first.
+            live, error = None, f"{type(exc).__name__}: {exc}"
+            if attempt == 0:
+                trace.event("TOOLS", "connector_probe_live_retry connector=%s", found.id)
+                continue
+        else:
+            error = None
+        break
     if live is not None:
         tools: list[Any] = live
     elif error is not None:

@@ -99,6 +99,9 @@ TUI/HTTP surface aren't tracked here.
 - An MCP elicitation with a choice field reaches the person again. The stored
   question's options now keep `recommended`; before, every such elicitation
   failed validation and its task sat in `input_required` with no card.
+- Enabling a connector no longer fails as unreachable when its server's calls
+  move to the proxy route while the check reads its tools: a live read whose
+  connection was retired under it reads once more before the check decides.
 - A structured MCP result without text now reads as what the call found, not a
   key-path outline ("Site › address: null"). Records read by name and version,
   envelope and integrity fields (`schema`, `op`, `sha256`, `_*`, cursors) and
