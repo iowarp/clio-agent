@@ -19,6 +19,21 @@ def test_unknown_manifest_field_is_reported_and_ignored(tmp_path: Path) -> None:
     assert [d.code for d in record.diagnostics] == ["manifest_unknown_field"]
 
 
+def test_the_manifest_category_is_recorded(tmp_path: Path) -> None:
+    root = plugin(tmp_path, "demo", manifest_extra={"category": "HPC"})
+    record = load_plugin(root, trusted=True)
+    assert record.category == "HPC"
+    assert not record.diagnostics
+
+
+def test_a_category_that_is_not_a_string_is_reported_and_ignored(tmp_path: Path) -> None:
+    root = plugin(tmp_path, "demo", manifest_extra={"category": ["HPC"]})
+    record = load_plugin(root, trusted=True)
+    assert record.valid
+    assert record.category == ""
+    assert [d.code for d in record.diagnostics] == ["manifest_invalid_category"]
+
+
 @pytest.mark.parametrize(
     ("manifest", "message"),
     [

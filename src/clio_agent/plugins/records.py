@@ -208,8 +208,9 @@ class PluginRecord:
     executable_digest: str = ""
     text_digest: str = ""
     keywords: tuple[str, ...] = ()
-    #: The category its marketplace entry declares (a Claude Code marketplace's
-    #: ``category``), else empty: what ``offer_plugin`` searches by category (OL-D11).
+    #: The category its manifest or marketplace entry declares (``plugin.json``
+    #: ``category``, or a Claude Code marketplace's), else empty: what ``offer_plugin``
+    #: searches by category (OL-D11).
     category: str = ""
     #: Python parts present but not imported, because the plugin is not trusted yet.
     python_pending: bool = False

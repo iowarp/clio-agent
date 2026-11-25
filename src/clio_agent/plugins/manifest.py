@@ -31,6 +31,7 @@ MANIFEST_FIELDS = (
     "repository",
     "license",
     "keywords",
+    "category",
     "extensions",
 )
 _STRING_FIELDS = ("version", "description", "homepage", "repository", "license")
@@ -131,6 +132,18 @@ def validate_manifest(
             "start and end alphanumeric, with no '--' or '..'"
         )
     cleaned["name"] = name
+    if "category" in data:
+        if isinstance(data["category"], str):
+            cleaned["category"] = data["category"].strip()
+        else:
+            warnings.append(
+                Diagnostic(
+                    "warning",
+                    "manifest_invalid_category",
+                    "plugin.json category must be a string; ignored",
+                    plugin,
+                )
+            )
     for key in _STRING_FIELDS:
         if key in data:
             if not isinstance(data[key], str):
