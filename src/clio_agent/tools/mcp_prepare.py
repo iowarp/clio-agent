@@ -931,11 +931,57 @@ def _owned_environment(environment: str) -> Iterator[None]:
         yield
 
 
+def _flight_key(plan: ProvisionPlan) -> str:
+    """One build's identity: the same command in the same environment is one flight."""
+
+    return hashlib.sha256(
+        json.dumps([list(plan.argv), sorted(plan.env.items())]).encode("utf-8")
+    ).hexdigest()[:24]
+
+
+@dataclass
+class _Flight:
+    """One in-process provision that every concurrent caller of the same build shares."""
+
+    done: threading.Event = field(default_factory=threading.Event)
+    outcome: str = ""
+    result: dict[str, Any] | None = None
+    error: BaseException | None = None
+
+
+_FLIGHTS: dict[str, _Flight] = {}
+_FLIGHTS_LOCK = threading.Lock()
+
+
+@contextmanager
+def _peer_builds_excluded(key: str, label: str) -> Iterator[None]:
+    """Hold this build's cross-process lock: a peer's identical build is waited for.
+
+    Waiting here is not a stall (the peer's own watchdog bounds its build), so it is
+    bounded only by ``tools.mcp.provision_max_wait_s``.
+    """
+
+    from clio_agent.tools.mcp_cache import _mcp_uv_cache_dir  # noqa: PLC0415
+    from clio_agent.tools.mcp_environment_repair import environment_lock  # noqa: PLC0415
+
+    ceiling = provision_max_wait_s()
+    lock_root = _mcp_uv_cache_dir().parent / "provision-locks"
+    with environment_lock(lock_root, key, timeout=ceiling) as locked:
+        if not locked:
+            raise PrepareError(
+                CACHE_LOCK_TIMEOUT, f"{label}: another build held it past {ceiling:.0f}s"
+            )
+        yield
+
+
 def provision(namespace: str, spec: Any, *, cwd: str | None = None) -> str:
     """Build ``spec``'s environment before its server starts; return the typed outcome.
 
     Returns :data:`PROVISIONED`, :data:`PROVISION_CACHED`, :data:`PROVISION_NOT_APPLICABLE`
     or :data:`PROVISION_UNSUPPORTED_LAUNCHER`.
+
+    Concurrent provisions of the same build are single-flight: one runs it and the others
+    wait for its outcome, never racing it into each other's locks.
 
     Raises:
         PrepareError: The launcher is missing, or the provisioning command failed or
@@ -943,12 +989,6 @@ def provision(namespace: str, spec: Any, *, cwd: str | None = None) -> str:
     """
 
     from clio_agent.tools.desktop_mcp_runtime import bundled_module_launcher  # noqa: PLC0415
-    from clio_agent.tools.launcher_cache_lock import (  # noqa: PLC0415
-        acquire_launcher_cache_lock,
-        uses_shared_launcher_cache,
-    )
-    from clio_agent.tools.mcp_cache import _mcp_uv_cache_dir  # noqa: PLC0415
-    from clio_agent.tools.mcp_environment import stdio_environment  # noqa: PLC0415
 
     if getattr(spec, "transport", "") != "stdio" or not getattr(spec, "command", ""):
         return PROVISION_NOT_APPLICABLE
@@ -971,6 +1011,60 @@ def provision(namespace: str, spec: Any, *, cwd: str | None = None) -> str:
         return plan
     if _marker_matches(plan):
         return PROVISION_CACHED
+    key = _flight_key(plan)
+    with _FLIGHTS_LOCK:
+        flight = _FLIGHTS.get(key)
+        leading = flight is None
+        if flight is None:
+            flight = _FLIGHTS[key] = _Flight()
+    if not leading:
+        return _join_flight(namespace, plan, flight)
+    try:
+        flight.outcome, flight.result = _provision_plan(namespace, spec, plan, cwd)
+    except BaseException as exc:
+        flight.error = exc
+        raise
+    finally:
+        with _FLIGHTS_LOCK:
+            _FLIGHTS.pop(key, None)
+        flight.done.set()
+    return flight.outcome
+
+
+def _join_flight(namespace: str, plan: ProvisionPlan, flight: _Flight) -> str:
+    """Wait for the provision already building ``plan`` and take its outcome as ours."""
+
+    label = _plan_label(plan)
+    trace.event("TOOLS", "mcp_prepare_provision_joined namespace=%s command=%s", namespace, label)
+    ceiling = provision_max_wait_s()
+    if not flight.done.wait(ceiling + 60.0):
+        raise PrepareError(
+            PROVISION_NO_PROGRESS, f"{label}: the build it waited on ran past {ceiling:.0f}s"
+        )
+    error = flight.error
+    if isinstance(error, PrepareError):
+        raise PrepareError(error.reason, error.detail) from error
+    if error is not None:
+        raise PrepareError(PROVISION_FAILED, f"{label}: {error!r}") from error
+    if flight.result is not None:
+        from clio_agent.tools import spawn_diet_transport  # noqa: PLC0415 - lazy fastmcp
+
+        spawn_diet_transport.record_prepared(namespace, flight.result)
+    return flight.outcome
+
+
+def _provision_plan(
+    namespace: str, spec: Any, plan: ProvisionPlan, cwd: str | None
+) -> tuple[str, dict[str, Any] | None]:
+    """Run ``plan`` once (this process's only build of it) and return its outcome."""
+
+    from clio_agent.tools.launcher_cache_lock import (  # noqa: PLC0415
+        acquire_launcher_cache_lock,
+        uses_shared_launcher_cache,
+    )
+    from clio_agent.tools.mcp_cache import _mcp_uv_cache_dir  # noqa: PLC0415
+    from clio_agent.tools.mcp_environment import stdio_environment  # noqa: PLC0415
+
     env = stdio_environment(spec.env, command=str(spec.command), args=spec.args)
     env.update(plan.env)
     if "UV_CACHE_DIR" not in spec.env:
@@ -980,12 +1074,15 @@ def provision(namespace: str, spec: Any, *, cwd: str | None = None) -> str:
     work_dir = cwd or os.getcwd()
     started = time.monotonic()
     try:
-        with _owned_environment(plan.env.get(_ENV_VAR, "")):
-            if uses_shared_launcher_cache(spec):
-                with acquire_launcher_cache_lock(namespace, spec=spec):
+        with _peer_builds_excluded(_flight_key(plan), _plan_label(plan)):
+            if _marker_matches(plan):  # a peer process built it while this one waited
+                return PROVISION_CACHED, None
+            with _owned_environment(plan.env.get(_ENV_VAR, "")):
+                if uses_shared_launcher_cache(spec):
+                    with acquire_launcher_cache_lock(namespace, spec=spec):
+                        result = _run_provision(namespace, plan, env, work_dir)
+                else:
                     result = _run_provision(namespace, plan, env, work_dir)
-            else:
-                result = _run_provision(namespace, plan, env, work_dir)
     except _UnsupportedLauncher as exc:
         trace.event(
             "TOOLS",
@@ -995,14 +1092,14 @@ def provision(namespace: str, spec: Any, *, cwd: str | None = None) -> str:
             spec.command,
             str(exc)[-300:],
         )
-        return PROVISION_UNSUPPORTED_LAUNCHER
+        return PROVISION_UNSUPPORTED_LAUNCHER, None
     _write_marker(plan)
     if result is not None:
         from clio_agent.tools import spawn_diet_transport  # noqa: PLC0415 - VF-D9; lazy fastmcp
 
         spawn_diet_transport.record_prepared(namespace, result)  # traced; drops a stale plan
         if result.get("status") == "not_applicable":
-            return PROVISION_NOT_APPLICABLE
+            return PROVISION_NOT_APPLICABLE, result
     trace.event(
         "TOOLS",
         "mcp_prepare_provisioned namespace=%s seconds=%.1f argv=%s",
@@ -1010,7 +1107,7 @@ def provision(namespace: str, spec: Any, *, cwd: str | None = None) -> str:
         time.monotonic() - started,
         _plan_label(plan),
     )
-    return PROVISIONED
+    return PROVISIONED, result
 
 
 def classify(exc: BaseException, phase: str) -> str:

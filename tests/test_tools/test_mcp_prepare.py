@@ -281,6 +281,38 @@ def test_a_failed_provision_is_typed_with_the_commands_output(tmp_path: Path) ->
     assert not any(Path(mcp_prepare.project_environment_dir(str(project))).glob("*.json"))
 
 
+def test_concurrent_provisions_of_one_build_are_single_flight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    spec = _uv_spec(project)
+    started, release, runs = threading.Event(), threading.Event(), []
+
+    def slow_build(*_args: Any) -> None:
+        runs.append(1)
+        started.set()
+        assert release.wait(10)
+
+    monkeypatch.setattr("clio_agent.runtime.macos_clt.real_which", lambda _c: "/bin/uv")
+    monkeypatch.setattr(mcp_prepare, "_run_provision", slow_build)
+    outcomes: list[str] = []
+    first = threading.Thread(target=lambda: outcomes.append(mcp_prepare.provision("spot", spec)))
+    first.start()
+    assert started.wait(10)
+    second = threading.Thread(target=lambda: outcomes.append(mcp_prepare.provision("spot", spec)))
+    second.start()
+    second.join(0.5)
+    assert second.is_alive(), "the second provision waits on the first"
+    release.set()
+    first.join(10)
+    second.join(10)
+
+    assert runs == [1]
+    assert outcomes == [mcp_prepare.PROVISIONED, mcp_prepare.PROVISIONED]
+
+
 def test_a_missing_launcher_is_typed(tmp_path: Path) -> None:
     spec = _uv_spec(tmp_path / "p", uv=str(tmp_path / "nowhere" / "uv"))
     with pytest.raises(mcp_prepare.PrepareError) as raised:
