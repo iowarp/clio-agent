@@ -35,6 +35,7 @@ own top level).
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import os
 import os.path
@@ -247,6 +248,9 @@ class SkillCatalog:
             )
             self._catalog_cache = []
             return self._catalog_cache
+        from clio_agent.gact.a2ui_capability_selection import (  # noqa: PLC0415
+            select_catalog,
+        )
         from clio_agent.gact.a2ui_catalogs.activation import (  # noqa: PLC0415
             resolve_session_catalogs,
         )
@@ -255,7 +259,10 @@ class SkillCatalog:
         )
 
         resolved = resolve_session_catalogs(self._app, self._session_id)
-        self._catalog_cache = discover_catalog_skill_refs(list(resolved.entries))
+        self._catalog_cache = discover_catalog_skill_refs(
+            list(resolved.entries),
+            selection=functools.partial(select_catalog, self._app, self._session_id, record=False),
+        )
         return self._catalog_cache
 
     def discover_plugins(self) -> list[SkillRef]:

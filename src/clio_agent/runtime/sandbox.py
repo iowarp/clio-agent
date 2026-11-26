@@ -22,7 +22,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -32,6 +31,9 @@ from typing import Any, Literal, Optional
 
 from clio_agent import paths
 from clio_agent.runtime.fence_loopback_agent import MXC_LOOPBACK_DETAILS
+from clio_agent.runtime.fence_powershell import execution_policy_env
+from clio_agent.runtime.fenced_removal import remove_tree
+from clio_agent.runtime.sandbox_codex_layers import LayerHold, layer_hold
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +130,7 @@ class ConfinedSpawn:
     result: SandboxResult
     #: Private directories created for this spawn alone, removed by :meth:`release`.
     cleanup_dirs: tuple[str, ...] = ()
+    codex_layer: LayerHold | None = None  # the spawn's Codex ``-p`` layer, dropped on release
 
     def release(self) -> None:
         """Close this spawn's per-child egress channel once its child has exited (idempotent).
@@ -135,10 +138,12 @@ class ConfinedSpawn:
         Each active spawn opens a loopback listener and an accept thread. A one-shot child (a
         shell command, a document helper) releases them when it exits, or they pile up to the
         channel cap and every later child's egress loses its attribution. Any
-        :attr:`cleanup_dirs` are removed too.
+        :attr:`cleanup_dirs` and the spawn's layer in the person's Codex home go too.
         """
         for directory in self.cleanup_dirs:
-            shutil.rmtree(directory, ignore_errors=True)
+            remove_tree(directory, why="confined_spawn_release")
+        if self.codex_layer is not None:
+            self.codex_layer.release()
         child = str(self.result.details.get("net_child_id") or "")
         if child:
             from clio_agent.runtime.net_chokepoint import close_child_channel  # noqa: PLC0415
@@ -461,14 +466,13 @@ def _mxc_container_env(
     state: SandboxResult,
     chosen: Optional[Mapping[str, str]] = None,
 ) -> dict[str, str]:
-    """``LOCALAPPDATA``/``TEMP``/``TMP`` for inside the MXC container, else empty.
+    """``LOCALAPPDATA``/``TEMP``/``TMP`` and the person's PowerShell policy
+    (:mod:`fence_powershell`) for inside the MXC container, else empty.
 
     They point at the child's cache folder (``paths.workspace_cache_dir`` of its first root):
-    granted, under ``CLIO_AGENT_HOME`` and the same on every launch, so app data a tool keeps
-    there survives. ``chosen`` carries values the caller picked in granted territory (the
-    shell's session scratch ``TEMP``), which win. Empty when the cache folder is not inside
-    the child's write territory, which leaves MXC's own profile in place rather than
-    pointing a tool at a folder it cannot write.
+    granted, under ``CLIO_AGENT_HOME`` and the same on every launch. ``chosen`` carries values
+    the caller picked in granted territory (the shell's session scratch ``TEMP``), which win.
+    Empty when the cache folder is not in the child's write territory (MXC's profile stays).
     """
 
     if not write_roots or not _is_mxc(state):
@@ -504,7 +508,7 @@ def _mxc_container_env(
     environment.update(
         {key: value for key, value in (chosen or {}).items() if key in MXC_CONTAINER_ENV_KEYS}
     )
-    return environment
+    return environment | execution_policy_env()
 
 
 def _with_container_env(
@@ -653,6 +657,7 @@ def wrap_confined(
         and sys.platform == "darwin"
     )
     office_pipe_dir: str | None = None
+    codex_layer: LayerHold | None = None
 
     # Active backend: fence prefix INNER (pdeathsig outermost below). Every active backend opens a
     # per-child egress channel. For codex this is Recipe A: the proxy overlay lands on the spawned
@@ -710,8 +715,10 @@ def wrap_confined(
             )
         except BaseException:
             if office_pipe_dir is not None:
-                shutil.rmtree(office_pipe_dir, ignore_errors=True)
+                remove_tree(office_pipe_dir, why="confined_spawn_release")
             raise
+        if resolved_state.mechanism == MECHANISM_CODEX and not office_seatbelt:
+            codex_layer = layer_hold(arg_list)
 
     # pdeathsig OUTERMOST (#974.5): the argv-prefix helper folds in last (passthrough sans setpriv).
     if pdeathsig:
@@ -739,6 +746,7 @@ def wrap_confined(
         popen_kwargs=popen_kwargs,
         result=per_call,
         cleanup_dirs=(office_pipe_dir,) if office_pipe_dir is not None else (),
+        codex_layer=codex_layer,
     )
 
 

@@ -1592,8 +1592,9 @@ KEY_NOTES: dict[str, str] = {
         "legitimately relies on symlinked paths."
     ),
     "tools.file_policy.allowed_roots": (
-        "Root directories every tool file read/write must resolve inside (default: cwd + system "
-        "temp dir); add a root to grant access."
+        "Root directories every tool file read/write must resolve inside (default: system "
+        "temp dir, plus the session's workspace, or cwd when no workspace is bound); add a "
+        "root to grant access."
     ),
     "tools.file_policy.max_file_size_bytes": (
         "Byte-size cap (accepts K/M/G/T suffixes) on a file a tool loads whole into memory "

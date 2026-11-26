@@ -16,6 +16,14 @@ Each row carries `id`, `session_id`, `tool_call.{tool_name, input}`,
 `summary`, `created_at`, `status`, `action`, optional `resolved_at` +
 `reason`.
 
+`allow_session` and `allow_workspace` store a policy for the tool in that scope.
+For a call that names a file (`path`, `output_path`, `target_path`), the policy
+covers the folder holding that file and everything below it, so the next file
+written there does not ask again and a waiting question for that folder is
+answered with it. Other folders still ask. The pending row and its interaction
+carry `standing_scope.folder`, the folder such an answer covers, before the
+person answers.
+
 Policy updates are atomic. `PUT /v1/policies` rejects malformed rows with a
 structured `422 invalid_request` and leaves the previous policy set unchanged;
 the backend never silently drops typoed scopes/actions or stores rules that it
@@ -374,6 +382,11 @@ changed roots are repaired with one traversal for both restricted users. Allowin
 UAC does not force a fresh native probe. A failed access grant is unsuccessful
 for every entry point.
 
+The setup receipt records the Codex version that was verified. After a Codex
+update the receipt is stale: status reports `codex_setup_stale_version` and names
+both versions. The next server start verifies the new version again without UAC
+and rewrites the receipt.
+
 Open **Infrastructure > CLIO hosts > Protected execution**, or run:
 
 ```powershell
@@ -399,6 +412,37 @@ File edit tools still reject writes to protected source copies before dispatch.
 Private credentials remain excluded from both reads and writes. If the host
 cannot enforce these exclusions, shell execution fails before starting a child.
 
+### Files the fence creates
+
+On Windows, fenced commands run as a restricted sandbox account, which owns what they
+create. A folder made owner-only (Python 3.13+ `tempfile.mkdtemp` and `mkdir(0o700)`
+set a protected ACL) can't be listed, taken over or deleted by the person without
+administrator rights. CLIO's removals go through `runtime/fenced_removal.py`:
+- Scratch, spawn folders, garbage collection and the short-root sweep first try to
+  delete as the person.
+- If that fails, CLIO deletes through the fence's own identity.
+- Each outcome is traced as `fenced_removal_done` or `fenced_removal_failed`, with
+  both errors.
+
+Folder removal never fails silently. Codex can run a command as either sandbox
+account (offline or online), so a folder owned by the other account can survive.
+That case is traced as `fenced_removal_failed`.
+
+For such files in a workspace, run `clio sandbox reclaim` in the folder. It grants the
+person full control through the fence (`fenced_grant_done` or `fenced_grant_failed`).
+
+Deep caches need short roots on Windows. Native-package DLL loads resolve real
+paths, so a junction doesn't keep them inside MAX_PATH. On Windows the shared uv cache
+therefore lives in `%LOCALAPPDATA%\clio-u\<hash of its home path>`, which lasts as long
+as the home, instead of a stand-in in the system temp. At startup the
+short-root sweep removes any of these:
+- stand-ins and links whose home, session or target is gone
+  (`short_root_owner_gone`, `short_root_target_gone`);
+- an old temp stand-in that a home's `clio-u` root replaced (`short_root_superseded`).
+
+A root whose hash doesn't match the path it names isn't CLIO's, and the sweep leaves
+it alone.
+
 ### Network chokepoint + deny mode (#978/#979)
 
 **SSH from the shell.** Remote work uses the ordinary `ssh`, `scp`, `sftp` and
@@ -407,8 +451,9 @@ enforced fence the shell's `ssh`, `scp` and `sftp`, and those of fenced MCP serv
 resolve to small shims
 (`runtime/fence_ssh.py`) that run the real program with CLIO's CONNECT helper
 (`runtime/net_connect.py`) as its `ProxyCommand`. Git reaches the same shim through
-`PATH`, or through `GIT_SSH` when the person has not set an ssh command of their own
-(`GIT_SSH_COMMAND` and `core.sshCommand` still win). A `ProxyCommand` from the
+`GIT_SSH_COMMAND`, which outranks the person's `core.sshCommand`. The person's own
+`GIT_SSH_COMMAND`, `core.sshCommand` or `GIT_SSH` program is kept and run through the
+helper, so their options and keys still apply. A `ProxyCommand` from the
 person's ssh config is kept, and a `ProxyJump` chain is rewritten so every hop goes
 through the helper. The connection therefore crosses the chokepoint below like any
 other egress: it is recorded as `net.egress` with its host and port 22, and a host
@@ -527,6 +572,16 @@ credentials and other tools' settings: a fenced child reads it but does not writ
 these variables, so inside MXC it still names the per-launch profile; tools built on it
 need their own override (`FASTMCP_HOME`, `CLIO_KIT_CACHE_DIR`).
 
+The MXC token also cannot open the person's CurrentUser PowerShell policy key
+(`HKCU\...\PowerShell\1\ShellIds\Microsoft.PowerShell`). Windows PowerShell reads it
+before it runs any `.ps1`, so every script and `.ps1` shim (`npm`, `npx`, `pnpm`, `yarn`,
+which PowerShell prefers over their `.cmd` siblings) failed with *AuthorizationManager
+check failed*. The same shim gives the child the person's own effective policy (CLIO asks
+`Get-ExecutionPolicy` as the person) as `PSExecutionPolicyPreference`, the Process scope.
+It ranks above CurrentUser, so PowerShell stops there, while Group Policy still outranks
+it. A policy the person already set for the process is inherited unchanged, and CLIO
+never widens it (for example to `Bypass`) (`runtime/fence_powershell.py`).
+
 A fenced MCP server's loopback is its own network namespace's, so a port an MCP App
 declares for its live service (MA23) is not on the host's `127.0.0.1`. CLIO reaches it
 from inside instead: each Linux-fenced child carries `CLIO_FENCE_CHILD` (its egress
@@ -583,6 +638,39 @@ On macOS the Codex write fence does not restrict network routes. Tools that hono
 ignores those variables (an `ssh` called by absolute path, raw sockets, some Node
 `fetch` clients) connects directly: that connection works but is not recorded.
 
+On Windows, the system's own clients (WinHTTP, WinINet, and so CryptoAPI's revocation
+fetches, .NET Framework and many installers) do not read those variables. They take
+their proxy from the machine's WinHTTP setting or from the registry of the current user
+(HKCU). The legacy Codex fence blocks their direct connections, so they fail closed:
+nothing leaves unrecorded, but no ask appears either. The visible case is the
+certificate revocation check of the `curl.exe` that ships with Windows (schannel). It
+fails with `CRYPT_E_REVOCATION_OFFLINE`, although the download itself would have gone
+through the proxy. Go-based tools such as `gh`, and Python, pip and uv, honor the
+variables and work. The tool's own error reaches the agent.
+
+CLIO cannot hand these clients a proxy:
+
+- Codex runs the fenced child without loading the sandbox account's profile, so the
+  child's HKCU is the machine's default hive, `HKU\.DEFAULT`.
+- The child's restricted token cannot write HKCU.
+- Writing `.DEFAULT` or the machine's WinHTTP setting needs administrator rights and
+  would redirect every profile-less process on the machine.
+- Concurrent children each get their own proxy port, and one shared registry value
+  cannot tell them apart.
+
+Such a download runs outside the sandbox with the person's approval, or through a tool
+that honors the variables.
+
+CLIO's own shell is the exception, since CLIO starts it. Windows PowerShell 5.1 runs on
+.NET Framework, so `Invoke-WebRequest`, `Invoke-RestMethod` and `WebClient` would
+otherwise take the registry proxy and be refused. The shell tool starts every PowerShell
+command with a preamble that sets `[System.Net.WebRequest]::DefaultWebProxy` to the
+`http://` proxy in `HTTPS_PROXY`, `ALL_PROXY` or `HTTP_PROXY` (the chokepoint, inside the
+fence), bypassing local names. Those requests are then recorded, asked about and subject
+to deny mode like curl's. PowerShell 7 reads the variables itself and is left alone. The
+preamble covers requests made inside that shell process. A nested `powershell.exe`, BITS
+and CryptoAPI's own fetches still use the system settings above.
+
 **Deny-by-default** is an opt-in per-workspace mode: egress is refused unless the
 domain is granted, and the first connection to a new domain raises a
 `network_egress` permission request (grant-on-first-domain). The `host_pattern`
@@ -590,6 +678,38 @@ vocabulary scopes a domain grant. Deny mode is decided at CLIO's proxy, so on ma
 (and other `env-cooperative` tiers) it cannot stop a client that ignores the proxy
 variables; treat it as a policy for cooperating tools, not a network barrier there.
 On Linux, when the fence probe proves isolation, deny mode is a real barrier.
+
+**Network rules: ports, every workspace, and the rules CLIO ships.** A domain rule's
+`host_pattern` may name a port: `github.com:22` matches only connections to port 22,
+and `[::1]:8080` works for an IPv6 literal. A rule with no port matches every port. A
+connection whose port is unknown never matches a rule that names one, so it asks.
+`scope_id: "*"` on a workspace rule means every workspace. An empty `scope_id` on a
+domain rule matches no workspace: a session with no workspace leaves that value, and
+it must not widen into "all". Validation rejects a non-numeric or out-of-range port,
+and `"*"` on a session rule.
+
+At its first boot, the server seeds the rules in
+`gact/runtime/default_network_rules.py`. They are ordinary `allow` rules in
+`permission_policies.json`, so they appear in Settings > Permissions and the person
+can edit or remove them there. Each carries `metadata.source: "clio_default"`, an id,
+a reason and a protocol. `permission_policies.json` records each id it seeds under
+`seeded_default_rules`, so a removed or edited rule is never seeded again, and a later
+release seeds only the ids it adds. The rules share the bottom priority band, so any
+rule the person adds or answers wins over them. Protocol is a description only: the
+chokepoint relays an opaque tunnel and doesn't check what runs inside it.
+
+| Rule | Protocol | Why it ships |
+|---|---|---|
+| `github.com:22`, `ssh.github.com:443` | ssh | git and gh over SSH (gh's `git_protocol=ssh`) |
+| `github.com:443`, `api.github.com:443` | https | git and gh over HTTPS, CLIO's GitHub storage |
+| `codeload.github.com:443`, `objects.githubusercontent.com:443` | https | plugin and skill archives, release assets |
+| `pypi.org:443`, `files.pythonhosted.org:443` | https | uv and pip installs |
+| `registry.npmjs.org:443` | https | npm installs for skills and tools |
+
+The rules take effect only where the chokepoint gates: deny-mode workspaces, and the
+write gate's plain-HTTP writes. Outside deny mode, every connection is already allowed
+and recorded. Other forges, conda-forge, crates and site mirrors are added the same
+way, as a rule in Settings or with `PUT /v1/policies`.
 
 ### Local listeners
 

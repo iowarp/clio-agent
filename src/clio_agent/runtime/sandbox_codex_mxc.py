@@ -361,6 +361,7 @@ def _probe_mxc(binary: str) -> MxcProbe:
     """Launch real CLIO policy and require filesystem and network denial witnesses."""
     from clio_agent.runtime.sandbox_codex import (  # noqa: PLC0415
         codex_prefix,
+        release_codex_layer,
         synthesize_codex_profile,
         write_codex_layer,
     )
@@ -385,11 +386,14 @@ def _probe_mxc(binary: str) -> MxcProbe:
         argv = codex_prefix(
             binary, "clio-mxc-check", workspace, layer_name=layer, include_managed_config=True
         )
-        run = run_probe(
-            [*argv, sys.executable, "-I", "-B", "-c", _PROBE_CODE],
-            timeout=_PROBE_TIMEOUT_S,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        try:
+            run = run_probe(
+                [*argv, sys.executable, "-I", "-B", "-c", _PROBE_CODE],
+                timeout=_PROBE_TIMEOUT_S,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        finally:
+            release_codex_layer(layer)
         if run.timed_out:
             return MxcProbe(False, REASON_MXC_PROBE_TIMEOUT, run.describe())
         if run.returncode != 0 or not (workspace / "checks.json").is_file():

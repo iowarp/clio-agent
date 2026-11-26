@@ -109,6 +109,7 @@ from clio_agent.gact.runtime.permission_policies import (
     _flush_permission_policies,
     _permission_path_from_args,
     append_surface_consent_policies,
+    standing_scope,
 )
 from clio_agent.gact.runtime.retention import enforce_dict_bound
 from clio_agent.gact.side_sessions import policy_deny_reason, policy_deny_source, policy_mode
@@ -549,6 +550,7 @@ def _ask_and_wait(
             row["summary"] = consent.summary
             row["consent"] = consent.wire()
     row.update(answer_fields(context))  # its answers, and a run_code script's grant
+    row.update(standing_scope(args, row.get("actions")))  # where a lasting allow reaches
     # #1044: the ai-review reviewer runs only when there is no explicit ``ask`` policy —
     # an explicit ``ask`` is a deliberate "always confirm THIS tool with a HUMAN" and beats
     # the mode (uniform with #1034: explicit policy > mode), so it must NOT be reviewer-

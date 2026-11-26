@@ -113,9 +113,10 @@ def test_a_fenced_server_routes_ssh_through_the_fence_helper(
         lambda name, *, path=None: "/usr/bin/ssh" if name == "ssh" else real_which(name, path=path),
     )
     monkeypatch.delenv("GIT_SSH", raising=False)
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
     spec = spec_from_declaration("owned", {"command": sys.executable, "args": ["-c", "pass"]})
     transport = transport_for(spec, cwd=str(confined_workspace[0]))
     shims = fence_ssh.shim_directory()
     assert shims is not None
     assert transport.env["PATH"].split(os.pathsep)[0] == str(shims)
-    assert transport.env["GIT_SSH"].startswith(str(shims))
+    assert transport.env["GIT_SSH_COMMAND"] == fence_ssh.git_ssh_command(shims)

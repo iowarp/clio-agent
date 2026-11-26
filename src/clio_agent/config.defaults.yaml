@@ -1603,7 +1603,8 @@ tools.file_policy.allow_symlinks: false
 
 # CLIO_ALLOWED_ROOTS  (str)  <- src/clio_agent/tools/file_policy.py
 # Root directories every tool file read/write must resolve inside (default:
-# cwd + system temp dir); add a root to grant access.
+# system temp dir, plus the session's workspace, or cwd when no workspace is
+# bound); add a root to grant access.
 # tools.file_policy.allowed_roots:  # computed at runtime: _default_allowed_roots()
 
 # CLIO_MAX_FILE_SIZE_BYTES  (str)  <- src/clio_agent/tools/file_policy.py
@@ -1742,6 +1743,9 @@ tools.mcp.probe_timeout_retries: 3
 # starts (uv sync, clio-kit --prepare); a build that stops making progress
 # fails sooner, typed.
 tools.mcp.provision_max_wait_s: 900.0
+
+# CLIO_MCP_PROVISIONED_DIRECT  (bool)  <- src/clio_agent/tools/uv_provisioned_launch.py
+tools.mcp.provisioned_direct: true
 
 # CLIO_MCP_RESPONSE_CACHE_ENABLED  (bool)  <- src/clio_agent/tools/mcp_runtime.py
 # Opts execution-path MCP clients into SEP-2549 server-hinted response

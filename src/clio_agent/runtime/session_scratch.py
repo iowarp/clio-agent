@@ -24,7 +24,6 @@ import functools
 import logging
 import os
 import re
-import shutil
 import socket
 import stat
 import sys
@@ -35,7 +34,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from clio_agent import conf, paths
-from clio_agent.platform_paths import win_extended_path
 from clio_agent.runtime import trace
 
 logger = logging.getLogger(__name__)
@@ -326,6 +324,17 @@ def _mine(info: os.stat_result) -> bool:
     return not hasattr(os, "getuid") or info.st_uid == os.getuid()
 
 
+same_path = _same_path
+is_mine = _mine
+
+
+def short_root_bases() -> list[Path]:
+    """Every folder a short root may sit in on this host (for the stale-root sweep)."""
+
+    kinds = (POSIX_TMP, SYSTEM_TEMP, LOCAL_APP_DATA)
+    return [base for kind in kinds if (base := _base_dir(kind)) is not None]
+
+
 def _owns_short_root(short: Path, target: Path, role: ShortRootRole) -> bool:
     """Whether ``short`` is this user's ``role`` root for ``target`` (never a foreign name)."""
 
@@ -411,13 +420,15 @@ def _remove_short_root(target: Path, role: ShortRootRole) -> None:
         return
     try:
         if role.mechanism == STAND_IN:
-            shutil.rmtree(win_extended_path(short), ignore_errors=True)
+            from clio_agent.runtime.fenced_removal import remove_tree  # noqa: PLC0415
+
+            remove_tree(short, why=f"short_root_{role.name}")
         elif short.is_junction():
             os.rmdir(short)  # removes the junction, never what it leads to
         else:
             short.unlink()
-    except OSError:
-        pass
+    except OSError as exc:
+        trace.event("SCRATCH", "short_root_remove_failed path=%s error=%r", short, exc)
 
 
 def socket_safe_dir(folder: Path) -> Path:
@@ -481,16 +492,15 @@ def remove_session_scratch(session_id: str, *, why: str) -> bool:
         return False
     _remove_short_root(folder, SOCKET_ROLE)
     _remove_short_root(folder / "uv-cache", UV_CACHE_ROLE)
-    try:
-        shutil.rmtree(win_extended_path(folder))
-    except OSError as exc:
+    from clio_agent.runtime.fenced_removal import remove_tree  # noqa: PLC0415
+
+    if not remove_tree(folder, why=why):
         logger.warning(
-            "session scratch remove failed reason=%s why=%s session=%s path=%s error=%r",
+            "session scratch remove failed reason=%s why=%s session=%s path=%s",
             REMOVE_FAILED_REASON,
             why,
             session_id,
             folder,
-            exc,
         )
         trace.event(
             "SCRATCH",
@@ -542,13 +552,16 @@ __all__ = [
     "active_scratch_dir",
     "active_session",
     "allow_system_temp",
+    "is_mine",
     "machine_dir",
     "machine_name",
     "remove_session_scratch",
     "retention_days",
+    "same_path",
     "scratch_root",
     "session_scratch_dir",
     "short_root",
+    "short_root_bases",
     "short_root_budget",
     "short_uv_cache",
     "socket_safe_dir",

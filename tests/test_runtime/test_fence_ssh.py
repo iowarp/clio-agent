@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -15,9 +16,10 @@ from pathlib import Path
 import pytest
 
 from clio_agent.runtime import execution_environment as execution
-from clio_agent.runtime import fence_ssh, net_connect, sandbox
+from clio_agent.runtime import fence_ssh, net_connect, net_git_ssh, sandbox
 
 HELPER = str(Path(net_connect.__file__).resolve())
+GIT_HELPER = str(Path(net_git_ssh.__file__).resolve())
 
 
 def _fake_http_proxy(
@@ -434,6 +436,7 @@ def test_a_fenced_shell_finds_the_shims_first(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(sandbox, "fence_enforced", lambda: True)
     monkeypatch.setattr(fence_ssh.shutil, "which", lambda _name, *, path: "/usr/bin/ssh")
     monkeypatch.delenv("GIT_SSH", raising=False)
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
     overlay = fence_ssh.fence_ssh_environment(
         {"PATH": "/usr/bin", "CLIO_EXECUTION_PATH": "/managed"}
     )
@@ -441,7 +444,19 @@ def test_a_fenced_shell_finds_the_shims_first(monkeypatch: pytest.MonkeyPatch) -
     assert overlay["PATH"] == os.pathsep.join([str(shims), "/usr/bin"])
     assert overlay["CLIO_EXECUTION_PATH"] == os.pathsep.join([str(shims), "/managed"])
     suffix = ".cmd" if os.name == "nt" else ""
-    assert overlay["GIT_SSH"] == str(shims / ("ssh.exe" if os.name == "nt" else "ssh"))
+    if os.name == "nt":
+        # Git runs a metacharacter-free command without sh, which cannot start in the fence.
+        assert overlay["GIT_SSH_COMMAND"] == fence_ssh.GIT_SSH_PROGRAM
+        git_exe = (shims / f"{fence_ssh.GIT_SSH_PROGRAM}.exe").read_bytes()
+        assert git_exe.startswith(b"MZ") and b"net_git_ssh.py" in git_exe
+    else:
+        assert shlex.split(overlay["GIT_SSH_COMMAND"]) == [
+            sys.executable,
+            "-I",
+            GIT_HELPER,
+            str(shims),
+        ]
+    assert net_git_ssh.PERSON_GIT_SSH_COMMAND not in overlay
     for tool in net_connect.TOOLS:
         shim = shims / f"{tool}{suffix}"
         text = shim.read_text(encoding="utf-8")
@@ -454,11 +469,70 @@ def test_a_fenced_shell_finds_the_shims_first(monkeypatch: pytest.MonkeyPatch) -
             assert exe.startswith(b"MZ") and f'#!"{sys.executable}" -I\n'.encode() in exe
 
 
-def test_a_chosen_git_ssh_is_kept(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_chosen_git_ssh_still_crosses_the_fence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The person's GIT_SSH_COMMAND/GIT_SSH no longer outrank the shim; the launcher runs them."""
     monkeypatch.setattr(sandbox, "fence_enforced", lambda: True)
     monkeypatch.setattr(fence_ssh.shutil, "which", lambda _name, *, path: "/usr/bin/ssh")
-    overlay = fence_ssh.fence_ssh_environment({"PATH": "/usr/bin", "GIT_SSH": "/my/ssh"})
-    assert "GIT_SSH" not in overlay
+    overlay = fence_ssh.fence_ssh_environment(
+        {"PATH": "/usr/bin", "GIT_SSH": "/my/ssh", "GIT_SSH_COMMAND": "/my/ssh -i key"}
+    )
+    assert overlay["GIT_SSH_COMMAND"] == fence_ssh.git_ssh_command(
+        Path(overlay["PATH"].split(os.pathsep)[0])
+    )
+    assert overlay[net_git_ssh.PERSON_GIT_SSH_COMMAND] == "/my/ssh -i key"
+    assert overlay[net_git_ssh.PERSON_GIT_SSH] == "/my/ssh"
+    again = fence_ssh.fence_ssh_environment({"PATH": "/usr/bin", **overlay})
+    assert again[net_git_ssh.PERSON_GIT_SSH_COMMAND] == "/my/ssh -i key"
+
+
+def test_git_ssh_falls_back_to_the_shells_own_ssh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Git hands its ssh command a PATH with its own folders first (Git for Windows' MSYS
+    ssh, which cannot start in the native fence); the fallback is the shell's ssh."""
+    monkeypatch.setattr(sandbox, "fence_enforced", lambda: True)
+    shell_bin, git_bin = tmp_path / "openssh", tmp_path / "git-usr-bin"
+    seen: list[str] = []
+
+    def which(_name: str, *, path: str) -> str:
+        seen.append(path)
+        return str(shell_bin / "ssh.exe") if str(shell_bin) in path else ""
+
+    monkeypatch.setattr(fence_ssh.shutil, "which", which)
+    for name in ("GIT_SSH", "GIT_SSH_COMMAND", net_git_ssh.PERSON_SSH):
+        monkeypatch.delenv(name, raising=False)
+    overlay = fence_ssh.fence_ssh_environment({"PATH": str(shell_bin)})
+    shims = overlay["PATH"].split(os.pathsep)[0]
+    assert overlay[net_git_ssh.PERSON_SSH] == str(shell_bin / "ssh.exe")
+    assert all(shims not in path for path in seen)
+    nested = fence_ssh.fence_ssh_environment({"PATH": overlay["PATH"], **overlay})
+    assert nested[net_git_ssh.PERSON_SSH] == str(shell_bin / "ssh.exe")
+
+    monkeypatch.delenv(net_git_ssh.PERSON_GIT_SSH_COMMAND, raising=False)
+    monkeypatch.delenv(net_git_ssh.PERSON_GIT_SSH, raising=False)
+    monkeypatch.setenv(net_git_ssh.PERSON_SSH, overlay[net_git_ssh.PERSON_SSH])
+    monkeypatch.setenv("PATH", str(git_bin))  # what Git gives its ssh command
+    monkeypatch.setattr(net_git_ssh, "_git_config_ssh_command", lambda: "")
+    monkeypatch.setattr(net_connect, "_effective_config", lambda _real, _args: {})
+    argv = net_git_ssh.git_ssh_argv(shims, ["git@github.com", "git-upload-pack 'o/r'"])
+    assert argv[0] == str(shell_bin / "ssh.exe")
+
+
+def test_git_ssh_runs_core_ssh_command_through_the_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A global core.sshCommand keeps its options and gains the helper as ProxyCommand."""
+    monkeypatch.delenv(net_git_ssh.PERSON_GIT_SSH_COMMAND, raising=False)
+    monkeypatch.delenv(net_git_ssh.PERSON_GIT_SSH, raising=False)
+    monkeypatch.setattr(
+        net_git_ssh, "_git_config_ssh_command", lambda: "'/opt/open ssh/ssh' -i key"
+    )
+    monkeypatch.setattr(net_connect, "_effective_config", lambda _real, _args: {})
+    argv = net_git_ssh.git_ssh_argv("/shims", ["git@github.com", "git-upload-pack 'o/r'"])
+    assert argv[0] == "/opt/open ssh/ssh"
+    assert any(item.startswith("ProxyCommand=") and "connect" in item for item in argv)
+    assert "-i" in argv and "key" in argv
+    assert argv[-2:] == ["git@github.com", "git-upload-pack 'o/r'"]
 
 
 def test_the_shell_environment_carries_the_shims_inside_a_fence(

@@ -4,8 +4,9 @@ Inside an active fence a shell's ``ssh``, ``scp`` and ``sftp`` resolve to small 
 :mod:`clio_agent.runtime.net_connect` on CLIO's interpreter. That launcher calls the real
 program with the CONNECT helper as its ``ProxyCommand``, so the connection crosses the fence's
 proxy, is recorded as ``net.egress`` with its host and port, and meets the workspace's network
-policy. Git over SSH reaches the same shim through ``PATH``, or through ``GIT_SSH`` when the
-person has not chosen an ssh command of their own.
+policy. Git over SSH reaches the same launcher through ``GIT_SSH_COMMAND``, which outranks the
+person's ``core.sshCommand`` and ``GIT_SSH``; the launcher then runs the person's own ssh command
+with the proxy added, so a configured ssh cannot dial past the fence.
 
 On the floor (no fence) nothing changes: a direct ``ssh`` already works there.
 
@@ -30,9 +31,12 @@ import zipfile
 from importlib import resources
 from pathlib import Path
 
-from clio_agent.runtime import net_connect
+from clio_agent.runtime import net_connect, net_git_ssh
 
 logger = logging.getLogger(__name__)
+
+#: The Windows shim directory's launcher for Git's ssh; no shell metacharacters in the name.
+GIT_SSH_PROGRAM = "clio-git-ssh"
 
 
 def _helper() -> Path:
@@ -65,15 +69,15 @@ def _windows_launcher() -> bytes | None:
         return None
 
 
-def _exe_shim(launcher: bytes, python: str, helper: str, shim_dir: str, tool: str) -> bytes:
-    """A launcher + shebang + zipped ``__main__`` that runs the helper as ``<tool>``.
+def _exe_shim(launcher: bytes, python: str, helper: str, leading: list[str]) -> bytes:
+    """A launcher + shebang + zipped ``__main__`` that runs ``helper`` with ``leading`` args.
 
     The launcher forwards argv, stdio and the exit code, and ties the interpreter to its own
     lifetime, exactly as a pip console script does.
     """
     main = (
         "import runpy, sys\n"
-        f"sys.argv[:1] = [{helper!r}, {shim_dir!r}, {tool!r}]\n"
+        f"sys.argv[:1] = {[helper, *leading]!r}\n"
         f"runpy.run_path({helper!r}, run_name='__main__')\n"
     )
     archive = io.BytesIO()
@@ -96,7 +100,9 @@ def _shims(python: str, helper: str, shim_dir: str) -> dict[str, bytes]:
     launcher = _windows_launcher()
     if launcher is not None:
         for tool in net_connect.TOOLS:
-            shims[f"{tool}.exe"] = _exe_shim(launcher, python, helper, shim_dir, tool)
+            shims[f"{tool}.exe"] = _exe_shim(launcher, python, helper, [shim_dir, tool])
+        git_helper = str(Path(net_git_ssh.__file__).resolve())
+        shims[f"{GIT_SSH_PROGRAM}.exe"] = _exe_shim(launcher, python, git_helper, [shim_dir])
     return shims
 
 
@@ -154,9 +160,67 @@ def fence_ssh_environment(environment: dict[str, str]) -> dict[str, str]:
         "PATH": os.pathsep.join(item for item in (str(directory), path) if item),
         "CLIO_EXECUTION_PATH": os.pathsep.join(item for item in (str(directory), prefix) if item),
     }
-    if not (environment.get("GIT_SSH") or os.environ.get("GIT_SSH")):
-        # Lowest of Git's ssh settings: GIT_SSH_COMMAND and core.sshCommand still win.
-        overlay["GIT_SSH"] = net_connect.shim_ssh(str(directory))
+    overlay.update(_git_ssh_overlay(environment, directory, path))
+    return overlay
+
+
+def git_ssh_command(directory: Path) -> str:
+    """The fence's ``GIT_SSH_COMMAND``, which runs :mod:`net_git_ssh`.
+
+    Git starts a ``GIT_SSH_COMMAND`` that has no shell metacharacters directly, without
+    ``sh -c``. Git for Windows' ``sh`` cannot start inside the native Windows fence (its MSYS
+    runtime is refused a named-object directory), so there the command is the bare name of the
+    shim directory's launcher, which ``PATH`` resolves.
+    """
+    if (directory / f"{GIT_SSH_PROGRAM}.exe").is_file():
+        return GIT_SSH_PROGRAM
+    helper = Path(net_git_ssh.__file__).resolve()
+    return shlex.join([sys.executable, "-I", str(helper), str(directory)])
+
+
+def _shell_ssh(environment: dict[str, str], directory: Path, path: str) -> str:
+    """The ``ssh`` the shell's own ``PATH`` names, outside the shim directory.
+
+    Git puts its own folders first on the ``PATH`` it hands an ssh command (Git for Windows'
+    ``usr\\bin`` holds an MSYS ``ssh`` that cannot start inside the native Windows fence), so
+    the fallback is resolved here, where ``PATH`` is still the shell's.
+    """
+    kept = environment.get(net_git_ssh.PERSON_SSH, os.environ.get(net_git_ssh.PERSON_SSH, ""))
+    if kept:
+        return kept
+    shim = os.path.normcase(os.path.realpath(directory))
+    outside = [
+        entry
+        for entry in path.split(os.pathsep)
+        if entry and os.path.normcase(os.path.realpath(entry)) != shim
+    ]
+    return shutil.which("ssh", path=os.pathsep.join(outside)) or ""
+
+
+def _git_ssh_overlay(environment: dict[str, str], directory: Path, path: str) -> dict[str, str]:
+    """``GIT_SSH_COMMAND`` set to the launcher, keeping the person's own ssh choice.
+
+    ``GIT_SSH_COMMAND`` outranks every other Git ssh setting, so the person's
+    ``core.sshCommand`` or ``GIT_SSH`` no longer bypasses the shim. The launcher still runs the
+    person's command, read again at each call so a repository's own ``core.sshCommand`` counts;
+    the person's variables are kept in ``CLIO_PERSON_GIT_SSH*`` for it, and the shell's own
+    ``ssh`` in ``CLIO_PERSON_SSH`` for when none is set.
+    """
+    ours = git_ssh_command(directory)
+    overlay = {"GIT_SSH_COMMAND": ours}
+    if ssh := _shell_ssh(environment, directory, path):
+        overlay[net_git_ssh.PERSON_SSH] = ssh
+    shim = net_connect.shim_ssh(str(directory))
+    for name, keep in (
+        ("GIT_SSH_COMMAND", net_git_ssh.PERSON_GIT_SSH_COMMAND),
+        ("GIT_SSH", net_git_ssh.PERSON_GIT_SSH),
+    ):
+        value = environment.get(name, os.environ.get(name, ""))
+        kept = environment.get(keep, os.environ.get(keep, ""))
+        if value and value not in {ours, shim}:
+            overlay[keep] = value
+        elif kept:
+            overlay[keep] = kept
     return overlay
 
 

@@ -35,6 +35,12 @@ from clio_agent.tools.builtin_annotations import (
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 from clio_agent.tools.servers import shell_confinement as confinement
 from clio_agent.tools.servers.shell_commands import (
+    POWERSHELL_PROXY_PREAMBLE as POWERSHELL_PROXY_PREAMBLE,
+)
+from clio_agent.tools.servers.shell_commands import (
+    POWERSHELL_UTF8_PREAMBLE as POWERSHELL_UTF8_PREAMBLE,
+)
+from clio_agent.tools.servers.shell_commands import (
     command_length_error,
     is_command_length_exception,
     windows_launch_error,
@@ -253,22 +259,6 @@ def _windows_shell_backend() -> str:
     return normalized if normalized in {"powershell", "bash", "cmd"} else "powershell"
 
 
-#: Prefixed to every PowerShell command so text crosses the process boundary as UTF-8,
-#: the encoding the shell tool decodes. Without a console (the server's case) PowerShell
-#: writes and pipes in the OEM code page, so an em dash comes back as ``-`` or ``?``, and
-#: Windows PowerShell 5.1 reads a BOM-less UTF-8 file as ANSI (``—`` → ``â€”``). Only the
-#: readers' default changes: an explicit ``-Encoding`` still wins, a BOM is still honoured,
-#: and writing cmdlets keep their defaults. Setting the console encoding fails harmlessly
-#: when there is no console handle to set.
-POWERSHELL_UTF8_PREAMBLE = (
-    "try{[Console]::OutputEncoding=[Console]::InputEncoding="
-    "[System.Text.UTF8Encoding]::new($false)}catch{};"
-    "$OutputEncoding=[System.Text.UTF8Encoding]::new($false);"
-    "foreach($c in 'Get-Content','Select-String','Import-Csv')"
-    "{$PSDefaultParameterValues[\"${c}:Encoding\"]='UTF8'};"
-)
-
-
 def _shell_argv(command: str, *, prepared_environment: dict[str, str] | None = None) -> list[str]:
     """Return a platform-appropriate shell invocation."""
 
@@ -286,7 +276,7 @@ def _shell_argv(command: str, *, prepared_environment: dict[str, str] | None = N
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                POWERSHELL_UTF8_PREAMBLE + command,
+                POWERSHELL_UTF8_PREAMBLE + POWERSHELL_PROXY_PREAMBLE + command,
             ]
         return ["cmd.exe", "/d", "/s", "/c", command]
     shell = shutil.which("bash") or shutil.which("sh")

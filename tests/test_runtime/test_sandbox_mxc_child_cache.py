@@ -17,6 +17,11 @@ MXC = sandbox.SandboxResult(
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_policy_query(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sandbox, "execution_policy_env", lambda: {})
+
+
 @pytest.mark.parametrize("profile", [sandbox.PROFILE_FLEET, sandbox.PROFILE_SHELL])
 def test_mxc_preserves_native_profile_and_temp_directories(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, profile: sandbox.Profile
@@ -92,6 +97,64 @@ def test_mxc_container_env_skips_an_ungranted_cache(
     """A cache outside the write territory would not be writable: MXC's profile stays."""
     monkeypatch.setattr(sandbox.paths, "workspace_cache_dir", lambda root: tmp_path / "elsewhere")
     assert sandbox._mxc_container_env([tmp_path / "ws"], state=MXC) == {}
+
+
+def test_mxc_container_env_carries_the_persons_powershell_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The MXC token cannot open the CurrentUser policy key, so .ps1 shims (npm.ps1) need
+    the person's own policy as the Process scope inside the container."""
+    monkeypatch.setattr(sandbox.paths, "workspace_cache_dir", lambda root: tmp_path / "c")
+    monkeypatch.setattr(
+        sandbox, "execution_policy_env", lambda: {"PSExecutionPolicyPreference": "RemoteSigned"}
+    )
+    env = sandbox._mxc_container_env([tmp_path], state=MXC, chosen={"TEMP": "x"})
+    assert env["PSExecutionPolicyPreference"] == "RemoteSigned"
+    assert env["TEMP"] == "x"
+
+
+def test_powershell_policy_is_the_persons_and_never_overrides_theirs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.runtime import fence_powershell
+
+    queried: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
+        queried.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="AllSigned\r\n", stderr="")
+
+    fence_powershell._person_policy.cache_clear()
+    monkeypatch.setattr(fence_powershell.shutil, "which", lambda name: "powershell.exe")
+    monkeypatch.setattr(fence_powershell.subprocess, "run", fake_run)
+    monkeypatch.delenv("PSExecutionPolicyPreference", raising=False)
+    try:
+        assert fence_powershell.execution_policy_env("win32") == {
+            "PSExecutionPolicyPreference": "AllSigned"
+        }
+        monkeypatch.setenv("PSExecutionPolicyPreference", "Restricted")
+        assert fence_powershell.execution_policy_env("win32") == {}  # theirs is inherited
+        assert fence_powershell.execution_policy_env("linux") == {}
+        assert queried[0][-1] == "Get-ExecutionPolicy"
+    finally:
+        fence_powershell._person_policy.cache_clear()
+
+
+def test_unreadable_powershell_policy_carries_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    from clio_agent.runtime import fence_powershell
+
+    fence_powershell._person_policy.cache_clear()
+    monkeypatch.setattr(fence_powershell.shutil, "which", lambda name: "powershell.exe")
+    monkeypatch.setattr(
+        fence_powershell.subprocess,
+        "run",
+        lambda argv, **_kw: subprocess.CompletedProcess(argv, 1, stdout="", stderr="boom"),
+    )
+    monkeypatch.delenv("PSExecutionPolicyPreference", raising=False)
+    try:
+        assert fence_powershell.execution_policy_env("win32") == {}
+    finally:
+        fence_powershell._person_policy.cache_clear()
 
 
 @pytest.mark.parametrize("implementation", ["elevated", ""])

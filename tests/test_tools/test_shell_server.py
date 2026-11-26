@@ -16,6 +16,7 @@ from fastmcp import Client
 from clio_agent import conf
 from clio_agent.tools.execution import tool_workspace_context
 from clio_agent.tools.servers.shell_server import (
+    POWERSHELL_PROXY_PREAMBLE,
     POWERSHELL_UTF8_PREAMBLE,
     ShellEnvFacts,
     _detect_shell_env,
@@ -49,7 +50,7 @@ def test_powershell_commands_cross_the_pipe_as_utf8(
         "exit 5"
     )
     argv = _shell_argv(command)
-    assert argv[-1] == POWERSHELL_UTF8_PREAMBLE + command
+    assert argv[-1] == POWERSHELL_UTF8_PREAMBLE + POWERSHELL_PROXY_PREAMBLE + command
     result = subprocess.run(
         argv,
         capture_output=True,

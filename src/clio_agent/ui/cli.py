@@ -894,10 +894,10 @@ def main() -> None:
     parser.add_argument(
         "sandbox_action",
         nargs="?",
-        choices=["setup", "status"],
+        choices=["setup", "status", "reclaim"],
         help=(
-            "With 'sandbox': 'setup' provisions the OS write fence (one UAC prompt on "
-            "Windows; idempotent re-run no-ops); 'status' shows the sandbox doctor row."
+            "With 'sandbox': 'setup' provisions the OS write fence (one UAC prompt on Windows); "
+            "'status' shows its doctor row; 'reclaim' gives you back the current folder."
         ),
     )
     parser.add_argument(

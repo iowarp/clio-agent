@@ -507,7 +507,7 @@ def _policy_egress_decision(app: "FastAPI", rec: "EgressRecord", workspace_id: s
     try:
         if workspace_id is None:
             resolved = _workspace_id_for_root(app, rec.workspace_root)
-        action = _host_action_for(app, workspace_id=resolved, host=host)
+        action = _host_action_for(app, workspace_id=resolved, host=host, port=rec.port)
         if action == "deny":
             _record_egress_denied(app, resolved, host, reason=REASON_EGRESS_POLICY_DENY)
             return "deny"
@@ -549,7 +549,7 @@ def _write_gate_decision(app: "FastAPI", rec: "EgressRecord") -> Optional[str]:
     if not workspace_write_gate(app, workspace_id):
         return None  # write-gate OFF (default) → existing behaviour, no new gating
     host = (rec.host or "").strip().lower()
-    action = _host_action_for(app, workspace_id=workspace_id, host=host)
+    action = _host_action_for(app, workspace_id=workspace_id, host=host, port=rec.port)
     if action in POLICY_ALLOWING:
         return "allow"  # already write-granted (sticky) — no prompt
     if action == "deny":

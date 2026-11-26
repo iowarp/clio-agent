@@ -210,6 +210,26 @@ def test_default_allowed_roots_use_platform_tempdir(monkeypatch):
         assert root in (Path.cwd(), Path(tempfile.gettempdir()))
 
 
+def test_a_bound_workspace_replaces_the_server_cwd_in_the_default_roots(tmp_path, monkeypatch):
+    """The directory the server started in is not a place the session was given."""
+    from clio_agent.tools.execution import tool_workspace_context
+
+    workspace_root = tmp_path / "workspace"
+    launch_dir = tmp_path / "launching-worktree"
+    workspace_root.mkdir()
+    launch_dir.mkdir()
+    monkeypatch.chdir(launch_dir)
+    monkeypatch.delenv("CLIO_ALLOWED_ROOTS", raising=False)
+
+    with tool_workspace_context(str(workspace_root)):
+        roots = FileAccessPolicy.from_env().allowed_roots
+    unbound = FileAccessPolicy.from_env().allowed_roots
+
+    assert workspace_root.resolve() in roots
+    assert launch_dir.resolve() not in roots and launch_dir not in roots
+    assert launch_dir.resolve() in unbound or launch_dir in unbound
+
+
 def test_streaming_reads_have_no_size_limit_and_whole_file_loads_are_told_what_to_do(tmp_path):
     """The size limit guards memory: only a caller that loads the whole file meets it.
 

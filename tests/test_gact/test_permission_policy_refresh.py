@@ -47,6 +47,37 @@ def test_sticky_consent_wakes_matching_waiters(tmp_path: Path, action: str) -> N
         assert emitted and emitted[-1].payload["policy_refresh_source"] == source["id"]
 
 
+@pytest.mark.parametrize("action", ["allow_session", "allow_workspace"])
+def test_lasting_write_allow_covers_its_folder_not_others(tmp_path: Path, action: str) -> None:
+    from clio_agent.gact.runtime.permission_policies import standing_scope
+
+    out = tmp_path / "skill" / "out"
+    paths = [out / "a.txt", out / "deep" / "b.txt", tmp_path / "skill" / "c.txt"]
+    permissions = [
+        {"tool_call": {"tool_name": "fs_write_file", "input": {"path": str(p)}}} for p in paths
+    ]
+    with _client(tmp_path, permissions) as client:
+        app: Any = client.app
+        sid = client.post("/v1/sessions", json={"title": "write"}).json()["id"]
+        _turn(client, sid)
+        source, inside, sibling = list(app.state.permissions.values())
+        source.update(standing_scope(source["tool_call"]["input"]))
+        assert source["standing_scope"] == {"folder": str(out.resolve())}
+        response = client.post(f"/v1/permissions/{source['id']}", json={"action": action})
+        assert response.status_code == 204, response.text
+        assert source["policy"]["path_pattern"].endswith("*")
+        assert inside["status"] == "resolved" and inside["action"] == "allow"
+        assert sibling["status"] == "pending"
+
+
+def test_standing_scope_is_absent_for_questions_without_a_lasting_answer() -> None:
+    from clio_agent.gact.runtime.permission_policies import standing_scope
+
+    args = {"path": str(Path.cwd() / "x.txt")}
+    assert standing_scope(args, ["allow", "deny"]) == {}
+    assert standing_scope({"path": "rel.txt"}) == {}
+
+
 @pytest.mark.parametrize("strict", [None, "deny", "ask"])
 def test_sticky_consent_retains_stricter_policy_and_special_gates(
     tmp_path: Path, strict: str | None
