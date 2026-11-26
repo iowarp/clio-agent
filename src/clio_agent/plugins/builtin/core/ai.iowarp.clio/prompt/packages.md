@@ -11,11 +11,15 @@ to rewrite the work without it:
 - One script: `"$CLIO_UV" run --no-project --python "$CLIO_PYTHON" --with <package>
   --with <package> script.py`. uv installs the packages into a cached environment the
   first time and reuses it.
-- Longer work: an environment in the workspace, `"$CLIO_UV" venv .venv --python
-  "$CLIO_PYTHON"`, then `"$CLIO_UV" pip install --python .venv <packages>`, and run its
-  own `python`.
+- Longer work: an environment in this session's scratch folder (`$TMPDIR`), `"$CLIO_UV"
+  venv "$TMPDIR/venv" --python "$CLIO_PYTHON"`, then `"$CLIO_UV" pip install --python
+  "$TMPDIR/venv" <packages>`, and run its own `python`.
 - A package with no build for CLIO's Python: name a version (`--python 3.12`) and uv
   fetches that Python.
+
+Environments, runtimes and packages you install for the work go in the scratch folder,
+which is removed with the session, not in the person's workspace unless they ask for
+them there; remove anything else you created and no longer need.
 
 The run_code kernel cannot import these packages. A run_code script, background or
 not, runs such a script as a subprocess and reads what it prints.
