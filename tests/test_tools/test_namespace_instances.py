@@ -115,6 +115,23 @@ async def test_another_folder_or_connector_is_left_alone(tmp_path: Any) -> None:
     a_backend._connect_task.cancel()  # type: ignore[union-attr]
 
 
+async def test_a_plugins_server_leaves_the_persons_same_named_server_running(
+    tmp_path: Any,
+) -> None:
+    # Live (round 4): each fleet's ``probe`` call stopped the other's "superseded".
+    person, person_proxy, person_backend = _served(tmp_path, "probe")
+    await namespace_instances.claim(person, "probe", person_proxy)
+    person_backend.start()
+    plugin, plugin_proxy, plugin_backend = _Executor(), _Proxy(), _Transport()
+    owner = namespace_instances.connector_owner(type("S", (), {"source": "plugin:probe-kit"}))
+    namespace_instances.register(plugin_proxy, "probe", str(tmp_path), plugin_backend, None, owner)
+    plugin._namespace_servers["probe"] = plugin_proxy
+
+    assert await namespace_instances.claim(plugin, "probe", plugin_proxy) == 0
+    assert person_backend.disconnects == 0
+    person_backend._connect_task.cancel()  # type: ignore[union-attr]
+
+
 async def test_a_route_heal_waits_while_the_proxy_server_draws_a_view(tmp_path: Any) -> None:
     executor, proxy, backend = _served(tmp_path)
     await namespace_instances.claim(executor, "paraview", proxy)
