@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -434,6 +435,7 @@ def test_a_fenced_shell_finds_the_shims_first(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(sandbox, "fence_enforced", lambda: True)
     monkeypatch.setattr(fence_ssh.shutil, "which", lambda _name, *, path: "/usr/bin/ssh")
     monkeypatch.delenv("GIT_SSH", raising=False)
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
     overlay = fence_ssh.fence_ssh_environment(
         {"PATH": "/usr/bin", "CLIO_EXECUTION_PATH": "/managed"}
     )
@@ -441,7 +443,14 @@ def test_a_fenced_shell_finds_the_shims_first(monkeypatch: pytest.MonkeyPatch) -
     assert overlay["PATH"] == os.pathsep.join([str(shims), "/usr/bin"])
     assert overlay["CLIO_EXECUTION_PATH"] == os.pathsep.join([str(shims), "/managed"])
     suffix = ".cmd" if os.name == "nt" else ""
-    assert overlay["GIT_SSH"] == str(shims / ("ssh.exe" if os.name == "nt" else "ssh"))
+    assert shlex.split(overlay["GIT_SSH_COMMAND"]) == [
+        sys.executable,
+        "-I",
+        HELPER,
+        str(shims),
+        net_connect.GIT_SSH_TOOL,
+    ]
+    assert net_connect.PERSON_GIT_SSH_COMMAND not in overlay
     for tool in net_connect.TOOLS:
         shim = shims / f"{tool}{suffix}"
         text = shim.read_text(encoding="utf-8")
@@ -454,11 +463,35 @@ def test_a_fenced_shell_finds_the_shims_first(monkeypatch: pytest.MonkeyPatch) -
             assert exe.startswith(b"MZ") and f'#!"{sys.executable}" -I\n'.encode() in exe
 
 
-def test_a_chosen_git_ssh_is_kept(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_chosen_git_ssh_still_crosses_the_fence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The person's GIT_SSH_COMMAND/GIT_SSH no longer outrank the shim; the launcher runs them."""
     monkeypatch.setattr(sandbox, "fence_enforced", lambda: True)
     monkeypatch.setattr(fence_ssh.shutil, "which", lambda _name, *, path: "/usr/bin/ssh")
-    overlay = fence_ssh.fence_ssh_environment({"PATH": "/usr/bin", "GIT_SSH": "/my/ssh"})
-    assert "GIT_SSH" not in overlay
+    overlay = fence_ssh.fence_ssh_environment(
+        {"PATH": "/usr/bin", "GIT_SSH": "/my/ssh", "GIT_SSH_COMMAND": "/my/ssh -i key"}
+    )
+    assert overlay["GIT_SSH_COMMAND"].endswith(net_connect.GIT_SSH_TOOL)
+    assert overlay[net_connect.PERSON_GIT_SSH_COMMAND] == "/my/ssh -i key"
+    assert overlay[net_connect.PERSON_GIT_SSH] == "/my/ssh"
+    again = fence_ssh.fence_ssh_environment({"PATH": "/usr/bin", **overlay})
+    assert again[net_connect.PERSON_GIT_SSH_COMMAND] == "/my/ssh -i key"
+
+
+def test_git_ssh_runs_core_ssh_command_through_the_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A global core.sshCommand keeps its options and gains the helper as ProxyCommand."""
+    monkeypatch.delenv(net_connect.PERSON_GIT_SSH_COMMAND, raising=False)
+    monkeypatch.delenv(net_connect.PERSON_GIT_SSH, raising=False)
+    monkeypatch.setattr(
+        net_connect, "_git_config_ssh_command", lambda: "'/opt/open ssh/ssh' -i key"
+    )
+    monkeypatch.setattr(net_connect, "_effective_config", lambda _real, _args: {})
+    argv = net_connect.git_ssh_argv("/shims", ["git@github.com", "git-upload-pack 'o/r'"])
+    assert argv[0] == "/opt/open ssh/ssh"
+    assert any(item.startswith("ProxyCommand=") and "connect" in item for item in argv)
+    assert "-i" in argv and "key" in argv
+    assert argv[-2:] == ["git@github.com", "git-upload-pack 'o/r'"]
 
 
 def test_the_shell_environment_carries_the_shims_inside_a_fence(

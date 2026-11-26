@@ -10,6 +10,10 @@ so this file gives it a ``ProxyCommand`` that does:
 * ``net_connect.py <shim-dir> ssh|scp|sftp <args>`` runs the real program with that helper as
   its ``ProxyCommand``. ``scp`` and ``sftp`` get ``-S <shim-dir>/ssh``. A ``ProxyJump`` is
   rewritten as a chain of these launchers, so every hop crosses the proxy too.
+* ``net_connect.py <shim-dir> git-ssh <args>`` is Git's ``GIT_SSH_COMMAND`` inside the fence. It
+  runs the ssh command Git would have run (the person's ``GIT_SSH_COMMAND``, ``core.sshCommand``
+  or ``GIT_SSH``, else ``ssh``) through the same launcher, so a configured ssh keeps its options
+  and still crosses the proxy.
 * ``net_connect.py <shim-dir> forward [--hosts=name=addr,...] <bind:port=host:port>... --
   <program>`` listens on each ``bind:port`` inside the sandbox, carries every connection to
   ``host:port`` the same way, and runs the program, which finds each ``--hosts`` name at the
@@ -45,6 +49,12 @@ from urllib.parse import unquote, urlsplit
 
 #: Tools this launcher wraps; the shim directory holds one shim for each.
 TOOLS = ("ssh", "scp", "sftp")
+
+#: The launcher's entry for Git, set as ``GIT_SSH_COMMAND`` inside the fence.
+GIT_SSH_TOOL = "git-ssh"
+#: The person's own ``GIT_SSH_COMMAND`` and ``GIT_SSH``, kept while the fence sets its own.
+PERSON_GIT_SSH_COMMAND = "CLIO_PERSON_GIT_SSH_COMMAND"
+PERSON_GIT_SSH = "CLIO_PERSON_GIT_SSH"
 
 #: Proxy variables in the order the helper reads them; the first non-empty one wins.
 PROXY_VARIABLES = (
@@ -507,6 +517,46 @@ def copy_argv(real: str, shim_dir: str, args: list[str], tool: str = "scp") -> l
     return [real, "-S", shim_ssh(shim_dir), *args]
 
 
+def _git_config_ssh_command() -> str:
+    """``core.sshCommand`` as Git resolves it from this directory, or ``""``."""
+    git = shutil.which("git")
+    if not git:
+        return ""
+    try:
+        done = subprocess.run(
+            [git, "config", "--get", "core.sshCommand"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return done.stdout.strip() if done.returncode == 0 else ""
+
+
+def person_git_ssh() -> list[str]:
+    """The ssh command Git would run without the fence, as an argv prefix.
+
+    Git's own order: ``GIT_SSH_COMMAND``, then ``core.sshCommand``, then ``GIT_SSH``, then
+    ``ssh``. The two commands are shell text, split the way Git's shell would split them.
+    """
+    command = os.environ.get(PERSON_GIT_SSH_COMMAND, "") or _git_config_ssh_command()
+    if command:
+        return shlex.split(command, posix=True)
+    program = os.environ.get(PERSON_GIT_SSH, "")
+    return [program] if program else ["ssh"]
+
+
+def git_ssh_argv(shim_dir: str, args: list[str]) -> list[str]:
+    """Git's ssh call: the person's ssh command and its options, through the launcher."""
+    program, *options = person_git_ssh() or ["ssh"]
+    real = program if os.path.dirname(program) else real_program(program, shim_dir)
+    if not real:
+        return []
+    return ssh_argv(real, shim_dir, [*options, *args])
+
+
 def _bind_to_launcher() -> object | None:
     """Windows: put this launcher in a kill-on-close Job its descendants inherit.
 
@@ -693,6 +743,12 @@ def main(argv: list[str]) -> int:
             _say("usage: net_connect.py <shim-dir> connect <host> <port>")
             return 2
         return connect_main(args[0], args[1])
+    if tool == GIT_SSH_TOOL:
+        argv = git_ssh_argv(shim_dir, args)
+        if not argv:
+            _say(f"ssh is not installed on this machine ({' '.join(person_git_ssh())})")
+            return 127
+        return _run(argv, async_stdin=True)
     if tool not in TOOLS:
         _say(f"unknown tool {tool!r}")
         return 2

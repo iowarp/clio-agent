@@ -4,8 +4,9 @@ Inside an active fence a shell's ``ssh``, ``scp`` and ``sftp`` resolve to small 
 :mod:`clio_agent.runtime.net_connect` on CLIO's interpreter. That launcher calls the real
 program with the CONNECT helper as its ``ProxyCommand``, so the connection crosses the fence's
 proxy, is recorded as ``net.egress`` with its host and port, and meets the workspace's network
-policy. Git over SSH reaches the same shim through ``PATH``, or through ``GIT_SSH`` when the
-person has not chosen an ssh command of their own.
+policy. Git over SSH reaches the same launcher through ``GIT_SSH_COMMAND``, which outranks the
+person's ``core.sshCommand`` and ``GIT_SSH``; the launcher then runs the person's own ssh command
+with the proxy added, so a configured ssh cannot dial past the fence.
 
 On the floor (no fence) nothing changes: a direct ``ssh`` already works there.
 
@@ -154,9 +155,37 @@ def fence_ssh_environment(environment: dict[str, str]) -> dict[str, str]:
         "PATH": os.pathsep.join(item for item in (str(directory), path) if item),
         "CLIO_EXECUTION_PATH": os.pathsep.join(item for item in (str(directory), prefix) if item),
     }
-    if not (environment.get("GIT_SSH") or os.environ.get("GIT_SSH")):
-        # Lowest of Git's ssh settings: GIT_SSH_COMMAND and core.sshCommand still win.
-        overlay["GIT_SSH"] = net_connect.shim_ssh(str(directory))
+    overlay.update(_git_ssh_overlay(environment, directory))
+    return overlay
+
+
+def git_ssh_command(directory: Path) -> str:
+    """The fence's ``GIT_SSH_COMMAND``: Git's shell runs the launcher's ``git-ssh`` entry."""
+    argv = [sys.executable, "-I", str(_helper()), str(directory), net_connect.GIT_SSH_TOOL]
+    return shlex.join(argv)
+
+
+def _git_ssh_overlay(environment: dict[str, str], directory: Path) -> dict[str, str]:
+    """``GIT_SSH_COMMAND`` set to the launcher, keeping the person's own ssh choice.
+
+    ``GIT_SSH_COMMAND`` outranks every other Git ssh setting, so the person's
+    ``core.sshCommand`` or ``GIT_SSH`` no longer bypasses the shim. The launcher still runs the
+    person's command, read again at each call so a repository's own ``core.sshCommand`` counts;
+    the person's variables are kept in ``CLIO_PERSON_GIT_SSH*`` for it.
+    """
+    ours = git_ssh_command(directory)
+    overlay = {"GIT_SSH_COMMAND": ours}
+    shim = net_connect.shim_ssh(str(directory))
+    for name, keep in (
+        ("GIT_SSH_COMMAND", net_connect.PERSON_GIT_SSH_COMMAND),
+        ("GIT_SSH", net_connect.PERSON_GIT_SSH),
+    ):
+        value = environment.get(name, os.environ.get(name, ""))
+        kept = environment.get(keep, os.environ.get(keep, ""))
+        if value and value not in {ours, shim}:
+            overlay[keep] = value
+        elif kept:
+            overlay[keep] = kept
     return overlay
 
 
