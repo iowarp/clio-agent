@@ -11,6 +11,10 @@ the connector values its server set was resolved with:
 * values of its own: ``<root>|cv=<digest>``. Two conversations with the same values
   share that fleet.
 
+A workspace without a root folder has no plain fleet: it runs on the default
+executor. Its variant fleets are filed under ``|cv=<digest>``, whose root is ``""``,
+so their stdio servers run where the default executor's do (no folder of their own).
+
 The namespaces inside stay the connector ids, so tool names, permission grants and
 listing caches do not change. Turn leases and residency holds stay keyed by the
 root and protect every fleet of that workspace (the conservative side); the reaper
@@ -30,7 +34,7 @@ FLEET_MARK = "|cv="
 def fleet_key(root: str, variant: str) -> str:
     """The registry key of ``root``'s fleet for connector-values ``variant``."""
 
-    return f"{root}{FLEET_MARK}{variant}" if root and variant else root
+    return f"{root}{FLEET_MARK}{variant}" if variant else root
 
 
 def fleet_root(key: str) -> str:

@@ -31,13 +31,14 @@ def fleet_variant(server_set: str, root: str) -> str:
     """The fleet variant of ``server_set`` at workspace ``root`` (see the module doc).
 
     The connector-values variant of the set, plus the set's own mark when it shadows a
-    person's server there. "" is the workspace's plain fleet.
+    person's server there. "" is the workspace's plain fleet. ``root`` "" is a workspace
+    without a root folder, whose servers declare as the default executor's do.
     """
 
     from clio_agent.plugins.servers import VARIANT_MARK, server_set_variant  # noqa: PLC0415
 
     variant = server_set_variant(server_set)
-    if not server_set or not root or not shadows_person_server(server_set, root):
+    if not server_set or not shadows_person_server(server_set, root):
         return variant
     return f"{variant}{OWN_FLEET_MARK}{server_set.partition(VARIANT_MARK)[0]}"
 
@@ -48,6 +49,8 @@ def shadows_person_server(server_set: str, root: str) -> bool:
     from clio_agent.plugins.servers import server_set_declarations  # noqa: PLC0415
     from clio_agent.tools.mcp_config import load_mcp_servers  # noqa: PLC0415
 
+    # No root folder: the files the default executor's gateway reads (process cwd).
+    root = root or os.getcwd()
     key = (server_set, root, *_stamps(root))
     with _LOCK:
         if key in _CACHE:

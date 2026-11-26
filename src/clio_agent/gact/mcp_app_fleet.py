@@ -42,14 +42,14 @@ __all__ = [
 
 def _canonical_root(app: Any, sid: str) -> str:
     """The key of the fleet serving ``sid``: its workspace root and, when the
-    conversation has connector values of its own, their variant (CV-D3)."""
+    conversation has a fleet of its own, its variant (CV-D3). "" is the default executor."""
     from clio_agent.gact.connector_values import session_fleet_variant  # noqa: PLC0415
     from clio_agent.gact.view_fleet import _fleet_root  # noqa: PLC0415
     from clio_agent.tools.fleet_key import fleet_key  # noqa: PLC0415
     from clio_agent.tools.workspace_root import canonical_workspace_root  # noqa: PLC0415
 
     root = canonical_workspace_root(_fleet_root(app, sid))
-    return fleet_key(root, session_fleet_variant(app, sid, root)) if root else ""
+    return fleet_key(root, session_fleet_variant(app, sid, root))
 
 
 def _current_fleet(app: Any, sid: str) -> Any:
