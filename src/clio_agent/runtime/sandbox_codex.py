@@ -449,6 +449,8 @@ REASON_CODEX_WINDOWS_UNPROVISIONED = "codex_windows_unprovisioned"
 REASON_CODEX_ENFORCEMENT_VERIFIED = "codex_enforcement_verified"
 REASON_CODEX_ENFORCEMENT_UNVERIFIED = "codex_enforcement_unverified"
 REASON_CODEX_ENFORCEMENT_ESCAPED = "codex_enforcement_escaped"
+#: The receipt proves enforcement for another Codex version; re-verifying needs no elevation.
+REASON_CODEX_SETUP_STALE_VERSION = "codex_setup_stale_version"
 #: Codex holds an existing account setup it no longer accepts (an older setup marker)
 #: and waits for its elevated setup instead of starting the command.
 REASON_CODEX_WINDOWS_SETUP_REQUIRED = "codex_windows_setup_required"
@@ -656,10 +658,8 @@ def _setup_required_since(marks: dict[Path, int]) -> str:
 def codex_setup_refresh_required(version: str, *, marker_reader: Any = None) -> bool:
     """Whether this Codex's last legacy check found its account setup out of date."""
     marker = (marker_reader if marker_reader is not None else _read_codex_marker)() or {}
-    return (
-        marker.get("enforcement_reason") == REASON_CODEX_WINDOWS_SETUP_REQUIRED
-        and marker.get("codex_version") == version
-    )
+    reason, recorded = marker.get("enforcement_reason"), marker.get("codex_version")
+    return reason == REASON_CODEX_WINDOWS_SETUP_REQUIRED and recorded == version
 
 
 def _codex_marker_path() -> Path:
@@ -691,11 +691,8 @@ def write_codex_provision_marker(
 ) -> Path:
     """Persist the codex Windows provisioning + enforcement verdict marker (written by setup).
 
-    Records the codex version + timestamp + accounts so a later boot reads an HONEST cached state
-    WITHOUT re-spawning codex. ``enforcement_verified`` is the result of the real behavioural check
-    (:func:`verify_codex_enforcement`) — ``True`` only when codex was observed to actually deny an
-    out-of-root write; anything else (``False``/``None``) leaves the fence unproven so the ladder
-    floors honestly rather than reporting a false ``active`` (#1026). Returns the written path.
+    A later boot reads this cached verdict without re-spawning codex. ``enforcement_verified`` is
+    ``True`` only when :func:`verify_codex_enforcement` observed a denied out-of-root write (#1026).
     """
     import json  # noqa: PLC0415 - only on this path
     from datetime import datetime, timezone  # noqa: PLC0415
@@ -723,12 +720,11 @@ def codex_windows_gate(
 ) -> tuple[bool, str]:
     """Accept a current MXC proof or provisioned accounts with a legacy enforcement marker.
 
-    The TODO-free typed default the ladder (:func:`clio_agent.runtime.sandbox._resolve_backend`)
-    reads at boot — it consults the CACHED marker, never a live probe every boot. Returns
-    ``(ready, reason)``: no ``codexsandboxoffline`` account → :data:`REASON_CODEX_WINDOWS_UNPROVISIONED`;
-    provisioned but the cached marker is not ``enforcement_verified`` (verify failed, or a marker
-    predating the check) → :data:`REASON_CODEX_ENFORCEMENT_UNVERIFIED` (#1026, no false-green);
-    else ``(True, codex_windows_provisioned)``. Sub-probes are injectable for unit tests.
+    The ladder reads this CACHED marker at boot, never a live probe. Returns ``(ready, reason)``:
+    no ``codexsandboxoffline`` account → :data:`REASON_CODEX_WINDOWS_UNPROVISIONED`; a marker
+    that is absent or not ``enforcement_verified`` → :data:`REASON_CODEX_ENFORCEMENT_UNVERIFIED`
+    (#1026, no false-green); verified for another Codex version →
+    :data:`REASON_CODEX_SETUP_STALE_VERSION`; else ``(True, codex_windows_provisioned)``.
     """
     if binary and platform.startswith("win"):
         from clio_agent.runtime.sandbox_codex_mxc import mxc_ready  # noqa: PLC0415
@@ -741,13 +737,16 @@ def codex_windows_gate(
         return False, _packaged_or(REASON_CODEX_WINDOWS_UNPROVISIONED, platform, version)
     read = marker_reader if marker_reader is not None else _read_codex_marker
     marker = read()
-    if (
-        marker is None
-        or marker.get("enforcement_verified") is not True
-        or (version and marker.get("codex_version") != version)
-    ):
+    if marker is None or marker.get("enforcement_verified") is not True:
         return False, _packaged_or(REASON_CODEX_ENFORCEMENT_UNVERIFIED, platform, version)
+    if version and marker.get("codex_version") != version:
+        return False, _packaged_or(REASON_CODEX_SETUP_STALE_VERSION, platform, version)
     return True, REASON_CODEX_WINDOWS_PROVISIONED
+
+
+def codex_receipt_version() -> str:
+    """The Codex version this installation's enforcement receipt was verified for, or ``""``."""
+    return str((_read_codex_marker() or {}).get("codex_version") or "")
 
 
 def _packaged_or(reason: str, platform: str, version: str) -> str:
@@ -778,6 +777,7 @@ __all__ = [
     "REASON_CODEX_DETECTED",
     "REASON_CODEX_ENFORCEMENT_ESCAPED",
     "REASON_CODEX_ENFORCEMENT_UNVERIFIED",
+    "REASON_CODEX_SETUP_STALE_VERSION",
     "REASON_CODEX_ENFORCEMENT_VERIFIED",
     "REASON_CODEX_NOT_INSTALLED",
     "REASON_CODEX_PROFILE_REJECTED",

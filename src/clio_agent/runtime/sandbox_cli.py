@@ -387,7 +387,13 @@ def provision_codex_windows(
     # Re-prove an existing sandbox; never infer enforcement from account presence
     # or copy another installation's receipt. Only absent accounts need elevation,
     # or accounts this Codex last reported as needing its setup again.
-    elevated = reason != scx.REASON_CODEX_ENFORCEMENT_UNVERIFIED or (
+    reverify = (scx.REASON_CODEX_ENFORCEMENT_UNVERIFIED, scx.REASON_CODEX_SETUP_STALE_VERSION)
+    if reason == scx.REASON_CODEX_SETUP_STALE_VERSION and progress:
+        progress(
+            f"Codex changed since protected execution was verified "
+            f"({scx.codex_receipt_version()} -> {det.version}); re-verifying..."
+        )
+    elevated = reason not in reverify or (
         gate is None and scx.codex_setup_refresh_required(det.version)
     )
 

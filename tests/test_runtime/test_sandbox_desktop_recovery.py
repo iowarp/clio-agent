@@ -86,6 +86,43 @@ def test_existing_accounts_recover_only_after_verification(
             require_storage_fence(after.mechanism, after.active, (home,))
 
 
+def test_codex_update_names_stale_receipt_and_reverifies_without_uac(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A receipt for an older Codex is named as such, and setup re-proves it without UAC."""
+    monkeypatch.setenv("CLIO_AGENT_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        sandbox_codex,
+        "codex_windows_provisioned",
+        lambda **_kwargs: (True, sandbox_codex.REASON_CODEX_WINDOWS_PROVISIONED),
+    )
+    sandbox_codex.write_codex_provision_marker(
+        "0.150.0",
+        enforcement_verified=True,
+        enforcement_reason=sandbox_codex.REASON_CODEX_ENFORCEMENT_VERIFIED,
+    )
+    before = sandbox._resolve_backend(platform="win32", codex_detection=detected())
+    assert before.reason == sandbox_codex.REASON_CODEX_SETUP_STALE_VERSION
+
+    def no_elevation(_binary: str) -> tuple[bool, str]:
+        raise AssertionError("A Codex update must not repeat UAC/account creation")
+
+    result = sandbox_cli.provision_codex_windows(
+        platform="win32",
+        detection=detected(),
+        elevator=no_elevation,
+        grantor=lambda: [{"grant": "bundled_runtime", "status": "granted"}],
+        verifier=lambda *_args, **_kwargs: (
+            True,
+            sandbox_codex.REASON_CODEX_ENFORCEMENT_VERIFIED,
+        ),
+        helper_preparer=lambda _binary, _version: {"status": "available"},
+    )
+    assert result.ok and result.elevated is False
+    assert sandbox_codex.codex_receipt_version() == "0.157.1"
+    assert sandbox._resolve_backend(platform="win32", codex_detection=detected()).active
+
+
 def test_bundled_grants_include_runtime_without_private_desktop_data(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
