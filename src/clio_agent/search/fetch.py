@@ -24,6 +24,7 @@ from clio_agent.search.reasons import SearchNote, note
 from clio_agent.search.records import payload_directory
 from clio_agent.search.settings import load_search_settings
 from clio_agent.search.web import hosted_read
+from clio_agent.tools.result_errors import ToolFailure
 
 #: Bytes CLIO downloads for one page.
 MAX_BYTES = 15 * 1024 * 1024
@@ -121,11 +122,13 @@ async def web_fetch(url: str, max_chars: int = MAX_CHARS) -> dict[str, Any]:
     """Read ``url``; see the module docstring for the result shape."""
 
     if not url.startswith(("http://", "https://")):
-        return {
-            "ok": False,
-            "url": url,
-            "error": note("fetch_failed", detail="url must be http(s)").as_dict(),
-        }
+        return ToolFailure(
+            {
+                "ok": False,
+                "url": url,
+                "error": note("fetch_failed", detail="url must be http(s)").as_dict(),
+            }
+        )
     limit = max(1000, min(int(max_chars), MAX_CHARS))
     settings = load_search_settings()
     response, body, problem = await _download(url, settings.request_timeout_s)
@@ -182,26 +185,30 @@ async def web_fetch(url: str, max_chars: int = MAX_CHARS) -> dict[str, Any]:
         if content.strip():
             return _ok(final_url, url, title, content, limit, ctype, "local", notes, pdf_path)
         detail = why if not pdf_path else "PDF saved; read it with view_pdf"
-        result = {
-            "ok": False,
-            "url": final_url,
-            "requested_url": url,
-            "status": status or None,
-            "error": note("fetch_failed", detail=detail).as_dict(),
-            "notes": [n.as_dict() for n in notes],
-        }
+        result = ToolFailure(
+            {
+                "ok": False,
+                "url": final_url,
+                "requested_url": url,
+                "status": status or None,
+                "error": note("fetch_failed", detail=detail).as_dict(),
+                "notes": [n.as_dict() for n in notes],
+            }
+        )
         if pdf_path:
             result["pdf_path"] = pdf_path
         return result
     if not 200 <= status < 300:
-        return {
-            "ok": False,
-            "url": final_url,
-            "requested_url": url,
-            "status": status,
-            "error": note("fetch_failed", detail=f"HTTP {status}").as_dict(),
-            "notes": [],
-        }
+        return ToolFailure(
+            {
+                "ok": False,
+                "url": final_url,
+                "requested_url": url,
+                "status": status,
+                "error": note("fetch_failed", detail=f"HTTP {status}").as_dict(),
+                "notes": [],
+            }
+        )
     return _ok(final_url, url, title, content, limit, ctype, "local", notes, pdf_path)
 
 

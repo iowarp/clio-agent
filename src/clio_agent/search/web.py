@@ -44,6 +44,7 @@ from clio_agent.search.settings import (
 )
 from clio_agent.search.terms import terms_of
 from clio_agent.search.web_sources import WebQuery
+from clio_agent.tools.result_errors import ToolFailure
 from clio_agent.tools.servers.web_limits import SEARCH_LIMITS
 
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -62,11 +63,13 @@ class SearchFailure(Exception):
     #: Extra fields for the result (``retry_after_s``, ``next_source``).
     extra: dict[str, Any] = field(default_factory=dict)
 
-    def as_result(self) -> dict[str, Any]:
-        """The tool result for the failure."""
+    def as_result(self) -> ToolFailure:
+        """The tool result for the failure: the search could not answer."""
 
         primary = note(self.code, self.source, self.detail, advice=self.advice).as_dict()
-        result = {"ok": False, "error": primary, "notes": [n.as_dict() for n in self.notes]}
+        result = ToolFailure(
+            {"ok": False, "error": primary, "notes": [n.as_dict() for n in self.notes]}
+        )
         result.update(self.extra)
         return result
 
