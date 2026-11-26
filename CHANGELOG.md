@@ -103,9 +103,16 @@ TUI/HTTP surface aren't tracked here.
   as a PDF that `web_fetch` downloaded into the workspace's `tool-output/` state. It
   used to refuse them as "not inside the active workspace", so the agent had to copy
   them into the project first. Other workspace state stays refused.
-- The KiCad connector (kicad-mcp-pro d1299cff) no longer adds "Cause: the KiCad
-  IPC connection dropped" to a board tool's error when KiCad is not installed. KiCad
-  never ran, so the error now says only that it was not found and how to install it.
+- The KiCad connector (kicad-mcp-pro cdc8b592) reports a failed tool call as an
+  error (`isError`) carrying KiCad's own text, exit code and output. It used to return
+  many failures as ordinary text and decide which were errors, and their codes and
+  hints, from keywords in the wording; a DRC failure could say "Install KiCad". Codes
+  and hints now come from the raised error's type, every kicad-cli attempt's output is
+  kept, and an unknown argument is refused with the accepted ones named. IPC failures
+  are no longer classified from their message, and error messages no longer state a
+  "likely" cause the check never found. `kicad_fp_get_info`, which called a kicad-cli
+  verb KiCad 10 does not have, is removed. A library that is not found names the
+  tables searched, and the 3D extra installs on a Python its dependencies support.
 - When one part of a task fails, the agent keeps finishing the parts that do not
   depend on it, then reports what is done, what failed and why. It used to stop
   with the rest unfinished.
