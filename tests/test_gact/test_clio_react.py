@@ -7,7 +7,8 @@ Pins the loop contract against a scripted lm15 engine (no network):
 * one ``Request`` per step: system prompt, the task head, then every earlier step as
   typed assistant / tool messages; append-only across calls;
 * a step's tool calls run concurrently and keep call order; one failing call does not
-  stop the others; an unreadable text-protocol block is an error observation;
+  stop the others; an unreadable text-protocol block is an error observation; an MCP
+  ``isError`` result is the next step's error observation, recorded as plain text;
 * a terminal MCP protocol refusal escalates out of the loop (#1275); async tools run;
 * cancellation is checked at every step boundary;
 * termination: ``direct_response`` / ``submit`` (declared defaults honored) /
@@ -24,14 +25,18 @@ from typing import Any
 
 import anyio
 import dspy
+import msgspec
 import pytest
 from dspy.lm15 import ContextLengthError, Request, ToolCallPart, ToolResultPart
 
 from clio_agent.agent import cancellation_checker
 from clio_agent.errors import MCPMissingRequiredClientCapabilityError
+from clio_agent.gact.agents import clio_react
 from clio_agent.gact.agents.clio_react import ClioReAct, NoLanguageModelError
+from clio_agent.gact.agents.dspy_native_tool import ClioNativeTool
 from clio_agent.gact.runtime.globals import _TurnCancelled
 from clio_agent.lm.engines.text_tools import INVALID_TOOL_CALL
+from clio_agent.tools.result_errors import FailedObservation
 from tests._scripted_engine import Reply, ScriptedEngine, calls, scripted_lm, wire
 
 pytestmark = pytest.mark.usefixtures("clio_core_plane")
@@ -286,6 +291,37 @@ def test_one_failing_call_does_not_stop_the_other() -> None:
     assert first_err and "Execution error in boom" in first
     assert second == ("results for q", False)
     assert pred.termination_reason == "direct_response"
+
+
+def _failed_install(site: str) -> str:
+    """An MCP call whose transport reported isError, as the MCP executor returns it."""
+    return FailedObservation(f"spack spec of quantum-espresso@7.4.1 failed on {site}")
+
+
+def test_an_mcp_is_error_reaches_the_next_step_and_the_turn_goes_on() -> None:
+    """Live 2026-11-25: a relay install that failed its Spack concretize ended the turn
+    with arc_context_write_failed, so the model never read Spack's message."""
+    pred, engine = _run(
+        [calls(("install", {"site": "ares"})), Reply(text="the version is wrong; fixing")],
+        [ClioNativeTool(_failed_install, name="install")],
+    )
+    assert _results(engine.requests[1]) == [
+        ("spack spec of quantum-espresso@7.4.1 failed on ares", True)
+    ]
+    assert pred.termination_reason == "direct_response"
+
+
+def test_a_failed_observation_is_recorded_as_plain_text() -> None:
+    """SABOTAGE: keep the FailedObservation as the outcome's value in ``_run_tool`` and
+    the step's trace record refuses it (msgspec cannot encode a str subclass)."""
+    call = ToolCallPart(id="c1", name="install", input={"site": "ares"})
+    tool = ClioNativeTool(_failed_install, name="install")
+    outcome = clio_react._Loop._run_tool(None, call, tool)  # type: ignore[arg-type]
+    assert outcome.is_error
+    assert type(outcome.value) is str
+    assert msgspec.to_builtins({"result": outcome.value}) == {
+        "result": "spack spec of quantum-espresso@7.4.1 failed on ares"
+    }
 
 
 def test_unknown_tool_is_an_error_observation() -> None:
