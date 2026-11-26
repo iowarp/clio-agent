@@ -241,6 +241,16 @@ def read_only_write_roots() -> tuple[Path, ...]:
     return tuple(roots)
 
 
+def _within_any(path: Path, roots: list[Path]) -> bool:
+    """Whether ``path`` is one of ``roots`` or inside one (case-insensitively on Windows)."""
+    key = os.path.normcase(os.path.abspath(path))
+    for root in roots:
+        base = os.path.normcase(os.path.abspath(root.expanduser()))
+        if key == base or key.startswith(base.rstrip("\\/") + os.sep):
+            return True
+    return False
+
+
 def effective_write_roots(
     profile: Profile,
     *,
@@ -307,7 +317,10 @@ def effective_write_roots(
         _add(paths.shared_uv_cache_dir())  # the machine's one shell uv cache
         return tuple(roots)
 
-    if workspace_root:
+    if workspace_root and not _within_any(Path(workspace_root).expanduser(), roots):
+        # A folder inside a root is already writable through that root's inherited grant.
+        # Listing it as its own root makes Codex rewrite its access list, which fails on a
+        # folder the confined child itself created (it owns it, the person does not).
         _add(Path(workspace_root))
     # Mid-session root grants (B5 #979.3): a recorded workspace root grant takes effect on the
     # NEXT spawn — union the live registry so the fence territory widens without a restart.

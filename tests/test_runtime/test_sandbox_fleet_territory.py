@@ -43,9 +43,23 @@ def _policy(base: Path) -> FileAccessPolicy:
 def test_fleet_territory_includes_the_workspace_binding(tmp_path: Path) -> None:
     ws = tmp_path / "workspace"
     ws.mkdir()
-    roots = effective_write_roots(PROFILE_FLEET, policy=_policy(tmp_path), workspace_root=str(ws))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    roots = effective_write_roots(PROFILE_FLEET, policy=_policy(ws), workspace_root=str(outside))
     # The declared territory (workspace binding) is part of the fence profile.
-    assert ws in roots
+    assert outside in roots
+
+
+def test_a_folder_inside_a_root_is_not_its_own_root(tmp_path: Path) -> None:
+    # Codex rewrites each root's access list; a folder the confined child created inside the
+    # workspace refuses that, so a cwd already covered by a root must not be listed again.
+    skill = tmp_path / ".claude" / "skills" / "teardown"
+    skill.mkdir(parents=True)
+    roots = effective_write_roots(
+        PROFILE_SHELL, policy=_policy(tmp_path), workspace_root=str(skill)
+    )
+    assert tmp_path in roots
+    assert skill not in roots
 
 
 def test_fleet_and_advisory_share_one_base_no_drift(tmp_path: Path) -> None:
