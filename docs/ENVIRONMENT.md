@@ -453,8 +453,9 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_KIT_CACHE_DIR` | unmigrated | `src/clio_agent/connectors/kit_readiness.py`, `src/clio_agent/runtime/disk_gc.py`, `src/clio_agent/runtime/fleet_runtime_paths.py`, `src/clio_agent/tools/desktop_mcp_runtime.py`, `src/clio_agent/tools/mcp_environment.py`, `src/clio_agent/tools/mcp_environment_relocation.py` |
 | `CLIO_LM_API_KEY` | secret | `src/clio_agent/config.py`, `src/clio_agent/providers/model_discovery/overlay.py`, `src/clio_agent/runtime/status.py` |
 | `CLIO_LOG` | unmigrated | `src/clio_agent/runtime/log_sources.py` |
-| `CLIO_PERSON_GIT_SSH` | unmigrated | `src/clio_agent/runtime/net_connect.py` |
-| `CLIO_PERSON_GIT_SSH_COMMAND` | unmigrated | `src/clio_agent/runtime/net_connect.py` |
+| `CLIO_PERSON_GIT_SSH` | unmigrated | `src/clio_agent/runtime/net_git_ssh.py` |
+| `CLIO_PERSON_GIT_SSH_COMMAND` | unmigrated | `src/clio_agent/runtime/net_git_ssh.py` |
+| `CLIO_PERSON_SSH` | unmigrated | `src/clio_agent/runtime/net_git_ssh.py` |
 | `CLIO_RUNTIME_STATE_DIR` | unmigrated | `src/clio_agent/arc/clio_core_config.py`, `src/clio_agent/arc/clio_core_effective_runtime.py`, `src/clio_agent/arc/home_runtime.py` |
 | `CLIO_SECRET_VARIABLES` | unmigrated | `src/clio_agent/gact/infrastructure/node_service.py` |
 | `CLIO_SEMANTIC_TRACE_BACKEND` | unmigrated | `src/clio_agent/provenance_config.py` |

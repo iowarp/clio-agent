@@ -160,7 +160,7 @@ def fence_ssh_environment(environment: dict[str, str]) -> dict[str, str]:
         "PATH": os.pathsep.join(item for item in (str(directory), path) if item),
         "CLIO_EXECUTION_PATH": os.pathsep.join(item for item in (str(directory), prefix) if item),
     }
-    overlay.update(_git_ssh_overlay(environment, directory))
+    overlay.update(_git_ssh_overlay(environment, directory, path))
     return overlay
 
 
@@ -178,16 +178,38 @@ def git_ssh_command(directory: Path) -> str:
     return shlex.join([sys.executable, "-I", str(helper), str(directory)])
 
 
-def _git_ssh_overlay(environment: dict[str, str], directory: Path) -> dict[str, str]:
+def _shell_ssh(environment: dict[str, str], directory: Path, path: str) -> str:
+    """The ``ssh`` the shell's own ``PATH`` names, outside the shim directory.
+
+    Git puts its own folders first on the ``PATH`` it hands an ssh command (Git for Windows'
+    ``usr\\bin`` holds an MSYS ``ssh`` that cannot start inside the native Windows fence), so
+    the fallback is resolved here, where ``PATH`` is still the shell's.
+    """
+    kept = environment.get(net_git_ssh.PERSON_SSH, os.environ.get(net_git_ssh.PERSON_SSH, ""))
+    if kept:
+        return kept
+    shim = os.path.normcase(os.path.realpath(directory))
+    outside = [
+        entry
+        for entry in path.split(os.pathsep)
+        if entry and os.path.normcase(os.path.realpath(entry)) != shim
+    ]
+    return shutil.which("ssh", path=os.pathsep.join(outside)) or ""
+
+
+def _git_ssh_overlay(environment: dict[str, str], directory: Path, path: str) -> dict[str, str]:
     """``GIT_SSH_COMMAND`` set to the launcher, keeping the person's own ssh choice.
 
     ``GIT_SSH_COMMAND`` outranks every other Git ssh setting, so the person's
     ``core.sshCommand`` or ``GIT_SSH`` no longer bypasses the shim. The launcher still runs the
     person's command, read again at each call so a repository's own ``core.sshCommand`` counts;
-    the person's variables are kept in ``CLIO_PERSON_GIT_SSH*`` for it.
+    the person's variables are kept in ``CLIO_PERSON_GIT_SSH*`` for it, and the shell's own
+    ``ssh`` in ``CLIO_PERSON_SSH`` for when none is set.
     """
     ours = git_ssh_command(directory)
     overlay = {"GIT_SSH_COMMAND": ours}
+    if ssh := _shell_ssh(environment, directory, path):
+        overlay[net_git_ssh.PERSON_SSH] = ssh
     shim = net_connect.shim_ssh(str(directory))
     for name, keep in (
         ("GIT_SSH_COMMAND", net_git_ssh.PERSON_GIT_SSH_COMMAND),

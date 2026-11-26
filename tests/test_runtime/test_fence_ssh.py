@@ -485,6 +485,39 @@ def test_a_chosen_git_ssh_still_crosses_the_fence(monkeypatch: pytest.MonkeyPatc
     assert again[net_git_ssh.PERSON_GIT_SSH_COMMAND] == "/my/ssh -i key"
 
 
+def test_git_ssh_falls_back_to_the_shells_own_ssh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Git hands its ssh command a PATH with its own folders first (Git for Windows' MSYS
+    ssh, which cannot start in the native fence); the fallback is the shell's ssh."""
+    monkeypatch.setattr(sandbox, "fence_enforced", lambda: True)
+    shell_bin, git_bin = tmp_path / "openssh", tmp_path / "git-usr-bin"
+    seen: list[str] = []
+
+    def which(_name: str, *, path: str) -> str:
+        seen.append(path)
+        return str(shell_bin / "ssh.exe") if str(shell_bin) in path else ""
+
+    monkeypatch.setattr(fence_ssh.shutil, "which", which)
+    for name in ("GIT_SSH", "GIT_SSH_COMMAND", net_git_ssh.PERSON_SSH):
+        monkeypatch.delenv(name, raising=False)
+    overlay = fence_ssh.fence_ssh_environment({"PATH": str(shell_bin)})
+    shims = overlay["PATH"].split(os.pathsep)[0]
+    assert overlay[net_git_ssh.PERSON_SSH] == str(shell_bin / "ssh.exe")
+    assert all(shims not in path for path in seen)
+    nested = fence_ssh.fence_ssh_environment({"PATH": overlay["PATH"], **overlay})
+    assert nested[net_git_ssh.PERSON_SSH] == str(shell_bin / "ssh.exe")
+
+    monkeypatch.delenv(net_git_ssh.PERSON_GIT_SSH_COMMAND, raising=False)
+    monkeypatch.delenv(net_git_ssh.PERSON_GIT_SSH, raising=False)
+    monkeypatch.setenv(net_git_ssh.PERSON_SSH, overlay[net_git_ssh.PERSON_SSH])
+    monkeypatch.setenv("PATH", str(git_bin))  # what Git gives its ssh command
+    monkeypatch.setattr(net_git_ssh, "_git_config_ssh_command", lambda: "")
+    monkeypatch.setattr(net_connect, "_effective_config", lambda _real, _args: {})
+    argv = net_git_ssh.git_ssh_argv(shims, ["git@github.com", "git-upload-pack 'o/r'"])
+    assert argv[0] == str(shell_bin / "ssh.exe")
+
+
 def test_git_ssh_runs_core_ssh_command_through_the_proxy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

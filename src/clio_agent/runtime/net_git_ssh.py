@@ -3,8 +3,8 @@
 The fence sets this as ``GIT_SSH_COMMAND``, which outranks every other Git ssh setting, so a
 person's ``core.sshCommand`` or ``GIT_SSH`` can no longer dial port 22 past the proxy. It runs
 the ssh command Git would have run (the person's ``GIT_SSH_COMMAND``, ``core.sshCommand`` or
-``GIT_SSH``, else ``ssh``) through :mod:`net_connect`'s ssh launcher, so a configured ssh keeps
-its options and still crosses the proxy.
+``GIT_SSH``, else the ``ssh`` their shell's ``PATH`` names) through :mod:`net_connect`'s ssh
+launcher, so a configured ssh keeps its options and still crosses the proxy.
 
 Like :mod:`net_connect`, it imports only the standard library and runs isolated (``-I``), so it
 loads its sibling launcher by file path.
@@ -21,9 +21,12 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
-#: The person's own ``GIT_SSH_COMMAND`` and ``GIT_SSH``, kept while the fence sets its own.
+#: The person's own ``GIT_SSH_COMMAND`` and ``GIT_SSH``, kept while the fence sets its own,
+#: and the ``ssh`` their shell's ``PATH`` names (Git runs its command with its own folders
+#: first on ``PATH``).
 PERSON_GIT_SSH_COMMAND = "CLIO_PERSON_GIT_SSH_COMMAND"
 PERSON_GIT_SSH = "CLIO_PERSON_GIT_SSH"
+PERSON_SSH = "CLIO_PERSON_SSH"
 _LAUNCHER = "clio_agent.runtime.net_connect"
 
 
@@ -65,12 +68,13 @@ def person_git_ssh() -> list[str]:
     """The ssh command Git would run without the fence, as an argv prefix.
 
     Git's own order: ``GIT_SSH_COMMAND``, then ``core.sshCommand``, then ``GIT_SSH``, then
-    ``ssh``. The two commands are shell text, split the way Git's shell would split them.
+    ``ssh``, as the person's shell resolved it. The two commands are shell text, split the way
+    Git's shell would split them.
     """
     command = os.environ.get(PERSON_GIT_SSH_COMMAND, "") or _git_config_ssh_command()
     if command:
         return shlex.split(command, posix=True)
-    program = os.environ.get(PERSON_GIT_SSH, "")
+    program = os.environ.get(PERSON_GIT_SSH, "") or os.environ.get(PERSON_SSH, "")
     return [program] if program else ["ssh"]
 
 
