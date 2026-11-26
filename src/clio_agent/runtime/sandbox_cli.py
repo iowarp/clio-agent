@@ -124,7 +124,10 @@ if sys.platform == "win32":  # pragma: no cover - win32 live gate only (CI runs 
             ]
             # The approved command uses this allow directory. Keep it alive
             # until the elevated helper finishes, including time spent in UAC.
-            return _launch_elevated_codex_setup(argv)
+            try:
+                return _launch_elevated_codex_setup(argv)
+            finally:
+                scx.release_codex_layer(layer)
 
 else:
 

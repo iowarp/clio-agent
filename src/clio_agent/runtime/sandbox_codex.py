@@ -50,6 +50,7 @@ from typing import Any, Callable, Optional, Sequence
 # naming) lives in the sibling :mod:`sandbox_codex_profile` module (extracted to keep this file under
 # its size ratchet). Re-exported below so this module's public surface is unchanged — callers keep
 # importing these names from ``sandbox_codex``.
+from .sandbox_codex_layers import composed_layer, release_codex_layer, write_codex_layer
 from .sandbox_codex_probe import EnforcementVerdict, codex_home_dir
 from .sandbox_codex_profile import (
     CODEX_LAYER_GLOB,
@@ -57,7 +58,7 @@ from .sandbox_codex_profile import (
     CODEX_LAYER_PREFIX,
     REASON_CODEX_PROFILE_REJECTED,
     CodexProfileError,
-    _render_layer_toml,
+    _render_layer_toml,  # noqa: F401 - re-exported for callers and tests
     codex_layer_name,
     synthesize_codex_profile,
     validate_codex_profile,
@@ -325,65 +326,6 @@ def detect_codex(
     )
 
 
-def _prune_layers(codex_home: Path, *, keep: int = CODEX_LAYER_KEEP) -> None:
-    """Bound clio's layer files in the shared home to ``keep`` most-recent (no unbounded leak).
-
-    Reaps ONLY files matching :data:`CODEX_LAYER_GLOB` (clio's ``clio-sb-*`` prefix) — NEVER the
-    user's ``config.toml`` or any unrelated file. Best-effort + guarded: a prune failure must
-    never break a spawn, and a concurrent-unlink race is ignored.
-    """
-    try:
-        files = sorted(
-            (p for p in codex_home.glob(CODEX_LAYER_GLOB) if p.is_file()),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-    except OSError:
-        return
-    for old in files[keep:]:
-        try:
-            old.unlink()
-        except OSError:
-            pass  # a peer spawn may have pruned it already — benign
-
-
-def write_codex_layer(
-    profile_name: str,
-    profile: dict[str, Any],
-    *,
-    elevated: bool,
-    codex_home: Optional[Path | str] = None,
-    platform: str = sys.platform,
-    windows_sandbox: str = "",
-) -> str:
-    """Write the ``-p`` layer file into codex's DEFAULT home and return its layer name.
-
-    The layer lives at ``<codex_home>/<clio-sb-sha8>.config.toml`` inside the REAL ``~/.codex``
-    (resolved from ``codex_home`` arg, else ``$CODEX_HOME``, else ``~/.codex``) — a fresh/custom
-    home was proven to silently drop the write grant. The ``[windows] sandbox = "elevated"``
-    block is emitted ONLY when ``elevated`` on win32. Verified MXC uses its own
-    explicit backend, managed proxy and content-addressed layer (a no-op elsewhere).
-    Validation runs FIRST (:func:`validate_codex_profile`, typed) so a drift never reaches disk;
-    the file is UTF-8 **WITHOUT a BOM** (a BOM breaks codex's TOML parser — verified live). The
-    user's own ``config.toml`` is NEVER touched; only clio's ``clio-sb-*`` layers are pruned.
-    """
-    validate_codex_profile(profile)
-    home = Path(codex_home) if codex_home else codex_home_dir()
-    home.mkdir(parents=True, exist_ok=True)
-    mode = windows_sandbox if platform.startswith("win") else ""
-    layer = codex_layer_name(profile_name, profile, windows_sandbox=mode)
-    body = _render_layer_toml(
-        profile_name,
-        profile,
-        elevated=elevated and platform.startswith("win"),
-        windows_sandbox=mode,
-    )
-    # ``encoding="utf-8"`` writes NO BOM (unlike ``utf-8-sig``); a BOM breaks codex's TOML parse.
-    (home / f"{layer}.config.toml").write_text(body, encoding="utf-8")
-    _prune_layers(home)
-    return layer
-
-
 def codex_prefix(
     binary: str,
     profile_name: str,
@@ -639,7 +581,10 @@ def _run_codex_enforcement_probe(binary: str, write_root: str) -> tuple[bool, st
         # Codex delegates ACL work to background helpers, so stderr goes to a file
         # (a pipe can outlive the command on Windows); file witnesses provide the proof.
         log_marks = _sandbox_log_marks()
-        run = run_probe(argv, timeout=_CODEX_PROBE_TIMEOUT_S)
+        try:
+            run = run_probe(argv, timeout=_CODEX_PROBE_TIMEOUT_S)
+        finally:
+            release_codex_layer(layer)
         if outside_target.exists():
             # The confined child wrote OUTSIDE its territory — the fence did not hold.
             return EnforcementVerdict(False, REASON_CODEX_ENFORCEMENT_ESCAPED, run.describe())
@@ -851,9 +796,11 @@ __all__ = [
     "codex_windows_gate",
     "codex_windows_provisioned",
     "compose_codex_spawn",
+    "composed_layer",
     "detect_codex",
     "is_codex_version_supported",
     "parse_version",
+    "release_codex_layer",
     "synthesize_codex_profile",
     "validate_codex_profile",
     "verify_codex_enforcement",

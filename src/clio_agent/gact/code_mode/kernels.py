@@ -138,6 +138,7 @@ class Kernel:
         self.send_lock = threading.Lock()  # results come back from several call threads
         self.process: subprocess.Popen[bytes] | None = None
         self.tree: Any = None
+        self.spawn: Any = None
         self.python = ""
         #: Start runs once, outside the registry lock; a script arriving meanwhile waits on
         #: it rather than taking the starting kernel for a dead one and replacing it.
@@ -197,6 +198,7 @@ class Kernel:
             cwd=self.workspace,
         )
         self.confinement = confined.result
+        self.spawn = confined
         self.process = _spawn(  # the confined, resolved kernel argv
             [confined.command, *confined.args],
             cwd=str(self.workspace),
@@ -306,6 +308,8 @@ class Kernel:
         finally:
             if self.tree is not None:
                 self.tree.close()
+            if self.spawn is not None:
+                self.spawn.release()
         for stream in (process.stdin, process.stdout, process.stderr):
             if stream is not None:
                 stream.close()

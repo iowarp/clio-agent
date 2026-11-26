@@ -695,6 +695,26 @@ def test_write_layer_prune_keeps_only_clio_layers(tmp_path: Path) -> None:
     assert (tmp_path / "auth.json").is_file()
 
 
+def test_a_layer_leaves_the_codex_home_when_its_last_spawn_releases_it(tmp_path: Path) -> None:
+    """Released layers are removed; a layer another spawn still holds stays until it releases."""
+    profile = sc.synthesize_codex_profile(["/ws"], platform="linux")
+    first = sc.write_codex_layer(
+        "clio", profile, elevated=False, codex_home=tmp_path, platform="linux"
+    )
+    second = sc.write_codex_layer(
+        "clio", profile, elevated=False, codex_home=tmp_path, platform="linux"
+    )
+    assert first == second
+    path = tmp_path / f"{first}.config.toml"
+    sc.release_codex_layer(first, codex_home=tmp_path)
+    assert path.is_file()
+    sc.release_codex_layer(first, codex_home=tmp_path)
+    assert not path.exists()
+    (tmp_path / "config.toml").write_text("# user config\n", encoding="utf-8")
+    sc.release_codex_layer("config", codex_home=tmp_path)
+    assert (tmp_path / "config.toml").is_file()
+
+
 def test_write_layer_reuses_env_codex_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """With no explicit home, $CODEX_HOME is used (the real ~/.codex, never a fresh dir)."""
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))

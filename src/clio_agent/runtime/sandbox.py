@@ -128,6 +128,9 @@ class ConfinedSpawn:
     result: SandboxResult
     #: Private directories created for this spawn alone, removed by :meth:`release`.
     cleanup_dirs: tuple[str, ...] = ()
+    #: The Codex ``-p`` layer this spawn wrote into the Codex home, removed by :meth:`release`.
+    codex_layer: str = ""
+    _released: list[bool] = field(default_factory=list, compare=False, repr=False)
 
     def release(self) -> None:
         """Close this spawn's per-child egress channel once its child has exited (idempotent).
@@ -135,10 +138,16 @@ class ConfinedSpawn:
         Each active spawn opens a loopback listener and an accept thread. A one-shot child (a
         shell command, a document helper) releases them when it exits, or they pile up to the
         channel cap and every later child's egress loses its attribution. Any
-        :attr:`cleanup_dirs` are removed too.
+        :attr:`cleanup_dirs` are removed too, and the spawn's Codex layer leaves the person's
+        Codex home.
         """
         for directory in self.cleanup_dirs:
             shutil.rmtree(directory, ignore_errors=True)
+        if self.codex_layer and not self._released:
+            self._released.append(True)
+            from clio_agent.runtime.sandbox_codex import release_codex_layer  # noqa: PLC0415
+
+            release_codex_layer(self.codex_layer)
         child = str(self.result.details.get("net_child_id") or "")
         if child:
             from clio_agent.runtime.net_chokepoint import close_child_channel  # noqa: PLC0415
@@ -653,6 +662,7 @@ def wrap_confined(
         and sys.platform == "darwin"
     )
     office_pipe_dir: str | None = None
+    codex_layer = ""
 
     # Active backend: fence prefix INNER (pdeathsig outermost below). Every active backend opens a
     # per-child egress channel. For codex this is Recipe A: the proxy overlay lands on the spawned
@@ -712,6 +722,10 @@ def wrap_confined(
             if office_pipe_dir is not None:
                 shutil.rmtree(office_pipe_dir, ignore_errors=True)
             raise
+        if resolved_state.mechanism == MECHANISM_CODEX and not office_seatbelt:
+            from clio_agent.runtime.sandbox_codex import composed_layer  # noqa: PLC0415
+
+            codex_layer = composed_layer(arg_list)
 
     # pdeathsig OUTERMOST (#974.5): the argv-prefix helper folds in last (passthrough sans setpriv).
     if pdeathsig:
@@ -739,6 +753,7 @@ def wrap_confined(
         popen_kwargs=popen_kwargs,
         result=per_call,
         cleanup_dirs=(office_pipe_dir,) if office_pipe_dir is not None else (),
+        codex_layer=codex_layer,
     )
 
 

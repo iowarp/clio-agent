@@ -161,7 +161,11 @@ def probe_codex_linux_fence(binary: str) -> EnforcementVerdict:
     ``net_isolated`` is true only when that fails inside Codex's managed proxy, so CLIO claims
     proxy-enforced egress only where the child has no other route out.
     """
-    from .sandbox_codex import compose_codex_spawn  # noqa: PLC0415 - sandbox_codex imports this
+    from .sandbox_codex import (  # noqa: PLC0415 - sandbox_codex imports this
+        compose_codex_spawn,
+        composed_layer,
+        release_codex_layer,
+    )
 
     try:
         with (
@@ -181,6 +185,7 @@ def probe_codex_linux_fence(binary: str) -> EnforcementVerdict:
                 platform="linux",
             )
             run = run_probe([command, *args], timeout=_LINUX_FENCE_PROBE_TIMEOUT_S)
+            release_codex_layer(composed_layer(args))
             if run.returncode == 0 and (Path(allow) / "started").is_file():
                 if (Path(allow) / "net-isolated").is_file():
                     return EnforcementVerdict(True, "codex_linux_fence_verified", net_isolated=True)
