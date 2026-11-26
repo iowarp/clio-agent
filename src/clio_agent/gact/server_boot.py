@@ -153,9 +153,15 @@ def mark_real_server(app: "FastAPI") -> None:
     """Mark the app ``run_server`` serves: it attaches clio-core and runs the boot doctor
     (``server_boot``), and it owns its process (``owns_process``), so only it may be
     ended by the shutdown budget. Tests that set ``server_boot`` share their process.
+    It also seeds the shipped network rules CLIO has not seeded before (default_network_rules).
     """
     app.state.server_boot = True
     app.state.owns_process = True
+    from clio_agent.gact.runtime.default_network_rules import (  # noqa: PLC0415
+        seed_default_network_rules,
+    )
+
+    seed_default_network_rules(app)  # the served product's shipped rules; test apps get none
 
 
 async def close_request_owners(app: "FastAPI") -> None:

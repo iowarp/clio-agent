@@ -623,6 +623,38 @@ vocabulary scopes a domain grant. Deny mode is decided at CLIO's proxy, so on ma
 variables; treat it as a policy for cooperating tools, not a network barrier there.
 On Linux, when the fence probe proves isolation, deny mode is a real barrier.
 
+**Network rules: ports, every workspace, and the rules CLIO ships.** A domain rule's
+`host_pattern` may name a port: `github.com:22` matches only connections to port 22,
+and `[::1]:8080` works for an IPv6 literal. A rule with no port matches every port. A
+connection whose port is unknown never matches a rule that names one, so it asks.
+`scope_id: "*"` on a workspace rule means every workspace. An empty `scope_id` on a
+domain rule matches no workspace: a session with no workspace leaves that value, and
+it must not widen into "all". Validation rejects a non-numeric or out-of-range port,
+and `"*"` on a session rule.
+
+At its first boot, the server seeds the rules in
+`gact/runtime/default_network_rules.py`. They are ordinary `allow` rules in
+`permission_policies.json`, so they appear in Settings > Permissions and the person
+can edit or remove them there. Each carries `metadata.source: "clio_default"`, an id,
+a reason and a protocol. `permission_policies.json` records each id it seeds under
+`seeded_default_rules`, so a removed or edited rule is never seeded again, and a later
+release seeds only the ids it adds. The rules share the bottom priority band, so any
+rule the person adds or answers wins over them. Protocol is a description only: the
+chokepoint relays an opaque tunnel and doesn't check what runs inside it.
+
+| Rule | Protocol | Why it ships |
+|---|---|---|
+| `github.com:22`, `ssh.github.com:443` | ssh | git and gh over SSH (gh's `git_protocol=ssh`) |
+| `github.com:443`, `api.github.com:443` | https | git and gh over HTTPS, CLIO's GitHub storage |
+| `codeload.github.com:443`, `objects.githubusercontent.com:443` | https | plugin and skill archives, release assets |
+| `pypi.org:443`, `files.pythonhosted.org:443` | https | uv and pip installs |
+| `registry.npmjs.org:443` | https | npm installs for skills and tools |
+
+The rules take effect only where the chokepoint gates: deny-mode workspaces, and the
+write gate's plain-HTTP writes. Outside deny mode, every connection is already allowed
+and recorded. Other forges, conda-forge, crates and site mirrors are added the same
+way, as a rule in Settings or with `PUT /v1/policies`.
+
 ### Local listeners
 
 The CLIO server listens on `127.0.0.1` at the `gact.port` (17800 by default) unless

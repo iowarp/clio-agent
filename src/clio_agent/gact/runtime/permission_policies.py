@@ -39,10 +39,12 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.gact.runtime.default_network_rules import SEEDED_KEY, read_seeded
 from clio_agent.gact.runtime.grant_resolver import (
     _VALID_KINDS as VALID_KINDS,  # kind enumeration owner (B4 #1057 — validate at the boundary)
 )
 from clio_agent.gact.runtime.grant_resolver import (
+    ANY_WORKSPACE,
     EXTERNAL_MCP_CONTEXT_KIND,
     KIND_BROWSER_CERTIFICATE,
     KIND_BROWSER_HOST,
@@ -260,6 +262,33 @@ def _validate_permission_policies(
                 }
             )
 
+        host_raw = policy.get("host_pattern")
+        if (
+            isinstance(host_raw, str)
+            and host_raw
+            and str(policy.get("kind") or KIND_DOMAIN).strip() == KIND_DOMAIN
+        ):
+            head, sep, tail = host_raw.rpartition(":")
+            names_port = sep and (":" not in head or (head.startswith("[") and head.endswith("]")))
+            if names_port and not (tail.isascii() and tail.isdigit() and 1 <= int(tail) <= 65535):
+                policy_has_errors = True
+                errors.append(
+                    {
+                        "index": index,
+                        "field": "host_pattern",
+                        "message": "a domain host_pattern's :port must be a number 1-65535",
+                    }
+                )
+        if policy.get("scope_id") == ANY_WORKSPACE and scope != "workspace":
+            policy_has_errors = True
+            errors.append(
+                {
+                    "index": index,
+                    "field": "scope_id",
+                    "message": f"scope_id {ANY_WORKSPACE!r} (every workspace) needs scope workspace",
+                }
+            )
+
         if policy_has_errors:
             continue
 
@@ -308,11 +337,15 @@ def _flush_permission_policies(app: "FastAPI") -> None:
         return
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # The shipped-default record survives every save, so a removed default stays removed.
+    seeded = getattr(app.state, "seeded_default_rules", None)
+    if seeded is None:
+        seeded = read_seeded(path) or {}
+    body: dict[str, Any] = {"policies": app.state.permission_policies}
+    if seeded:
+        body[SEEDED_KEY] = seeded
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps({"policies": app.state.permission_policies}, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
+    tmp.write_text(json.dumps(body, indent=2, sort_keys=True), encoding="utf-8")
     tmp.replace(path)
 
 
@@ -515,13 +548,15 @@ def _host_action_for(
     *,
     workspace_id: str,
     host: str,
+    port: int = 0,
 ) -> str:
     """Return the first matching WORKSPACE-scoped ``host_pattern`` policy action (B5 #979.5).
 
     Consulted by the deny-mode egress chokepoint gate: a workspace-scoped ``host_pattern``
     fnmatch (the ``path_pattern`` shape, applied to the requested authority host) whose action
     is ``allow``/``allow_workspace`` lets the CONNECT through with no gate; ``deny`` blocks it.
-    ``""`` means no host policy matched (the caller then opens the interactive gate).
+    ``""`` means no host policy matched (the caller then opens the interactive gate). A
+    ``host:port`` rule matches only a connection to that ``port``.
 
     SESSION-scoped ``host_pattern`` policies are DELIBERATELY NOT honoured here (review
     finding 2). The egress a fleet child opens is workspace-SHARED — one persistent confined
@@ -544,4 +579,5 @@ def _host_action_for(
         host,
         policies=getattr(app.state, "permission_policies", []),
         workspace_id=workspace_id,
+        port=port,
     )

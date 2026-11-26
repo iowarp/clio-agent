@@ -85,6 +85,28 @@ KIND_BROWSER_HOST = "browser_host"
 KIND_BROWSER_CERTIFICATE = "browser_certificate"
 #: The kinds whose subject is ``host_pattern``.
 HOST_KINDS = frozenset({KIND_DOMAIN, KIND_BROWSER_HOST, KIND_BROWSER_CERTIFICATE})
+#: A workspace rule's ``scope_id`` that names every workspace. Explicit, because an EMPTY
+#: domain ``scope_id`` is what an answer from a workspace-less session leaves, never "all".
+ANY_WORKSPACE = "*"
+#: The band CLIO's shipped rules sit in: below every rule the person adds or answers, so their
+#: own allow or deny for the same host always wins (next_append_priority skips this band).
+SHIPPED_RULE_PRIORITY = -1_000_000
+
+
+def host_pattern_port(host_pattern: str) -> tuple[str, int | None]:
+    """Split a domain rule's ``host[:port]`` subject (``github.com:22``, ``[::1]:22``).
+
+    No port (a bare host or IPv6 literal) matches every port. A suffix that is not ASCII digits
+    is not a port; validation rejects it on a domain row.
+    """
+
+    head, sep, tail = host_pattern.rpartition(":")
+    if not sep or not (tail.isascii() and tail.isdigit()):
+        return host_pattern, None
+    if head.startswith("[") and head.endswith("]"):
+        return head[1:-1], int(tail)
+    return (host_pattern, None) if ":" in head else (head, int(tail))
+
 
 #: The full set of explicit ``kind`` discriminators a stored row may declare.
 _VALID_KINDS = frozenset(
@@ -287,15 +309,15 @@ def _scope_matches(
     scope_id = str(policy.get("scope_id") or "")
     if kind == KIND_DOMAIN:
         # Leak guard (permission_policies._host_action_for): ONLY a workspace-scoped host row
-        # with an EXPLICIT matching scope_id — session-scoped and empty-scope_id rows never
-        # widen an unattributable fleet-shared egress connection.
-        return scope == "workspace" and scope_id == workspace_id
+        # with an EXPLICIT matching scope_id (or the explicit ANY_WORKSPACE) — session-scoped
+        # and empty-scope_id rows never widen an unattributable fleet-shared egress connection.
+        return scope == "workspace" and scope_id in (workspace_id, ANY_WORKSPACE)
     # tool / fs_root: honour session AND workspace scope; empty scope_id is a wildcard for that
     # scope type (preserving _policy_action_for_tool verbatim).
     if scope == "session":
         return not scope_id or scope_id == session_id
     if scope == "workspace":
-        return not scope_id or scope_id == workspace_id
+        return not scope_id or scope_id in (workspace_id, ANY_WORKSPACE)
     return False
 
 
@@ -311,8 +333,20 @@ def _path_pattern_matches(path_pattern: str, path: str) -> bool:
     return any(fnmatch.fnmatchcase(candidate, path_pattern) for candidate in candidates)
 
 
-def _subject_matches(kind: str, policy: Mapping[str, Any], pattern: str, path: str) -> bool:
-    """Return whether ``policy``'s subject encoding matches this ``kind`` call."""
+def _subject_matches(
+    kind: str, policy: Mapping[str, Any], pattern: str, path: str, port: int = 0
+) -> bool:
+    """Return whether ``policy``'s subject encoding matches this ``kind`` call.
+
+    A domain rule that names a port matches only a connection to that port; a caller that
+    does not know the port (``0``) never matches it.
+    """
+
+    if kind == KIND_DOMAIN:
+        host_glob, rule_port = host_pattern_port(str(policy.get("host_pattern") or "").lower())
+        if not host_glob.strip() or (rule_port is not None and rule_port != port):
+            return False
+        return fnmatch.fnmatchcase(pattern.strip().lower(), host_glob.strip())
 
     if kind == KIND_BROWSER_CERTIFICATE:
         # The exact host and the exact key: ``path`` carries the certificate's fingerprint.
@@ -455,6 +489,8 @@ def next_append_priority(policies: list[Any]) -> int:
         if not isinstance(policy, dict):
             continue
         priority = _effective_priority(policy, index, total)
+        if priority <= SHIPPED_RULE_PRIORITY:
+            continue  # the shipped band stays below every rule the person makes
         if not found or priority < minimum:
             minimum = priority
             found = True
@@ -472,6 +508,7 @@ def resolve(
     mode: str = "",
     event: str = "",
     playbook_allowed: tuple[str, ...] | None = None,
+    port: int = 0,
 ) -> str:
     """Return the winning matching policy's RAW action, or ``""`` when nothing matches.
 
@@ -479,7 +516,8 @@ def resolve(
     (``kind="tool"``) and ``_host_action_for`` (``kind="domain"``). ``pattern`` is the kind's
     subject: tool name (``tool``), host (``domain``), or path (``fs_root``). ``path`` is the optional
     path-glob refinement a ``tool`` policy may carry (unused for domain/fs_root); ``mode``/``event``
-    drive the ``modes``/``on`` axis narrowing (P0.2 #1060, see :func:`_axis_matches`).
+    drive the ``modes``/``on`` axis narrowing (P0.2 #1060, see :func:`_axis_matches`). ``port`` is
+    a domain connection's port, matched against a ``host:port`` rule (``0`` = unknown).
 
     **Priority-banded evaluation (P0.1 #1059).** Instead of first-match-return, ALL rows matching
     ``(kind, subject, scope)`` are collected, then the HIGHEST-priority band wins; within a highest
@@ -506,6 +544,7 @@ def resolve(
             mode=mode,
             event=event,
             playbook_allowed=playbook_allowed,
+            port=port,
         )
     )
 
@@ -521,6 +560,7 @@ def _collect_matches(
     mode: str,
     event: str,
     playbook_allowed: tuple[str, ...] | None = None,
+    port: int = 0,
 ) -> list[tuple[int, str, bool]]:
     """Collect every matching ``(priority, action, is_plan_acl)`` for a resolve call.
 
@@ -550,7 +590,7 @@ def _collect_matches(
             continue
         if not _scope_matches(kind, policy, session_id, workspace_id):
             continue
-        if not _subject_matches(kind, policy, pattern, path):
+        if not _subject_matches(kind, policy, pattern, path, port):
             continue
         if not _axis_matches(policy, mode, event):
             continue
