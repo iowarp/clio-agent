@@ -35,6 +35,9 @@ from clio_agent.runtime import net_connect, net_git_ssh
 
 logger = logging.getLogger(__name__)
 
+#: The Windows shim directory's launcher for Git's ssh; no shell metacharacters in the name.
+GIT_SSH_PROGRAM = "clio-git-ssh"
+
 
 def _helper() -> Path:
     return Path(net_connect.__file__).resolve()
@@ -66,15 +69,15 @@ def _windows_launcher() -> bytes | None:
         return None
 
 
-def _exe_shim(launcher: bytes, python: str, helper: str, shim_dir: str, tool: str) -> bytes:
-    """A launcher + shebang + zipped ``__main__`` that runs the helper as ``<tool>``.
+def _exe_shim(launcher: bytes, python: str, helper: str, leading: list[str]) -> bytes:
+    """A launcher + shebang + zipped ``__main__`` that runs ``helper`` with ``leading`` args.
 
     The launcher forwards argv, stdio and the exit code, and ties the interpreter to its own
     lifetime, exactly as a pip console script does.
     """
     main = (
         "import runpy, sys\n"
-        f"sys.argv[:1] = [{helper!r}, {shim_dir!r}, {tool!r}]\n"
+        f"sys.argv[:1] = {[helper, *leading]!r}\n"
         f"runpy.run_path({helper!r}, run_name='__main__')\n"
     )
     archive = io.BytesIO()
@@ -97,7 +100,9 @@ def _shims(python: str, helper: str, shim_dir: str) -> dict[str, bytes]:
     launcher = _windows_launcher()
     if launcher is not None:
         for tool in net_connect.TOOLS:
-            shims[f"{tool}.exe"] = _exe_shim(launcher, python, helper, shim_dir, tool)
+            shims[f"{tool}.exe"] = _exe_shim(launcher, python, helper, [shim_dir, tool])
+        git_helper = str(Path(net_git_ssh.__file__).resolve())
+        shims[f"{GIT_SSH_PROGRAM}.exe"] = _exe_shim(launcher, python, git_helper, [shim_dir])
     return shims
 
 
@@ -160,7 +165,15 @@ def fence_ssh_environment(environment: dict[str, str]) -> dict[str, str]:
 
 
 def git_ssh_command(directory: Path) -> str:
-    """The fence's ``GIT_SSH_COMMAND``: Git's shell runs :mod:`net_git_ssh`."""
+    """The fence's ``GIT_SSH_COMMAND``, which runs :mod:`net_git_ssh`.
+
+    Git starts a ``GIT_SSH_COMMAND`` that has no shell metacharacters directly, without
+    ``sh -c``. Git for Windows' ``sh`` cannot start inside the native Windows fence (its MSYS
+    runtime is refused a named-object directory), so there the command is the bare name of the
+    shim directory's launcher, which ``PATH`` resolves.
+    """
+    if (directory / f"{GIT_SSH_PROGRAM}.exe").is_file():
+        return GIT_SSH_PROGRAM
     helper = Path(net_git_ssh.__file__).resolve()
     return shlex.join([sys.executable, "-I", str(helper), str(directory)])
 

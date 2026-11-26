@@ -444,12 +444,18 @@ def test_a_fenced_shell_finds_the_shims_first(monkeypatch: pytest.MonkeyPatch) -
     assert overlay["PATH"] == os.pathsep.join([str(shims), "/usr/bin"])
     assert overlay["CLIO_EXECUTION_PATH"] == os.pathsep.join([str(shims), "/managed"])
     suffix = ".cmd" if os.name == "nt" else ""
-    assert shlex.split(overlay["GIT_SSH_COMMAND"]) == [
-        sys.executable,
-        "-I",
-        GIT_HELPER,
-        str(shims),
-    ]
+    if os.name == "nt":
+        # Git runs a metacharacter-free command without sh, which cannot start in the fence.
+        assert overlay["GIT_SSH_COMMAND"] == fence_ssh.GIT_SSH_PROGRAM
+        git_exe = (shims / f"{fence_ssh.GIT_SSH_PROGRAM}.exe").read_bytes()
+        assert git_exe.startswith(b"MZ") and b"net_git_ssh.py" in git_exe
+    else:
+        assert shlex.split(overlay["GIT_SSH_COMMAND"]) == [
+            sys.executable,
+            "-I",
+            GIT_HELPER,
+            str(shims),
+        ]
     assert net_git_ssh.PERSON_GIT_SSH_COMMAND not in overlay
     for tool in net_connect.TOOLS:
         shim = shims / f"{tool}{suffix}"
@@ -470,7 +476,9 @@ def test_a_chosen_git_ssh_still_crosses_the_fence(monkeypatch: pytest.MonkeyPatc
     overlay = fence_ssh.fence_ssh_environment(
         {"PATH": "/usr/bin", "GIT_SSH": "/my/ssh", "GIT_SSH_COMMAND": "/my/ssh -i key"}
     )
-    assert GIT_HELPER in overlay["GIT_SSH_COMMAND"]
+    assert overlay["GIT_SSH_COMMAND"] == fence_ssh.git_ssh_command(
+        Path(overlay["PATH"].split(os.pathsep)[0])
+    )
     assert overlay[net_git_ssh.PERSON_GIT_SSH_COMMAND] == "/my/ssh -i key"
     assert overlay[net_git_ssh.PERSON_GIT_SSH] == "/my/ssh"
     again = fence_ssh.fence_ssh_environment({"PATH": "/usr/bin", **overlay})
