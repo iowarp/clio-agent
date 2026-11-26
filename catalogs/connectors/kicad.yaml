@@ -30,7 +30,7 @@
       - --with
       - install-jdk>=1.1,<2
       - --from
-      - git+https://github.com/JaimeCernuda/kicad-mcp-pro@b17c3fd48433ea068ef9fb9e5427fdfd47f1084d
+      - git+https://github.com/JaimeCernuda/kicad-mcp-pro@63d22a88d50d9749011b900c47b7bb78b5249cc0
       - kicad-mcp-pro
       - --transport
       - stdio
