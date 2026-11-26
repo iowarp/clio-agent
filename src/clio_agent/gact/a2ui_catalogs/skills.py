@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import functools
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -35,7 +36,11 @@ from clio_agent.gact.a2ui_catalogs.media_sources import media_source_lines
 from clio_agent.gact.skills import SkillRef
 
 if TYPE_CHECKING:
+    from clio_agent.gact.a2ui_capability_selection import CatalogSelection
     from clio_agent.gact.a2ui_catalogs.registry import CatalogEntry
+
+#: Reads the session's current catalog selection (``select_catalog(record=False)``).
+SelectionReader = Callable[[], "CatalogSelection"]
 
 #: Every generated catalog skill id starts with this prefix.
 CATALOG_SKILL_PREFIX = "a2ui-catalog-"
@@ -134,51 +139,86 @@ def _event_lines(entry: "CatalogEntry") -> list[str]:
 #: react expert that only ever uses ``prompt_block``), so an auto-declared
 #: catalog skill regenerated its body on EVERY turn build before this cache
 #: existed -- measured 40 regenerations across 20 builds (2 catalogs x 20).
-_BODY_CACHE: dict[tuple[str, bool], str] = {}
+_BODY_CACHE: dict[tuple[str, str], str] = {}
 _BODY_CACHE_LOCK = threading.Lock()
 
 
-def generate_catalog_skill_body(entry: "CatalogEntry", *, is_default: bool = False) -> str:
+def generate_catalog_skill_body(
+    entry: "CatalogEntry",
+    *,
+    is_default: bool = False,
+    selection: SelectionReader | None = None,
+) -> str:
     """Render (or return the cached) generated ``SKILL.md`` text.
 
     Frontmatter (``name``/``description`` from the catalog file's own
     ``title``/``description``), then the catalog's own ``catalogId`` and
-    whether it is this agent's default catalog (v15 S8: its first declared
-    one), then schema lookup guidance and the generated function/component
-    index, then the sidecar ``instructions.md`` verbatim and declared events.
-    The bounded tool preview must expose exact lookup paths before long
-    producer guidance -- never the
+    what a surface created in this session gets: with ``selection`` (a
+    session's live :func:`~clio_agent.gact.a2ui_capability_selection.
+    select_catalog` read, taken when the skill is loaded) the role states the
+    catalog an empty ``catalog_id`` selects and whether this session's client
+    renders this one; without it, the agent's declared order (``is_default``:
+    its first declared catalog). Then schema lookup guidance and the generated
+    function/component index, then the sidecar ``instructions.md`` verbatim
+    and declared events. The bounded tool preview must expose exact lookup
+    paths before long producer guidance -- never the
     component shapes themselves (the catalog file is the allowlist, S2).
-    Cached by ``(checksum, is_default)``.
+    Cached by ``(checksum, role)``.
     """
 
-    key = (entry.checksum, is_default)
+    role = _catalog_role(entry, is_default=is_default, selection=selection() if selection else None)
+    key = (entry.checksum, role)
     with _BODY_CACHE_LOCK:
         cached = _BODY_CACHE.get(key)
     if cached is not None:
         return cached
-    rendered = _render_catalog_skill_body(entry, is_default=is_default)
+    rendered = _render_catalog_skill_body(entry, role=role)
     with _BODY_CACHE_LOCK:
         return _BODY_CACHE.setdefault(key, rendered)
 
 
-def _catalog_identity_lines(entry: "CatalogEntry", *, is_default: bool) -> list[str]:
-    """The catalog's id and its role for this agent (generated, never hand-typed)."""
+def _catalog_role(
+    entry: "CatalogEntry", *, is_default: bool, selection: "CatalogSelection | None"
+) -> str:
+    """What creating a surface against this catalog does (generated, never hand-typed)."""
 
-    if is_default:
-        role = (
-            "This is this agent's default catalog: a surface created with an empty "
-            "`catalog_id` uses it."
-        )
-    else:
-        role = (
+    catalog_id = entry.catalog_id
+    if selection is None:
+        if is_default:
+            return (
+                "This is this agent's default catalog: a surface created with an empty "
+                "`catalog_id` uses it."
+            )
+        return (
             "This is not this agent's default catalog: a surface created with an "
-            f'empty `catalog_id` does not use it, so pass `catalog_id="{entry.catalog_id}"`.'
+            f'empty `catalog_id` does not use it, so pass `catalog_id="{catalog_id}"`.'
         )
-    return [f"Catalog id: `{entry.catalog_id}`", "", role, ""]
+    if selection.reason == "a2ui_client_capabilities_unknown":
+        return (
+            "This session's client has not said which catalogs it renders, so no "
+            "surface can be created yet."
+        )
+    if catalog_id not in selection.client_supported_catalog_ids:
+        chosen = (
+            f" A surface created with an empty `catalog_id` uses `{selection.catalog_id}`."
+            if selection.ok
+            else ""
+        )
+        return (
+            "This session's client does not render this catalog, so a surface "
+            f"cannot use it.{chosen}"
+        )
+    if selection.catalog_id == catalog_id:
+        return (
+            "This is the catalog a surface created with an empty `catalog_id` uses in this session."
+        )
+    return (
+        "A surface created with an empty `catalog_id` uses "
+        f'`{selection.catalog_id}`, so pass `catalog_id="{catalog_id}"` to use this one.'
+    )
 
 
-def _render_catalog_skill_body(entry: "CatalogEntry", *, is_default: bool = False) -> str:
+def _render_catalog_skill_body(entry: "CatalogEntry", *, role: str) -> str:
     """The actual, uncached rendering (see :func:`generate_catalog_skill_body`)."""
 
     file = entry.file
@@ -193,7 +233,10 @@ def _render_catalog_skill_body(entry: "CatalogEntry", *, is_default: bool = Fals
         "",
         f"# {title}",
         "",
-        *_catalog_identity_lines(entry, is_default=is_default),
+        f"Catalog id: `{entry.catalog_id}`",
+        "",
+        role,
+        "",
     ]
     lines.extend(
         [
@@ -221,7 +264,12 @@ def _render_catalog_skill_body(entry: "CatalogEntry", *, is_default: bool = Fals
     return "\n".join(lines).strip() + "\n"
 
 
-def _catalog_skill_ref(entry: "CatalogEntry", *, is_default: bool = False) -> SkillRef:
+def _catalog_skill_ref(
+    entry: "CatalogEntry",
+    *,
+    is_default: bool = False,
+    selection: SelectionReader | None = None,
+) -> SkillRef:
     # PRIMARY root = the sidecar directory (entry.root_path): holds
     # catalog.clio.json + instructions.md for every catalog, and catalog.json
     # too for every catalog EXCEPT the vendored Basic catalog, whose
@@ -252,11 +300,15 @@ def _catalog_skill_ref(entry: "CatalogEntry", *, is_default: bool = False) -> Sk
         source=entry.source,
         layout="skill_md",
         meta={"name": skill_id, "description": description},
-        body_provider=functools.partial(generate_catalog_skill_body, entry, is_default=is_default),
+        body_provider=functools.partial(
+            generate_catalog_skill_body, entry, is_default=is_default, selection=selection
+        ),
     )
 
 
-def discover_catalog_skill_refs(entries: "list[CatalogEntry]") -> list[SkillRef]:
+def discover_catalog_skill_refs(
+    entries: "list[CatalogEntry]", *, selection: SelectionReader | None = None
+) -> list[SkillRef]:
     """Return one generated :class:`SkillRef` per given catalog entry.
 
     The CALLER resolves which entries are in scope
@@ -268,10 +320,15 @@ def discover_catalog_skill_refs(entries: "list[CatalogEntry]") -> list[SkillRef]
     resolution is in declared preference order), never decides producibility (a bare
     ``registry.installed()`` walk would miss a path-activated pack the
     app-level registry's own discovery never sees, silently under-declaring
-    catalog skills for exactly that session).
+    catalog skills for exactly that session). ``selection`` reads the session's
+    live catalog selection when a skill body is loaded, so each body states what
+    an empty or explicit ``catalog_id`` actually gets with this client.
     """
 
-    return [_catalog_skill_ref(entry, is_default=index == 0) for index, entry in enumerate(entries)]
+    return [
+        _catalog_skill_ref(entry, is_default=index == 0, selection=selection)
+        for index, entry in enumerate(entries)
+    ]
 
 
 __all__ = [
