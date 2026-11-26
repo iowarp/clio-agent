@@ -22,6 +22,7 @@ def titled(monkeypatch: pytest.MonkeyPatch) -> None:
     presentations = dict(tool_instrumentation._TOOL_PRESENTATIONS)
     presentations["viewer_set_timestep"] = ("default", "Change the timestep")
     presentations["viewer_untitled"] = ("default", "")
+    presentations["shell_bash"] = ("default", "Bash")
     monkeypatch.setattr(tool_instrumentation, "_TOOL_PRESENTATIONS", presentations)
 
 

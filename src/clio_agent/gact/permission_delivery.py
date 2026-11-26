@@ -60,8 +60,9 @@ def permission_title(row: Mapping[str, Any]) -> str:
     The row's own ``title`` wins, then a summary that is already the sentence a person reads
     (a native tool's, a view tool's declared title, a consent). A summary that names the
     tool by its identifier (the plain ``<subject> call: <name>`` line, a hook deferral)
-    reads as the tool's declared title, else as a generic action: a card is never titled
-    with a tool id. ``summary`` stays the technical line either way.
+    reads as a built-in's curated action (the shell server's ``bash`` reads "Run command",
+    not its name as a word), else the tool's declared title, else a generic action: a card
+    is never titled with a tool id. ``summary`` stays the technical line either way.
     """
 
     from clio_agent.tools.builtin_annotations import BUILTIN_TOOL_TITLES  # noqa: PLC0415
@@ -73,7 +74,7 @@ def permission_title(row: Mapping[str, Any]) -> str:
     summary = str(row.get("summary") or "")
     if not name or (summary and name not in summary):
         return summary
-    if title := tool_title(name) or BUILTIN_TOOL_TITLES.get(name, ""):
+    if title := BUILTIN_TOOL_TITLES.get(name, "") or tool_title(name):
         return title
     server = name.partition("_")[0] if row.get("kind") == "external_mcp" else ""
     return f"Use a tool from {server}" if server else "Use a tool"
