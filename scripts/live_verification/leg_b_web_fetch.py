@@ -106,6 +106,8 @@ def web_mcp_configuration(remote_url: str) -> dict[str, Any]:
         "transport": "stdio",
         "command": "clio-kit",
         "args": ["mcp-server", "web", "--remote-url", remote_url],
+        # Takes the web plugin's own local server's place in this person's sessions.
+        "replaces_plugin_server": True,
     }
 
 

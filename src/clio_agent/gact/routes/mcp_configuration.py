@@ -42,6 +42,18 @@ def _configuration_name(value: str) -> str:
 def _configuration_spec(body: dict[str, Any]) -> dict[str, Any]:
     """Normalize a declaration through the public install grammar."""
 
+    replaces = body.get("replaces_plugin_server")
+    if replaces is not None and not isinstance(replaces, bool):
+        raise HTTPException(422, "replaces_plugin_server must be a boolean")
+    spec = _transport_spec(body)
+    if replaces:
+        spec["replaces_plugin_server"] = True
+    return spec
+
+
+def _transport_spec(body: dict[str, Any]) -> dict[str, Any]:
+    """The declaration's transport half."""
+
     transport_kind = str(body.get("transport") or "stdio").lower()
     connection_only = body.get("connection_only")
     if connection_only is not None and not isinstance(connection_only, bool):
