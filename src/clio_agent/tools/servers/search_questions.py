@@ -116,7 +116,8 @@ async def answered_run(ctx: Context, body: Callable[[], Awaitable[dict[str, Any]
         return input_required(ask.decision)
     except broker.WaitingForPerson as waiting:
         failure = note("search_waiting_for_person", detail=str(waiting))
-        return ToolFailure({"ok": False, "error": failure.as_dict(), "notes": []})
+        # Waiting on the person is the search's pending state, not a failed call.
+        return {"ok": False, "error": failure.as_dict(), "notes": []}
     except SearchFailure as failure:
         return failure.as_result()
     except ValueError as exc:

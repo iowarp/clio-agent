@@ -73,6 +73,10 @@ def latex_build(entry: str, venue: str = "") -> dict[str, Any]:
         _offer_paper(app, sid, workspace_id, found[0].name, found[1])
     else:
         _offer_paper(app, sid, workspace_id, record.name, version)
+    if row.get("pdf") is None:
+        # No PDF was made: the build could not do what was asked; the compiler's own
+        # diagnostics are the payload. A PDF with problems stays a reported result.
+        return ToolFailure(row)
     return row
 
 
