@@ -71,6 +71,22 @@ def test_the_launchers_bin_dir_then_nothing(
     assert platform_helper.clio_tool("uv") == str(uv)
 
 
+def test_a_windows_venv_uses_the_uv_beside_its_interpreter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found live: a Windows venv keeps uv in Scripts beside python.exe, so shells got
+    the person's older uv from PATH instead of CLIO's own."""
+    suffix = ".exe" if os.name == "nt" else ""
+    scripts = tmp_path / "venv/Scripts"
+    scripts.mkdir(parents=True)
+    uv = scripts / f"uv{suffix}"
+    uv.write_text("")
+    monkeypatch.delenv("GACT_BUNDLED_RUNTIME_DIR", raising=False)
+    monkeypatch.setattr(platform_helper.shutil, "which", lambda name: str(tmp_path / "host-uv"))
+    monkeypatch.setattr(sys, "executable", str(scripts / f"python{suffix}"))
+    assert platform_helper.clio_tool("uv") == str(uv)
+
+
 def _target(**fields: object) -> InfrastructureTarget:
     return InfrastructureTarget.model_validate(
         {
