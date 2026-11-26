@@ -78,19 +78,21 @@ def session_overlay(app: Any, sid: str) -> overlay.Overlay:
     return overlay.validated(raw, state.all_entries(), where=root)
 
 
-def session_fleet_variant(app: Any, sid: str) -> str:
-    """The connector-values variant of the fleet serving ``sid`` ("" for the plain one)."""
+def session_fleet_variant(app: Any, sid: str, root: str) -> str:
+    """The variant of the fleet serving ``sid`` at ``root`` ("" for the plain one).
 
-    if not session_overlay(app, sid):
-        return ""
+    Its connector values, and its own fleet when its plugin keeps a person's server
+    name there (:func:`clio_agent.tools.fleet_own_set.fleet_variant`).
+    """
+
     from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
         SessionAgentUnavailable,
         session_server_set,
     )
-    from clio_agent.plugins.servers import server_set_variant  # noqa: PLC0415
+    from clio_agent.tools.fleet_own_set import fleet_variant  # noqa: PLC0415
 
     try:
-        return server_set_variant(session_server_set(app, sid))
+        return fleet_variant(session_server_set(app, sid), root)
     except SessionAgentUnavailable as exc:
         # An agent that does not resolve mounts no plugin servers (its turn fails typed on
         # its own path), so no fleet carries this conversation's values: the plain one.

@@ -48,10 +48,8 @@ def _canonical_root(app: Any, sid: str) -> str:
     from clio_agent.tools.fleet_key import fleet_key  # noqa: PLC0415
     from clio_agent.tools.workspace_root import canonical_workspace_root  # noqa: PLC0415
 
-    root = _fleet_root(app, sid)
-    return (
-        fleet_key(canonical_workspace_root(root), session_fleet_variant(app, sid)) if root else ""
-    )
+    root = canonical_workspace_root(_fleet_root(app, sid))
+    return fleet_key(root, session_fleet_variant(app, sid, root)) if root else ""
 
 
 def _current_fleet(app: Any, sid: str) -> Any:

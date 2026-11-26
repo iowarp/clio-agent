@@ -37,6 +37,7 @@ from clio_agent.tools.execution import (
     get_active_tool_workspace_root,
 )
 from clio_agent.tools.fleet_key import fleet_key
+from clio_agent.tools.fleet_own_set import fleet_variant
 from clio_agent.tools.gateway import namespace_proxies, namespace_specs
 from clio_agent.tools.loop_wait import holding
 from clio_agent.tools.workspace_root import canonical_workspace_root
@@ -73,8 +74,9 @@ def resolve_workspace_executor(agent: Any) -> Any:
     if not root:
         return _rootless_executor(agent, get_active_tool_server_set().strip())
     server_set = get_active_tool_server_set().strip()
-    # CV-D3: a conversation with its own connector values has its own fleet at this root.
-    key = fleet_key(root, server_set_variant(server_set))
+    # CV-D3: a conversation with its own connector values has its own fleet at this root,
+    # and so does a set whose plugin keeps a person's server name (fleet_own_set).
+    key = fleet_key(root, fleet_variant(server_set, root))
     lock, executors, leases = agent._workspace_state()
     with _build_lock(agent, lock, key):
         for _attempt in range(_RESOLVE_ATTEMPTS):

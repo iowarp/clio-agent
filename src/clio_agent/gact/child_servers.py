@@ -128,8 +128,8 @@ def exclusive_servers(app: Any, sid: str) -> tuple[str, Any, list[str]] | None:
     """
 
     from clio_agent.gact.agents.resolution import session_server_set  # noqa: PLC0415
-    from clio_agent.plugins.servers import server_set_variant  # noqa: PLC0415
     from clio_agent.tools.fleet_key import fleet_key  # noqa: PLC0415
+    from clio_agent.tools.fleet_own_set import fleet_variant  # noqa: PLC0415
     from clio_agent.tools.fleet_server_merge import _mounted_server_sets  # noqa: PLC0415
     from clio_agent.tools.workspace_root import canonical_workspace_root  # noqa: PLC0415
 
@@ -147,7 +147,7 @@ def exclusive_servers(app: Any, sid: str) -> tuple[str, Any, list[str]] | None:
         return None
     lock, executors, _leases = state()
     with lock:
-        executor = executors.get(fleet_key(root, server_set_variant(own)))
+        executor = executors.get(fleet_key(root, fleet_variant(own, root)))
     if executor is None or getattr(executor, "closed", False):
         return None
     keep_sets = {mounted for mounted in _mounted_server_sets(executor) if mounted != own}
