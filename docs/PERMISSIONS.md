@@ -382,6 +382,11 @@ changed roots are repaired with one traversal for both restricted users. Allowin
 UAC does not force a fresh native probe. A failed access grant is unsuccessful
 for every entry point.
 
+The setup receipt records the Codex version that was verified. After a Codex
+update the receipt is stale: status reports `codex_setup_stale_version` and names
+both versions. The next server start verifies the new version again without UAC
+and rewrites the receipt.
+
 Open **Infrastructure > CLIO hosts > Protected execution**, or run:
 
 ```powershell
@@ -406,6 +411,37 @@ source read-only; save derived tables, plots and reports in the workspace.
 File edit tools still reject writes to protected source copies before dispatch.
 Private credentials remain excluded from both reads and writes. If the host
 cannot enforce these exclusions, shell execution fails before starting a child.
+
+### Files the fence creates
+
+On Windows, fenced commands run as a restricted sandbox account, which owns what they
+create. A folder made owner-only (Python 3.13+ `tempfile.mkdtemp` and `mkdir(0o700)`
+set a protected ACL) can't be listed, taken over or deleted by the person without
+administrator rights. CLIO's removals go through `runtime/fenced_removal.py`:
+- Scratch, spawn folders, garbage collection and the short-root sweep first try to
+  delete as the person.
+- If that fails, CLIO deletes through the fence's own identity.
+- Each outcome is traced as `fenced_removal_done` or `fenced_removal_failed`, with
+  both errors.
+
+Folder removal never fails silently. Codex can run a command as either sandbox
+account (offline or online), so a folder owned by the other account can survive.
+That case is traced as `fenced_removal_failed`.
+
+For such files in a workspace, run `clio sandbox reclaim` in the folder. It grants the
+person full control through the fence (`fenced_grant_done` or `fenced_grant_failed`).
+
+Deep caches need short roots on Windows. Native-package DLL loads resolve real
+paths, so a junction doesn't keep them inside MAX_PATH. On Windows the shared uv cache
+therefore lives in `%LOCALAPPDATA%\clio-u\<hash of its home path>`, which lasts as long
+as the home, instead of a stand-in in the system temp. At startup the
+short-root sweep removes any of these:
+- stand-ins and links whose home, session or target is gone
+  (`short_root_owner_gone`, `short_root_target_gone`);
+- an old temp stand-in that a home's `clio-u` root replaced (`short_root_superseded`).
+
+A root whose hash doesn't match the path it names isn't CLIO's, and the sweep leaves
+it alone.
 
 ### Network chokepoint + deny mode (#978/#979)
 

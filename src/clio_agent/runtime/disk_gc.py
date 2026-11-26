@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import subprocess
 import time
 import warnings
@@ -43,6 +42,7 @@ from typing import Any
 from clio_agent import conf
 from clio_agent import paths as agent_paths
 from clio_agent.runtime import trace
+from clio_agent.runtime.fenced_removal import remove_tree
 from clio_agent.tools import mcp_cache
 
 __all__ = [
@@ -390,7 +390,7 @@ def _prune_clio_kit_environments(kit_cache: Path | None, *, dry_run: bool) -> GC
             freed += size
             removed += 1
             if not dry_run:
-                shutil.rmtree(victim, ignore_errors=True)
+                remove_tree(victim, why="disk_gc_clio_kit_env")
             trace.event(
                 "DISK-GC",
                 "%sclio_kit_env_evicted path=%s freed=%d",
@@ -567,7 +567,7 @@ def _prune_stale_temp(env: Mapping[str, str], *, now: float, dry_run: bool) -> G
                 freed += size
                 removed += 1
                 if not dry_run:
-                    shutil.rmtree(victim, ignore_errors=True)
+                    remove_tree(victim, why="disk_gc_stale_temp")
                 trace.event(
                     "DISK-GC",
                     "%sstale_temp_evicted path=%s freed=%d age_days=%.1f",

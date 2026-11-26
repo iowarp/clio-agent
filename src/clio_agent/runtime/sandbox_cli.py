@@ -544,8 +544,31 @@ def run_sandbox_cli(
         return _sandbox_status_cli(json_output=json_output)
     if act == "setup":
         return _sandbox_setup_cli(json_output=json_output)
-    _print(f"unknown sandbox action: {act!r} (expected 'setup' or 'status')", json_output, err=True)
+    if act == "reclaim":
+        return _sandbox_reclaim_cli(json_output=json_output)
+    _print(
+        f"unknown sandbox action: {act!r} (expected setup, status or reclaim)",
+        json_output,
+        err=True,
+    )
     return 2
+
+
+def _sandbox_reclaim_cli(*, json_output: bool) -> int:
+    """Give the person full control of the current folder, through the fence's identity.
+
+    For files a fenced child made owner-only (Python's ``mkdtemp``), which the person can
+    neither open nor delete without administrator rights.
+    """
+    from clio_agent.runtime.fenced_removal import grant_person  # noqa: PLC0415
+    from clio_agent.runtime.sandbox import install_sandbox  # noqa: PLC0415
+
+    install_sandbox()
+    folder = Path.cwd()
+    ok = grant_person(folder, why="cli_reclaim")
+    verdict = "you now have full control of" if ok else "could not give you control of"
+    _print(f"{verdict} {folder} (details in the trace)", json_output, err=not ok)
+    return 0 if ok else 1
 
 
 def _sandbox_status_cli(*, json_output: bool) -> int:

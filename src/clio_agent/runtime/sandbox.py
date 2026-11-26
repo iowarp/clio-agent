@@ -22,7 +22,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -32,6 +31,7 @@ from typing import Any, Literal, Optional
 
 from clio_agent import paths
 from clio_agent.runtime.fence_loopback_agent import MXC_LOOPBACK_DETAILS
+from clio_agent.runtime.fenced_removal import remove_tree
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +142,7 @@ class ConfinedSpawn:
         Codex home.
         """
         for directory in self.cleanup_dirs:
-            shutil.rmtree(directory, ignore_errors=True)
+            remove_tree(directory, why="confined_spawn_release")
         if self.codex_layer and not self._released:
             self._released.append(True)
             from clio_agent.runtime.sandbox_codex import release_codex_layer  # noqa: PLC0415
@@ -720,7 +720,7 @@ def wrap_confined(
             )
         except BaseException:
             if office_pipe_dir is not None:
-                shutil.rmtree(office_pipe_dir, ignore_errors=True)
+                remove_tree(office_pipe_dir, why="confined_spawn_release")
             raise
         if resolved_state.mechanism == MECHANISM_CODEX and not office_seatbelt:
             from clio_agent.runtime.sandbox_codex import composed_layer  # noqa: PLC0415
