@@ -59,7 +59,9 @@ def select_catalog(
     preference order (v15 S8 owner ruling: the agent's ``a2ui_catalogs`` is
     its complete, ordered allowlist) -- the first declared catalog the client
     advertises. ``preferred`` (e.g. an explicit tool argument) wins ONLY when
-    it is itself in both sets; it never bypasses either. The choice is not
+    it is itself in both sets; it never bypasses either. ``preferred`` may be the
+    full ``catalogId`` or the short name of one of this session's catalogs (the
+    slug its ``a2ui-catalog-<name>`` skill is listed under), which names that one. The choice is not
     persisted here -- "locked per surface" is a surface-record concern the
     producer tool (S4) owns at ``createSurface`` time.
 
@@ -106,6 +108,8 @@ def select_catalog(
         )
     supported = tuple(caps.v0_9.supportedCatalogIds)
     producible_set = set(producible)
+    if preferred is not None and preferred not in producible_set:
+        preferred = _full_catalog_id(resolved.entries, preferred)
     if preferred is not None:
         if preferred in supported and preferred in producible_set:
             return CatalogSelection(
@@ -150,6 +154,18 @@ def select_catalog(
         client_supported_catalog_ids=supported,
         producible_catalog_ids=producible,
     )
+
+
+def _full_catalog_id(entries: Any, preferred: str) -> str:
+    """The full ``catalogId`` of the one producible catalog whose short name is ``preferred``.
+
+    A catalog is known by its short name (``CatalogEntry.name``, the slug of its
+    ``a2ui-catalog-<name>`` skill) beside its full id; the short name of one of this
+    session's own catalogs names exactly that catalog. Anything else stays as given.
+    """
+
+    matches = {entry.catalog_id for entry in entries if entry.name and entry.name == preferred}
+    return matches.pop() if len(matches) == 1 else preferred
 
 
 def resolution_catalog_ids(resolution: Any) -> list[str]:

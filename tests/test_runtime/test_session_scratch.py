@@ -363,6 +363,79 @@ def test_a_uv_cache_past_its_os_budget_gets_a_short_owned_stand_in(
 
 
 @pytest.mark.parametrize("host", ["windows", "darwin", "linux"])
+def test_a_fenced_folder_inherits_its_parents_grants_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    """Python 3.13+ on Windows turns mode 0o700 into a private ACL the fence cannot reach."""
+
+    monkeypatch.setattr(session_scratch, "_host_os", lambda: host)
+    modes: list[int] = []
+    real_mkdir = Path.mkdir
+
+    def recording_mkdir(self: Path, mode: int = 0o777, *args: Any, **kwargs: Any) -> None:
+        modes.append(mode)
+        real_mkdir(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", recording_mkdir)
+    session_scratch._make_folder(tmp_path / "fenced", fenced=True)
+    session_scratch._make_folder(tmp_path / "own", fenced=False)
+    fenced_mode = 0o777 if host == "windows" else 0o700
+    assert modes == [fenced_mode, 0o700]
+
+
+def test_a_private_stand_in_is_given_back_its_parents_grants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(session_scratch, "_dacl_protected", lambda folder: True)
+    monkeypatch.setattr(
+        "subprocess.run", lambda argv, **kwargs: calls.append(argv) or SimpleNamespace()
+    )
+    session_scratch._inherit_parent_grants(tmp_path, session_scratch.UV_CACHE_ROLE)
+    session_scratch._inherit_parent_grants(tmp_path, session_scratch.SOCKET_ROLE)  # a link
+    session_scratch._inherit_parent_grants(tmp_path, session_scratch.CORE_IPC_ROLE)  # unfenced
+    assert calls == [["icacls", str(tmp_path), "/inheritancelevel:e", "/Q"]]
+
+
+def test_short_roots_whose_folder_is_gone_are_swept(
+    tmp_path: Path, short_temp: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A home deleted outright leaves its short roots; the boot sweep removes only those."""
+
+    monkeypatch.setattr(session_scratch, "_base_dir", lambda kind: short_temp)
+    owner = os.getuid() if hasattr(os, "getuid") else "w"
+
+    def name(n: int) -> Path:
+        return short_temp / f"clio-{owner}-{n:016x}"
+
+    def link(short: Path, target: Path) -> None:
+        if os.name == "nt":
+            import _winapi
+
+            _winapi.CreateJunction(str(target), str(short))
+        else:
+            os.symlink(target, short)
+
+    def stand_in(short: Path, target: Path) -> None:
+        short.mkdir()
+        (short / "owner.txt").write_text(f"{target}\n", encoding="utf-8")
+
+    gone, here = tmp_path / "gone", tmp_path / "here"
+    gone.mkdir()
+    here.mkdir()
+    link(name(1), gone)
+    link(name(2), here)
+    stand_in(name(3), gone / "uv-cache")
+    stand_in(name(4), here / "uv-cache")  # not filled yet: its folder still exists
+    foreign = short_temp / "clio-x-0000000000000005"
+    stand_in(foreign, gone / "uv-cache")
+    gone.rmdir()
+    assert session_scratch.sweep_short_roots() == [name(1), name(3)]
+    assert not os.path.lexists(name(1)) and not name(3).exists()
+    assert os.path.lexists(name(2)) and name(4).is_dir() and foreign.is_dir() and here.is_dir()
+
+
+@pytest.mark.parametrize("host", ["windows", "darwin", "linux"])
 def test_clio_core_ipc_past_the_socket_limit_gets_a_short_owned_folder(
     tmp_path: Path, short_temp: Path, monkeypatch: pytest.MonkeyPatch, host: str
 ) -> None:
@@ -590,14 +663,18 @@ def test_the_boot_sweep_waits_for_the_store_on_the_loop(
 ) -> None:
     """Until the store can be read the sweep waits on the server loop, starts no worker,
     and is cancelled with the server: a worker blocked on the clio-core attach held the
-    shutdown (a startup test hung 180 s under load).
-    SABOTAGE: run ``sweep_sessions`` on a worker straight away and this fails."""
+    shutdown (a startup test hung 180 s under load). Orphaned short roots need no store, so
+    they are swept before the wait: a store that never attaches must not keep them.
+    SABOTAGE: run ``sweep_sessions`` on a worker straight away, or sweep the short roots
+    only after the store is readable, and this fails."""
     import asyncio
 
     threads: list[str] = []
+    roots: list[str] = []
     monkeypatch.setattr(
         session_scratch_sweep, "sweep_sessions", lambda sessions: threads.append("ran") or []
     )
+    monkeypatch.setattr(session_scratch, "sweep_short_roots", lambda: roots.append("ran") or [])
     monkeypatch.setattr(session_scratch_sweep, "_READY_POLL_S", 0.01)
 
     class Attaching:
@@ -607,7 +684,7 @@ def test_the_boot_sweep_waits_for_the_store_on_the_loop(
         store = Attaching()
         task = asyncio.create_task(session_scratch_sweep.sweep_when_readable(store))
         await asyncio.sleep(0.05)
-        assert threads == [] and not task.done()
+        assert threads == [] and roots == ["ran"] and not task.done()
         store.readable = True
         assert await asyncio.wait_for(task, 1.0) == []
         assert threads == ["ran"]
@@ -616,7 +693,7 @@ def test_the_boot_sweep_waits_for_the_store_on_the_loop(
         waiting.cancel()
         with pytest.raises(asyncio.CancelledError):
             await waiting
-        assert threads == ["ran"]
+        assert threads == ["ran"] and roots == ["ran", "ran"]
 
     asyncio.run(scenario())
 

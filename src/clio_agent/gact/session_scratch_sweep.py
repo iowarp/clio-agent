@@ -2,7 +2,10 @@
 
 A deleted session's scratch folder goes with it
 (:func:`clio_agent.gact.session_tool_output.delete_session_tool_output`). This sweep
-removes the rest: this machine's folders whose session no longer exists, or whose
+removes the rest: first, without waiting for the session store, this user's short roots in
+the system temp whose folder is gone
+(:func:`clio_agent.runtime.session_scratch.sweep_short_roots`); then this machine's folders
+whose session no longer exists, or whose
 session's last activity (``last_interaction_at``, else ``created_at``) is older than
 ``paths.scratch_retention_days``. It waits for the session store on the server loop
 (cancelled with the server) and then runs on a worker thread: a worker blocked on the
@@ -108,8 +111,14 @@ def sweep_sessions(sessions: Any) -> list[str]:
 
 
 async def sweep_when_readable(sessions: Any) -> list[str]:
-    """Wait on the loop until the session store can be read, then sweep on a worker."""
+    """Sweep orphaned short roots, wait on the loop for the session store, then sweep it.
 
+    Short roots need no session store, so they are swept first: a store that never
+    attaches (an unclean stop often leaves clio-core unattachable) must not keep the
+    roots of deleted homes in the system temp.
+    """
+
+    await asyncio.to_thread(session_scratch.sweep_short_roots)
     waited = 0.0
     while not getattr(sessions, "readable", True):
         if waited >= _READY_WAIT_S:

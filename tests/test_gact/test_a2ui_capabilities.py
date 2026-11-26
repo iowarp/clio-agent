@@ -313,6 +313,9 @@ def test_select_catalog_preferred_wins_only_when_in_both_sets(tmp_path: Path) ->
     remember_client_capabilities(app, session.id, caps)
     # preferred is producible AND client-supported -> wins over preference order
     assert select_catalog(app, session.id, preferred=BASIC_ID).catalog_id == BASIC_ID
+    # a catalog's short name (its a2ui-catalog-<name> skill slug) names that catalog
+    assert select_catalog(app, session.id, preferred="basic").catalog_id == BASIC_ID
+    assert select_catalog(app, session.id, preferred="clio-workspace").catalog_id == WORKSPACE_ID
     # preferred not client-supported -> a typed non-selection, NEVER a silent
     # substitution of a different catalog the caller did not ask for.
     selection = select_catalog(app, session.id, preferred="unsupported/catalog")

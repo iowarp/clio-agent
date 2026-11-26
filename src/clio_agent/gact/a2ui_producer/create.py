@@ -235,9 +235,10 @@ def build_create_a2ui_surface_tool() -> Any:
             "catalog_id": {
                 "type": "string",
                 "description": (
-                    "Catalog id for a NEW surface (must be both client-"
-                    "advertised and one this agent declares, or the call is "
-                    "refused); empty selects this agent's first declared catalog "
+                    "Catalog for a NEW surface: its full catalogId or its short "
+                    "name (the <slug> of a2ui-catalog-<slug>). It must be both "
+                    "client-advertised and one this agent declares, or the call is "
+                    "refused; empty selects this agent's first declared catalog "
                     "the client supports."
                 ),
             },

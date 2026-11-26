@@ -69,9 +69,9 @@ def clio_tool(name: str, interpreter: str | None = None) -> str | None:
 
     CLIO brings its tools, so a host needs none installed. Checked in order: the
     bundled desktop runtime (``GACT_BUNDLED_RUNTIME_DIR/bin``); beside the
-    interpreter (``interpreter``, else this process's: a desktop runtime's
-    ``python/bin`` -> ``bin``, a deployed install's ``<root>/clio-agent/.venv/bin``
-    -> ``<root>/bin``); the
+    interpreter (``interpreter``, else this process's): in its own folder (a
+    Windows venv's ``Scripts``), then a desktop runtime's ``python/bin`` -> ``bin``
+    and a deployed install's ``<root>/clio-agent/.venv/bin`` -> ``<root>/bin``; the
     launcher's ``CLIO_BIN_DIR``; then ``PATH`` and ``~/.local/bin``.
     """
     executable = f"{name}.exe" if os.name == "nt" else name
@@ -80,6 +80,7 @@ def clio_tool(name: str, interpreter: str | None = None) -> str | None:
     bundled = os.environ.get("GACT_BUNDLED_RUNTIME_DIR", "").strip()
     candidates = [
         *([Path(bundled) / "bin" / executable] if bundled else []),
+        python.parent / executable,
         *(parent / "bin" / executable for parent in python.parents[0:4]),
         *(
             [Path(os.environ["CLIO_BIN_DIR"]) / executable]

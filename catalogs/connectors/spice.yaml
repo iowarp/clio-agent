@@ -24,5 +24,5 @@
       label: Where the simulator is
       required: false
       agent_settable: true
-      help: Leave empty to find ngspice or LTspice on this machine. Otherwise the path to the ngspice or LTspice program to use.
+      help: Leave empty to look on PATH and in the simulators' standard install folders. Otherwise the path to the ngspice or LTspice program to use.
   plugin: spice

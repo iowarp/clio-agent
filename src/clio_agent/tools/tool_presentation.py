@@ -367,13 +367,21 @@ def _terminal(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, 
     row = _structured(settled_tool_result(result) or result)
     exit_code = row.get("exit_code")
     timed_out = bool(row.get("timed_out"))
+    limit = row.get("timeout_s")
     return {
         **(
             {"status": "failed"}
             if timed_out or isinstance(exit_code, int) and exit_code != 0
             else {}
         ),
-        "summary": "",
+        # The reply's own fact; a non-zero exit already shows as the terminal's exit code.
+        "summary": (
+            f"Timed out at its {limit:g} s limit"
+            if isinstance(limit, int | float) and limit > 0
+            else "Timed out"
+        )
+        if timed_out
+        else "",
         "blocks": [
             {
                 "id": "terminal",

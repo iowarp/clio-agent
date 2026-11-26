@@ -64,7 +64,7 @@
       label: Where KiCad is
       required: false
       agent_settable: true
-      help: Leave empty to find KiCad on this machine. Otherwise the path to kicad-cli; the server then uses only that install.
+      help: Leave empty to look on PATH and in KiCad's standard install folders. Otherwise the path to kicad-cli (for a portable or unusual install); the server then uses only that install.
     - key: nexar_id
       kind: value
       label: Nexar client ID
