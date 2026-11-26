@@ -11,6 +11,8 @@ from typing import Any
 
 from dspy.lm15 import DocumentPart, ImagePart, Message, TextPart, ToolResultPart
 
+from clio_agent.gact.agents.clio_react_wire import without_wire_tags
+
 
 def _media_part(item: Any) -> ImagePart | DocumentPart:
     url = str(getattr(item, "url", "") or getattr(item, "file_data", "") or "")
@@ -87,3 +89,10 @@ def _place_tool_media(messages: list[Message], placement: str) -> list[Message]:
             label = TextPart(text="[attachments from the tool results above]")
             out.append(Message(role="user", parts=(label, *media)))
     return out
+
+
+def request_messages(context: list[Message], max_images: int, placement: str) -> list[Message]:
+    """The context as a request carries it: wire tags stripped, images capped, media placed."""
+    return _place_tool_media(
+        _within_image_budget(without_wire_tags(context), max_images), placement
+    )

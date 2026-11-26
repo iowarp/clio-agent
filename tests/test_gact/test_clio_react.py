@@ -700,14 +700,14 @@ def _media_step() -> tuple[list[Any], Any]:
 
 
 def test_native_placement_keeps_media_in_the_tool_result() -> None:
-    from clio_agent.gact.agents.clio_react import _place_tool_media
+    from clio_agent.gact.agents.clio_react_media import _place_tool_media
 
     messages, _ = _media_step()
     assert _place_tool_media(messages, "native") == messages
 
 
 def test_text_only_tool_rows_get_the_media_in_the_next_user_message() -> None:
-    from clio_agent.gact.agents.clio_react import _place_tool_media
+    from clio_agent.gact.agents.clio_react_media import _place_tool_media
 
     messages, image = _media_step()
     tool, user = _place_tool_media(messages, "user_message")

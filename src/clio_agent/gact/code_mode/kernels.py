@@ -28,7 +28,6 @@ import atexit
 import collections
 import concurrent.futures
 import json
-import os
 import queue
 import subprocess
 import sys
@@ -104,15 +103,14 @@ def _environment(
     if not python:
         python = sys.executable
         trace.event("CODE", "%s python=%s", KERNEL_SERVER_PYTHON, python)
-    env = {**os.environ, **prepared, "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1"}
+    from clio_agent.arc.clio_core_indexer import environ_for_model  # noqa: PLC0415
+
+    # CLIO's own clio-core client binding does not steer the model's programs.
+    env = {**environ_for_model(), **prepared, "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1"}
     for internal in ("CLIO_AUTH_TOKEN", "CLIO_GACT_BEARER_TOKEN"):
         env.pop(internal, None)
     # Host credentials (CLIO's own secrets, and cloud keys a source may use) stay host-side.
     env = {k: v for k, v in env.items() if not k.startswith(("CLIO_SECRET_", "AWS_"))}
-    # CLIO's own clio-core client binding must not steer the model's programs.
-    from clio_agent.arc.clio_core_indexer import release_agent_binding  # noqa: PLC0415
-
-    release_agent_binding(env)
     env["CLIO_AGENT_WORKSPACE_STATE_DIR"] = str(workspace_state_dir(workspace))
     return python, env
 

@@ -26,6 +26,7 @@ the typed reason every search caller and ``clio doctor`` report.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 from typing import Any
@@ -209,6 +210,13 @@ def release_agent_binding(environ: MutableMapping[str, str]) -> None:
         environ.pop(BOUND_BY_ENV, None)
 
 
+def environ_for_model() -> dict[str, str]:
+    """``os.environ`` for a process CLIO starts for the model, without CLIO's own binding."""
+    environ = dict(os.environ)
+    release_agent_binding(environ)
+    return environ
+
+
 __all__ = [
     "BOUND_BY_ENV",
     "CLIO_CORE_SEARCH_UNAVAILABLE",
@@ -220,6 +228,7 @@ __all__ = [
     "SEARCH_REMEDY",
     "UPSTREAM_INDEXER_ISSUE",
     "bind_client_to_indexer",
+    "environ_for_model",
     "ensure_seeded_config_indexed",
     "indexer_block",
     "indexer_chimod_present",

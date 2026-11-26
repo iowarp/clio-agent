@@ -516,41 +516,16 @@ def publish_finalized_turn(
             ),
             retry=False,
         )
-    from clio_agent.gact.conversation_assignments import ConversationOutcome
-    from clio_agent.gact.hooks.stop_loop import dispatch_stop_at_finalize
+    from clio_agent.gact.hooks.stop_loop import dispatch_stop_for_turn
 
-    stop_decision: list[Any] = []
+    decision: list[Any] = []
     publication_step(
         steps,
         "stop_hook",
-        lambda: stop_decision.append(
-            dispatch_stop_at_finalize(
-                state.app,
-                session_id=state.sid,
-                turn_id=state.turn_id,
-                trace_id=state.trace_id,
-                cwd=str(getattr(state.sess, "workspace_root", "") or ""),
-                assistant_msg_id=assistant_msg.id,
-                assistant_payload=assistant_msg.model_dump(exclude_none=True),
-                agent_ref=str(state.dynamic_agent_used.metadata.get("agent_ref") or "")
-                if state.dynamic_agent_used is not None
-                else "",
-                completion=ConversationOutcome(
-                    outputs=turn_outputs(state),
-                    context=getattr(state.pred, "clio_context_boundary", None),
-                    error=state.error_info.model_dump(mode="json")
-                    if state.error_info is not None
-                    else None,
-                ),
-            )
-        ),
+        lambda: decision.append(dispatch_stop_for_turn(state, assistant_msg, turn_outputs(state))),
         retry=False,
     )
-    # ``message.completed`` follows the Stop gate's decision: when a Stop hook blocked
-    # and queued one more turn, the completion says so, and a client waiting for the
-    # run's end (``clio-agent -q``) follows that turn instead of returning (and its
-    # caller stopping the server under the queued turn).
-    if stop_decision and getattr(stop_decision[0], "redrive", False):
+    if decision and getattr(decision[0], "redrive", False):  # the client follows the queued turn
         completed_payload = {**completed_payload, "stop_hook_redrive": True}
     publication_step(
         steps,
