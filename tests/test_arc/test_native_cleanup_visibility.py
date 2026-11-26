@@ -103,7 +103,7 @@ async def test_recovered_cancelled_reply_keeps_known_cleanup_waiting(
             assert snapshot is not None and snapshot.terminal_at is None
             assert snapshot.connection_freshness == "fresh"
             polled = await operations.wait(caller, receipt["handle"], timeout_s=0)
-            assert polled["pending"] == [receipt["handle"]]
+            assert [row["handle"] for row in polled["unfinished"]] == [receipt["handle"]]
             if unknown_cleanup:
                 assert snapshot.status == "task_state_uncertain"
                 assert snapshot.attention_episode is not None
@@ -128,7 +128,7 @@ async def test_recovered_cancelled_reply_keeps_known_cleanup_waiting(
             assert settled.settlement == "confirmed"
             if waiter is not None:
                 collected = await asyncio.wait_for(waiter, 5)
-                assert collected["pending"] == []
+                assert collected["unfinished"] == []
                 assert collected["outcomes"][0]["status"] == "cancelled"
             assert not history.acknowledged_notifications(owner.session_id)
         finally:

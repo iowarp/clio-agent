@@ -613,7 +613,9 @@ async def test_uncertain_cancellation_retires_waiter_and_late_proof_settles_pare
         snapshot = await TaskOperations(owner.history, no_cancel).wait(
             TaskCaller("human-console", "human", human_action=True), root.handle, timeout_s=0
         )
-        assert snapshot["pending"] == [root.handle] and snapshot["outcomes"] == []
+        assert [row["handle"] for row in snapshot["unfinished"]] == [root.handle] and snapshot[
+            "outcomes"
+        ] == []
         assert snapshot["timed_out"] is True and not settled.is_set()
         proof = current_member.model_copy(
             update={

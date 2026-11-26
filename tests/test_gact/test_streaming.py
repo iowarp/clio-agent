@@ -174,7 +174,7 @@ def _wait_for_turn_settlement(
         result = await app.state.task_operations.wait(
             TaskCaller(sid, app.state.human_principal, human_action=True), handle
         )
-        assert not result["pending"], result
+        assert not result["unfinished"], result
         assert len(result["outcomes"]) == 1 and "error" not in result["outcomes"][0], result
         observed.update(result)
         released = asyncio.Event()

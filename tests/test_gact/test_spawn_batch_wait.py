@@ -50,7 +50,7 @@ def test_a_batch_that_waited_is_presented_as_one_wait() -> None:
     view = wait_presentation(
         {"spawns": [{}, {}, {}], "wait": True},
         {
-            "pending": [],
+            "unfinished": [],
             "outcomes": [
                 {"handle": "task_a", "pending": False, "status": "completed", "result": "A found"},
                 {"handle": "task_b", "pending": False, "status": "completed", "result": "B found"},

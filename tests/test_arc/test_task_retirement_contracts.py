@@ -52,7 +52,7 @@ async def test_settlement_confirms_delayed_cancel_intent_before_terminal_publica
         assert (await owner.cancel(caller, root.handle))["cancellation_requested"]
         assert len(delayed) == 1
         outcome = await asyncio.wait_for(operations.wait(caller, root.handle), 10)
-        assert not outcome["pending"] and outcome["outcomes"][0]["status"] == "cancelled"
+        assert not outcome["unfinished"] and outcome["outcomes"][0]["status"] == "cancelled"
         terminal = owner.history.task_snapshot(root.handle)
         assert terminal is not None and terminal.cancellation_requested_at is not None
         terminal_index = next(i for i, task in enumerate(observations) if task.terminal_at)
@@ -470,7 +470,7 @@ async def test_cancel_after_stop_uses_persisted_exact_admission_and_preserves_ot
         )
         assert (await owner.cancel(caller, root.handle))["cancellation_requested"]
         settled = await operations.wait(caller, root.handle)
-        assert not settled["pending"] and settled["outcomes"][0]["status"] == "cancelled"
+        assert not settled["unfinished"] and settled["outcomes"][0]["status"] == "cancelled"
         assert owner.history.mail_withdrawn(sid, "original") is not revised
         assert not owner.history.mail_withdrawn(sid, "other")
         assert not owner.history.acknowledged_notifications(sid)

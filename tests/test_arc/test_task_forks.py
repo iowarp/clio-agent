@@ -61,7 +61,7 @@ async def test_a_wait_on_a_task_covers_a_fork_made_while_it_waits(
         assert not waiting.done()  # the fork is still running
         await asyncio.to_thread(_settle, owner, fork["handle"], "H4 holds")
         waited = await asyncio.wait_for(waiting, 5)
-        assert waited["pending"] == []
+        assert waited["unfinished"] == []
         rows = {row["handle"]: row for row in waited["outcomes"]}
         assert waited["outcomes"][0]["handle"] == child["handle"]
         assert rows[fork["handle"]]["fork_of"] == child["handle"]

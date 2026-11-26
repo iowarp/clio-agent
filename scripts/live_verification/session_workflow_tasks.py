@@ -186,7 +186,7 @@ def cycle(call: Any, root: Path, wid: str, agents: list[str], number: int) -> An
     queried, observed, waited = [evidence.observation(r) for r in records[:3]]
     assert any(r["handle"] == run and r["effective_status"] == "running" for r in queried["tasks"])
     assert {r["handle"] for r in observed["tasks"]} == {run, shell}
-    assert waited["timed_out"] and set(waited["pending"]) == {run, shell}
+    assert waited["timed_out"] and {row["handle"] for row in waited["unfinished"]} == {run, shell}
     assert not paths["done"].exists(), "Model must do other work before accepted task settles"
     sent = model_calls(
         call,
@@ -227,7 +227,7 @@ def cycle(call: Any, root: Path, wid: str, agents: list[str], number: int) -> An
         ["wait_tasks", "wait_tasks", "get_task_result"],
     )
     result = evidence.observation(reads[0])
-    assert len(result["results"]) == 2 and len(result["errors"]) == 1 and not result["pending"]
+    assert len(result["results"]) == 2 and len(result["errors"]) == 1 and not result["unfinished"]
     assert evidence.observation(reads[1])["results"] == result["results"]
     assert evidence.observation(reads[2])["status"] == "completed"
     assert len([r for r in evidence.mail(call, a) if r.get("correlation_id") == run]) == 1

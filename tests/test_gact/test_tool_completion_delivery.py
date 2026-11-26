@@ -90,7 +90,11 @@ def test_cancelled_wait_completion_preserves_snapshot_as_interruption(
             lambda *args, **kwargs: semantic_events.append(kwargs),
         )
         args = {"tasks": ["child"], "return_when": "all", "timeout_s": None}
-        result = {"outcomes": [], "pending": ["child"], "timed_out": False}
+        result = {
+            "outcomes": [],
+            "unfinished": [{"handle": "child", "status": "running"}],
+            "timed_out": False,
+        }
         if interrupted:
             result["interrupted"] = interrupted
         with _gact_app_context(app), _tool_session_context(sid):
@@ -110,7 +114,7 @@ def test_cancelled_wait_completion_preserves_snapshot_as_interruption(
         assert "execution-error" not in {
             block["id"] for block in event.payload["presentation"]["blocks"]
         }
-        assert event.payload["result"]["pending"] == ["child"]
+        assert event.payload["result"]["unfinished"] == [{"handle": "child", "status": "running"}]
         assert event.payload["result"].get("interrupted") == interrupted
         result_part = next(
             part

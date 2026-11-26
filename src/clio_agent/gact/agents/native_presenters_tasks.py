@@ -247,7 +247,12 @@ def present_task_family(
             "task-submission",
         )
     # A spawn that waited for its batch returns a wait's result: present it as one.
-    batch_wait = declaration == "tasks" and args.get("wait") is True and "pending" in payload
+    # ``pending`` is the handle list retained receipts recorded before ``unfinished``.
+    batch_wait = (
+        declaration == "tasks"
+        and args.get("wait") is True
+        and ("unfinished" in payload or "pending" in payload)
+    )
     if declaration == "wait" or batch_wait:
         presentation = wait_presentation(args, payload)
         return (
