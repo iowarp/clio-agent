@@ -41,6 +41,8 @@ class LiveToolScope:
 
     executor: Any = None
     namespaces: set[str] = field(default_factory=set)
+    #: The person's own servers among them, as plugin-server rows (``person_servers``).
+    person_servers: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def refresh_executor_tools(executor: Any) -> None:

@@ -148,20 +148,32 @@ def _owner(name: str, servers: Mapping[str, Any], plugin_of: Mapping[str, str]) 
     return owning_server(name, servers) or plugin_of.get(name, "")
 
 
+def _agent_servers(
+    resolution: Any, person_servers: Mapping[str, Mapping[str, Any]] | None
+) -> dict[str, Mapping[str, Any]]:
+    """The agent's MCP servers: its plugins' and the person's own."""
+    return {**(person_servers or {}), **(getattr(resolution, "mcp_servers", {}) or {})}
+
+
 def plan_disclosure(
     resolution: Any,
     tools: Mapping[str, Any],
     *,
     context_tokens: int = 0,
     loaded: frozenset[str] = frozenset(),
+    person_servers: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> Disclosure:
-    """Plan the deferred split for an agent whose final tools are ``tools``."""
+    """Plan the deferred split for an agent whose final tools are ``tools``.
+
+    ``person_servers`` are the person's own servers the agent took, as plugin-server
+    rows (:mod:`clio_agent.gact.agents.person_servers`).
+    """
     if not deferral_enabled():
         from clio_agent.runtime import trace  # noqa: PLC0415
 
         trace.event("TOOLS", "%s listed=%d", TOOLS_DEFERRAL_OFF, len(tools))
         return Disclosure()
-    servers: Mapping[str, Mapping[str, Any]] = getattr(resolution, "mcp_servers", {}) or {}
+    servers = _agent_servers(resolution, person_servers)
     rows = {row["name"]: row for row in getattr(resolution, "tools", []) or []}
     plugin_of = {name: str(row.get("plugin") or "") for name, row in rows.items()}
     threshold = _cap_tokens()
@@ -289,7 +301,12 @@ def _listed_entry(
 
 
 def apply_disclosure(
-    program: Any, resolution: Any, *, context_tokens: int = 0, loaded: frozenset[str] = frozenset()
+    program: Any,
+    resolution: Any,
+    *,
+    context_tokens: int = 0,
+    loaded: frozenset[str] = frozenset(),
+    person_servers: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> str:
     """Defer the program's tools per :func:`plan_disclosure`; return the prompt entry.
 
@@ -305,17 +322,24 @@ def apply_disclosure(
 
     code_only = apply_tool_settings(program, resolution)  # blocked tools leave here
     tools: Mapping[str, Any] = getattr(program, "tools", {}) or {}
-    servers = frozenset(getattr(resolution, "mcp_servers", {}) or {}) | _BUILTIN_SERVERS
+    agent_servers = _agent_servers(resolution, person_servers)
+    servers = frozenset(agent_servers) | _BUILTIN_SERVERS
     finalize_run_code(program, servers)
     from clio_agent.plugins.kernel_bindings import attach  # noqa: PLC0415
 
     attach(program, resolution)  # after tool settings: a binding needs its tools script-callable
     # Code-only tools are kernel stubs: never listed, never in the deferred catalog.
     offered = {name: tool for name, tool in tools.items() if name not in code_only}
-    disclosure = plan_disclosure(resolution, offered, context_tokens=context_tokens, loaded=loaded)
+    disclosure = plan_disclosure(
+        resolution,
+        offered,
+        context_tokens=context_tokens,
+        loaded=loaded,
+        person_servers=person_servers,
+    )
     listed_entry = _listed_entry(
         {name: tool for name, tool in offered.items() if name not in disclosure.deferred},
-        frozenset(getattr(resolution, "mcp_servers", {}) or {}),
+        agent_servers,
         disclosure.deferred_servers,
     )
     unlisted = frozenset(getattr(program, "_clio_unlisted", frozenset())) | code_only
