@@ -715,6 +715,26 @@ def test_a_layer_leaves_the_codex_home_when_its_last_spawn_releases_it(tmp_path:
     assert (tmp_path / "config.toml").is_file()
 
 
+def test_a_layer_whose_writer_exited_is_removed_at_the_next_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A killed CLIO never releases its layers; the next write removes those of dead writers."""
+    import psutil
+
+    dead, alive = (
+        tmp_path / "clio-sb-12345678-4242.config.toml",
+        tmp_path / "clio-sb-ab-7.config.toml",
+    )
+    legacy = tmp_path / "clio-sb-87654321.config.toml"
+    for path in (dead, alive, legacy):
+        path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: pid != 4242)
+    profile = sc.synthesize_codex_profile(["/ws"], platform="linux")
+    sc.write_codex_layer("clio", profile, elevated=False, codex_home=tmp_path, platform="linux")
+    assert not dead.exists()
+    assert alive.is_file() and legacy.is_file()
+
+
 def test_write_layer_reuses_env_codex_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """With no explicit home, $CODEX_HOME is used (the real ~/.codex, never a fresh dir)."""
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))

@@ -32,15 +32,24 @@ _LAYER_HOLDS: dict[Path, int] = {}
 _LAYER_HOLDS_LOCK = threading.Lock()
 
 
+def _writer_pid(path: Path) -> int:
+    """The id of the process that wrote layer ``path`` (0 for a layer named without one)."""
+    parts = path.name.removesuffix(".config.toml").split("-")
+    return int(parts[3]) if len(parts) == 4 and parts[3].isdigit() else 0
+
+
 def _prune_layers(codex_home: Path, *, keep: int = CODEX_LAYER_KEEP) -> None:
-    """Bound clio's layer files in the shared home to ``keep`` most-recent (no unbounded leak).
+    """Remove layers whose writer has exited, then bound the rest to ``keep`` most-recent.
 
     Reaps ONLY files matching :data:`CODEX_LAYER_GLOB` (clio's ``clio-sb-*`` prefix) â€” NEVER the
     user's ``config.toml`` or any unrelated file. Released layers are removed by
-    :func:`release_codex_layer`; this bound is the backstop for layers a crashed process left
-    behind or a caller never released. Best-effort + guarded: a prune failure must never break a
-    spawn, and a concurrent-unlink race is ignored.
+    :func:`release_codex_layer`. A layer named for a process that no longer exists has no
+    spawn left to read it, so a killed CLIO's layers go at the next write; the bound is the
+    backstop for layers named without a writer. Best-effort + guarded: a prune failure must
+    never break a spawn, and a concurrent-unlink race is ignored.
     """
+    import psutil  # noqa: PLC0415
+
     try:
         files = sorted(
             (p for p in codex_home.glob(CODEX_LAYER_GLOB) if p.is_file()),
@@ -49,7 +58,17 @@ def _prune_layers(codex_home: Path, *, keep: int = CODEX_LAYER_KEEP) -> None:
         )
     except OSError:
         return
-    for old in files[keep:]:
+    live = []
+    for path in files:
+        pid = _writer_pid(path)
+        if pid and not psutil.pid_exists(pid):
+            try:
+                path.unlink()
+            except OSError:
+                live.append(path)
+        else:
+            live.append(path)
+    for old in live[keep:]:
         try:
             old.unlink()
         except OSError:
