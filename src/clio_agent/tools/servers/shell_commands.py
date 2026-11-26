@@ -1,4 +1,4 @@
-"""Command-launch bounds and shared recovery instructions for shell callers."""
+"""Command-launch preambles, bounds and shared recovery instructions for shell callers."""
 
 from __future__ import annotations
 
@@ -96,3 +96,32 @@ def is_command_length_output(text: str) -> bool:
         line.strip().removesuffix(".").lower() == "the command line is too long"
         for line in text.splitlines()
     )
+
+
+#: Prefixed to every PowerShell command so text crosses the process boundary as UTF-8,
+#: the encoding the shell tool decodes. Without a console (the server's case) PowerShell
+#: writes and pipes in the OEM code page, so an em dash comes back as ``-`` or ``?``, and
+#: Windows PowerShell 5.1 reads a BOM-less UTF-8 file as ANSI (``—`` → ``â€”``). Only the
+#: readers' default changes: an explicit ``-Encoding`` still wins, a BOM is still honoured,
+#: and writing cmdlets keep their defaults. Setting the console encoding fails harmlessly
+#: when there is no console handle to set.
+POWERSHELL_UTF8_PREAMBLE = (
+    "try{[Console]::OutputEncoding=[Console]::InputEncoding="
+    "[System.Text.UTF8Encoding]::new($false)}catch{};"
+    "$OutputEncoding=[System.Text.UTF8Encoding]::new($false);"
+    "foreach($c in 'Get-Content','Select-String','Import-Csv')"
+    "{$PSDefaultParameterValues[\"${c}:Encoding\"]='UTF8'};"
+)
+
+#: Windows PowerShell 5.1 runs on .NET Framework, whose web stack (``Invoke-WebRequest``,
+#: ``Invoke-RestMethod``, ``WebClient``) ignores ``HTTPS_PROXY`` and reads only the per-user
+#: WinINet settings, so inside the fence it dialled out directly and was refused. This hands
+#: the process the same ``http://`` proxy every other client in the shell already uses (the
+#: fence's chokepoint, or the person's own), local names bypassed. PowerShell 7 honours the
+#: variables itself and is left alone; with no proxy variable nothing changes.
+POWERSHELL_PROXY_PREAMBLE = (
+    "if($PSVersionTable.PSEdition -eq 'Desktop'){"
+    "$p=@($env:HTTPS_PROXY,$env:ALL_PROXY,$env:HTTP_PROXY)|?{$_ -like 'http://*'}|select -First 1;"
+    "if($p){try{[System.Net.WebRequest]::DefaultWebProxy="
+    "New-Object System.Net.WebProxy($p,$true)}catch{}}};"
+)

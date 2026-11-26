@@ -615,6 +615,16 @@ CLIO cannot hand these clients a proxy:
 Such a download runs outside the sandbox with the person's approval, or through a tool
 that honors the variables.
 
+CLIO's own shell is the exception, since CLIO starts it. Windows PowerShell 5.1 runs on
+.NET Framework, so `Invoke-WebRequest`, `Invoke-RestMethod` and `WebClient` would
+otherwise take the registry proxy and be refused. The shell tool starts every PowerShell
+command with a preamble that sets `[System.Net.WebRequest]::DefaultWebProxy` to the
+`http://` proxy in `HTTPS_PROXY`, `ALL_PROXY` or `HTTP_PROXY` (the chokepoint, inside the
+fence), bypassing local names. Those requests are then recorded, asked about and subject
+to deny mode like curl's. PowerShell 7 reads the variables itself and is left alone. The
+preamble covers requests made inside that shell process. A nested `powershell.exe`, BITS
+and CryptoAPI's own fetches still use the system settings above.
+
 **Deny-by-default** is an opt-in per-workspace mode: egress is refused unless the
 domain is granted, and the first connection to a new domain raises a
 `network_egress` permission request (grant-on-first-domain). The `host_pattern`
