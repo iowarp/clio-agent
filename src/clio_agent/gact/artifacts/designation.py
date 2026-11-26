@@ -3,20 +3,20 @@
 Designation, not discovery (owner decision #966.1): a file becomes an artifact by
 designation, never by a filesystem scan. This module is the **tool-declared**
 channel — the output-path argument names and artifact suffixes a tool's schema
-declares, plus the pre-call grounding that resolves those paths against the bound
-workspace root.
+declares, and where such a path lands.
 
-These constants + :func:`ground_output_paths` were MOVED here verbatim from
-``tools/execution.py`` (issue #966 deletion inventory item 2); ``execution.py``
-keeps a thin re-import so the tool boundary's behavior is byte-identical (proven
-by ``tests/test_tools/test_execution.py``'s grounding + parity suites). Restated
-as the designation table, the same names are what the S1 mint reads to know which
-grounded args to hash on tool completion.
+A call runs with the arguments the agent gave: a relative output path is the
+server's to resolve, against its own working directory (a stdio server's is the
+folder CLIO started it in, the workspace root). The execution boundary binds that
+directory for the call (:func:`bind_server_cwd`), so the isolated-node check
+(:func:`node_output_refusal`) and the mint (:func:`grounded_output_paths`) resolve a
+relative path the same way the server does, and never rewrite it.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -24,13 +24,8 @@ from clio_agent.gact.artifacts.records import ArtifactKind
 
 # Output-artifact argument names. When a tool writes a deliverable (a plot, an
 # export, a report) it takes the destination via one of these args. Models vary
-# in whether they emit an ABSOLUTE destination: stronger models obey the
-# "pass an absolute path" prompt, weaker ones emit a bare filename (or omit the
-# arg entirely and let the tool's own relative default apply). Either way the
-# artifact then lands in the MCP server's CWD instead of the bound workspace,
-# where the harness/grader collects deliverables. Grounding these against the
-# active workspace root is generic workspace hygiene — it applies to every tool
-# and every model, with no per-model or per-tool special-casing.
+# in whether they emit an ABSOLUTE destination; a relative one lands in the
+# server's working directory, the folder CLIO started it in.
 OUTPUT_PATH_ARG_NAMES: frozenset[str] = frozenset(
     {
         "output_path",
@@ -158,101 +153,54 @@ def kind_for_path(path: str | Path) -> ArtifactKind:
     return _SUFFIX_KIND.get(suffix, ArtifactKind.OTHER)
 
 
-def is_relative_artifact_path(value: str) -> bool:
-    """Return whether a string is a relative path that names a writable file."""
-
-    candidate = value.strip()
-    if not candidate:
-        return False
-    expanded = Path(candidate).expanduser()
-    if expanded.is_absolute():
-        return False
-    # A bare scheme/URL is not a local filesystem destination.
-    if "://" in candidate:
-        return False
-    return True
+#: The running call's tool and its server's working directory ("" when the server's
+#: files are not on this machine, or CLIO knows no working directory of it).
+_SERVER_CWD: ContextVar[tuple[str, str] | None] = ContextVar(
+    "clio_designation_server_cwd", default=None
+)
 
 
-def schema_properties(input_schema: Any) -> dict[str, Any]:
-    """Return the ``properties`` mapping from an MCP tool inputSchema."""
+def bind_server_cwd(tool_name: str, cwd: str) -> None:
+    """Bind the working directory of the server the running call goes to.
 
-    if not isinstance(input_schema, Mapping):
-        return {}
-    properties = input_schema.get("properties")
-    if not isinstance(properties, Mapping):
-        return {}
-    return dict(properties)
-
-
-def ground_output_paths(
-    args: Mapping[str, Any],
-    input_schema: Any,
-    workspace_root: str,
-) -> dict[str, Any]:
-    """Ground tool output-artifact paths against the active workspace root.
-
-    Two model-agnostic repairs, both gated on a bound workspace root:
-
-    1. RESOLVE a relative output path the model EMITS (e.g. ``"plot.png"``)
-       against the workspace root so the deliverable lands where the harness
-       collects it, instead of in the MCP server's process CWD.
-    2. INJECT a workspace-absolute output path when the model OMITS an output
-       arg whose schema declares a *relative* default (e.g. plot tools default
-       ``output_path="timeseries.png"``). Without this the MCP server applies
-       its own relative default inside the server, after this boundary runs.
-
-    Absolute paths the model already supplied are left untouched. No per-model
-    or per-tool branches: the only inputs are generic output-arg names and the
-    tool's own declared inputSchema.
+    Called by the execution boundary in the call's own context, before the call; the
+    observer's mint in the same context reads it.
     """
 
-    from clio_agent.tools.write_scope import active_tool_write_root  # noqa: PLC0415
-
-    grounded = dict(args)
-    # An isolated workflow node's outputs land in its own folder.
-    node = active_tool_write_root()
-    root = str(node) if node is not None else workspace_root.strip()
-    if not root:
-        return grounded
-    root_path = Path(root).expanduser()
-
-    # (1) Resolve relative output paths the model emitted.
-    for key, value in list(grounded.items()):
-        if key not in OUTPUT_PATH_ARG_NAMES:
-            continue
-        if not isinstance(value, str) or not is_relative_artifact_path(value):
-            continue
-        grounded[key] = str(root_path / Path(value.strip()))
-
-    # (2) Inject a workspace-absolute path for omitted output args whose schema
-    #     default is relative (the tool would otherwise write to its own CWD).
-    properties = schema_properties(input_schema)
-    for prop_name, prop_schema in properties.items():
-        if prop_name not in OUTPUT_PATH_ARG_NAMES or prop_name in grounded:
-            continue
-        if not isinstance(prop_schema, Mapping):
-            continue
-        default = prop_schema.get("default")
-        if not isinstance(default, str):
-            continue
-        default_name = Path(default.strip()).name
-        if not default_name:
-            continue
-        if Path(default_name).suffix.lower() not in ARTIFACT_SUFFIXES:
-            continue
-        if not is_relative_artifact_path(default):
-            continue
-        grounded[prop_name] = str(root_path / default_name)
-
-    return grounded
+    _SERVER_CWD.set((tool_name, cwd))
 
 
-def node_output_refusal(effective_args: Mapping[str, Any]) -> str:
+def server_cwd(tool_name: str = "") -> str:
+    """The bound working directory of ``tool_name``'s server ("" when none is bound)."""
+
+    bound = _SERVER_CWD.get()
+    if bound is None or (tool_name and bound[0] != tool_name):
+        return ""
+    return bound[1]
+
+
+def resolve_output(value: str, cwd: str) -> Path | None:
+    """Where the server writes output path ``value``: as the server resolves it.
+
+    An absolute path is itself; a relative one is joined to the server's working
+    directory ``cwd``. ``None`` when ``value`` is relative and ``cwd`` unknown.
+    """
+
+    path = Path(value.strip()).expanduser()
+    if path.is_absolute():
+        return path
+    if not cwd:
+        return None
+    return Path(cwd) / path
+
+
+def node_output_refusal(tool_name: str, effective_args: Mapping[str, Any]) -> str:
     """Why a call's declared output path may not be written by an isolated node, or ``""``.
 
-    The grounding above puts a relative output in the node's folder; an absolute one
-    outside the node's write territory is refused at the boundary with the file
-    policy's typed reason, before the tool runs.
+    Each output path is resolved as the server resolves it (:func:`resolve_output`,
+    against the bound :func:`server_cwd`); one outside the node's write territory is
+    refused with the file policy's typed reason, which names the node's folder, before
+    the tool runs. The call is never rewritten: the agent picks the path.
     """
 
     from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError  # noqa: PLC0415
@@ -267,26 +215,37 @@ def node_output_refusal(effective_args: Mapping[str, Any]) -> str:
     policy = FileAccessPolicy.from_env()
     if not policy.write_roots:
         return ""
+    cwd = server_cwd(tool_name)
     for key, value in outputs.items():
+        target = resolve_output(value, cwd)
+        if target is None:
+            continue  # the server's files are not on this machine
         try:
-            policy._ensure_writable(Path(value).expanduser().resolve(strict=False), field=key)
+            policy._ensure_writable(target.resolve(strict=False), field=key)
         except FilePolicyError as refused:
-            return refused.to_text()
+            text = refused.to_text()
+            if not Path(value.strip()).expanduser().is_absolute():
+                text += (
+                    f"\n{key}={value!r} is relative: the server resolves it against its "
+                    f"working directory {cwd}."
+                )
+            return text
     return ""
 
 
-def grounded_output_paths(effective_args: Mapping[str, Any]) -> dict[str, str]:
-    """Return the designated output-path args present in already-grounded call args.
+def grounded_output_paths(effective_args: Mapping[str, Any], tool_name: str = "") -> dict[str, str]:
+    """Return the designated output-path args of a call, where the server writes them.
 
-    The tool observer's mint reads this on ``completed``: given the effective
-    (already-:func:`ground_output_paths`-processed) args, return the subset that
-    names an output artifact destination — ``{arg_name: absolute_path}`` — whose
-    suffix is a recognized artifact suffix. Args whose value is not a string, or
-    whose suffix is not an artifact suffix, are excluded (a tool taking
-    ``output="stdout"`` mints nothing). Injected schema defaults already present
-    in ``effective_args`` are covered since grounding rewrote them in place.
+    The tool observer's mint reads this on ``completed``: the subset of the call's
+    args that names an output artifact destination (``{arg_name: path}``) whose
+    suffix is a recognized artifact suffix, a relative one resolved against the
+    running call's server working directory (:func:`server_cwd` of ``tool_name``, or of
+    the running call when ``""``). Args whose value is
+    not a string, or whose suffix is not an artifact suffix, are excluded (a tool
+    taking ``output="stdout"`` mints nothing).
     """
 
+    cwd = server_cwd(tool_name)
     out: dict[str, str] = {}
     for key, value in effective_args.items():
         if key not in OUTPUT_PATH_ARG_NAMES:
@@ -295,7 +254,8 @@ def grounded_output_paths(effective_args: Mapping[str, Any]) -> dict[str, str]:
             continue
         if Path(value).suffix.lower() not in ARTIFACT_SUFFIXES:
             continue
-        out[key] = value
+        target = resolve_output(value, cwd)
+        out[key] = str(target) if target is not None else value
     return out
 
 

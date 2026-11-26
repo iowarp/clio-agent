@@ -587,6 +587,18 @@ def validate_non_empty_string(value: str, *, field: str) -> None:
     )
 
 
+def relative_base() -> Path | None:
+    """The folder CLIO's own file tools resolve a relative path against, if one is bound.
+
+    An isolated node's relative paths land in its own folder; otherwise in the active
+    session's workspace root.
+    """
+
+    from clio_agent.tools.write_scope import active_tool_write_root  # noqa: PLC0415
+
+    return active_tool_write_root() or _active_workspace_root()
+
+
 def _coerce_path(raw: str, *, field: str) -> Path:
     if not isinstance(raw, str) or not raw.strip():
         raise FilePolicyError(
@@ -603,10 +615,7 @@ def _coerce_path(raw: str, *, field: str) -> Path:
         # process's own cwd. The managed backend process outlives its boot-time
         # cwd and can serve multiple workspaces, so Path.cwd() is only a
         # last-resort fallback for the app-less CLI grounding path.
-        from clio_agent.tools.write_scope import active_tool_write_root  # noqa: PLC0415
-
-        # An isolated node's relative paths land in its own folder.
-        workspace_root = active_tool_write_root() or _active_workspace_root()
+        workspace_root = relative_base()
         if workspace_root is not None:
             base = workspace_root
         else:

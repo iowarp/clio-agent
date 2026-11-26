@@ -147,6 +147,13 @@ def register(
         _PROXIES.setdefault(key, weakref.WeakSet()).add(proxy)
 
 
+def server_cwd(proxy: Any) -> str:
+    """The working directory ``proxy``'s stdio server was started in ("" if not one)."""
+
+    cwd = getattr(getattr(proxy, _TRANSPORT, None), "cwd", None)
+    return os.path.abspath(cwd) if isinstance(cwd, str) and cwd else ""
+
+
 def _inner(executor: Any) -> Any:
     return getattr(executor, "_async_executor", executor)
 
@@ -711,6 +718,7 @@ __all__ = [
     "retained_owners",
     "retire_superseded",
     "routers",
+    "server_cwd",
     "stop_instance",
     "stop_pooled",
     "stops_begun",

@@ -623,6 +623,27 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
                 self._inflight -= 1
                 self._last_activity = time.monotonic()
 
+    def _server_cwd(self, name: str) -> str:
+        """The working directory tool ``name``'s server resolves a relative path in.
+
+        A stdio server's is the folder CLIO started it in; CLIO's in-process built-ins
+        resolve one as its file policy does. ``""`` when the server's files are not on
+        this machine (a remote one) or its directory is unknown.
+        """
+
+        from clio_agent.tools import namespace_instances  # noqa: PLC0415
+        from clio_agent.tools.builtin_gateway import builtin_servers  # noqa: PLC0415
+        from clio_agent.tools.file_policy import relative_base  # noqa: PLC0415
+
+        namespace = name.partition("_")[0]
+        proxy = self._async_executor._namespace_servers.get(namespace)
+        if proxy is not None:
+            return namespace_instances.server_cwd(proxy)
+        if namespace in {builtin for builtin, _server in builtin_servers()}:
+            base = relative_base()
+            return str(base) if base is not None else ""
+        return ""
+
     def _call_tool_inner(
         self,
         name: str,
@@ -640,13 +661,13 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             if cancellation_checker is not None and cancellation_checker():
                 raise foreground_cancel._tool_cancellation_error(name, stage)
 
-        # The call runs exactly as the agent asked (relative paths resolve against the
-        # workspace root); a failed call gets a "did you mean" hint, never a rewrite.
-        definition = tool_paths.bind_call(name, self._mcp_tools.get(name))  # its paths
-        effective_args = _ground_output_paths(  # fastmcp-4 snake-case-aware schema read
-            dict(args), _tool_input_schema(definition), get_active_tool_workspace_root()
-        )
-        if refusal := _node_output_refusal(effective_args):  # outside an isolated node's folder
+        # The call runs exactly as the agent asked: a relative path is the server's to
+        # resolve, against its working directory; a failed call gets a "did you mean"
+        # hint, never a rewrite.
+        tool_paths.bind_call(name, self._mcp_tools.get(name))  # its paths
+        effective_args = dict(args)
+        _bind_server_cwd(name, self._server_cwd(name))
+        if refusal := _node_output_refusal(name, effective_args):  # outside a node's folder
             raise notify_refused_call(tool_observer, name, effective_args, refusal)
 
         approval = task_calls.capture_approval(name, effective_args) if permission_gate else None
@@ -951,24 +972,20 @@ class MCPToolBridge(SyncMCPToolExecutor):
     """Backward-compatible name for the sync MCP tool executor."""
 
 
-# Output-path grounding lives in the artifacts designation module (#966); imported
-# LAZILY because execution.py loads during ``clio_agent.gact`` package init.
+# The designation module owns where an output path lands (#966); imported LAZILY
+# because execution.py loads during ``clio_agent.gact`` package init.
 
 
-def _ground_output_paths(
-    args: "Mapping[str, Any]",
-    input_schema: Any,
-    workspace_root: str,
-) -> dict[str, Any]:
-    from clio_agent.gact.artifacts.designation import ground_output_paths  # noqa: PLC0415
+def _bind_server_cwd(name: str, cwd: str) -> None:
+    from clio_agent.gact.artifacts.designation import bind_server_cwd  # noqa: PLC0415
 
-    return ground_output_paths(args, input_schema, workspace_root)
+    bind_server_cwd(name, cwd)
 
 
-def _node_output_refusal(args: "Mapping[str, Any]") -> str:
+def _node_output_refusal(name: str, args: "Mapping[str, Any]") -> str:
     from clio_agent.gact.artifacts.designation import node_output_refusal  # noqa: PLC0415
 
-    return node_output_refusal(args)
+    return node_output_refusal(name, args)
 
 
 def _make_dspy_tools(

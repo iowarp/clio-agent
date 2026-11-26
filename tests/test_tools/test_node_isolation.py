@@ -13,7 +13,11 @@ from typing import Any
 
 import pytest
 
-from clio_agent.gact.artifacts.designation import ground_output_paths, node_output_refusal
+from clio_agent.gact.artifacts.designation import (
+    bind_server_cwd,
+    grounded_output_paths,
+    node_output_refusal,
+)
 from clio_agent.gact.node_folders import (
     FOLDER_COPY_KEY,
     NODE_FOLDER_KEY,
@@ -75,17 +79,27 @@ def test_the_shell_fence_narrows_with_the_policy_and_the_fleet_does_not(
     assert workspace in fleet
 
 
-def test_declared_output_paths_are_grounded_in_the_node_and_checked(
+def test_a_declared_output_resolves_where_its_server_does_and_is_checked(
     node: tuple[Path, Path],
 ) -> None:
     workspace, folder = node
+    inside = str(Path(os.path.relpath(folder, workspace)) / "plot.png")
     with tool_workspace_context(workspace), tool_write_root_context(folder):
-        grounded = ground_output_paths({"output_path": "plot.png"}, {}, str(workspace))
-        assert grounded["output_path"] == str(folder / "plot.png")
-        assert node_output_refusal(grounded) == ""
-        refusal = node_output_refusal({"output_path": str(workspace / "plot.png")})
+        # A shared stdio server runs in the workspace root, not in the node's folder.
+        bind_server_cwd("plot_render", str(workspace))
+        refusal = node_output_refusal("plot_render", {"output_path": "plot.png"})
         assert "outside_allowed_roots" in refusal and str(folder) in refusal
-    assert node_output_refusal({"output_path": str(workspace / "plot.png")}) == ""
+        assert "is relative" in refusal and str(workspace) in refusal
+        assert node_output_refusal("plot_render", {"output_path": inside}) == ""
+        assert grounded_output_paths({"output_path": inside}, "plot_render") == {
+            "output_path": str(workspace / inside)
+        }
+        absolute = node_output_refusal("plot_render", {"output_path": str(workspace / "p.png")})
+        assert "outside_allowed_roots" in absolute and "is relative" not in absolute
+        # A server whose files are not on this machine: a relative path is not CLIO's.
+        bind_server_cwd("remote_render", "")
+        assert node_output_refusal("remote_render", {"output_path": "plot.png"}) == ""
+    assert node_output_refusal("plot_render", {"output_path": str(workspace / "plot.png")}) == ""
 
 
 def test_steps_children_and_forks_get_their_folders(node: tuple[Path, Path]) -> None:
@@ -202,4 +216,4 @@ def test_a_call_without_an_output_path_does_not_build_the_file_policy(monkeypatc
         raise AssertionError("the file policy was built for a call with no output path")
 
     monkeypatch.setattr(file_policy.FileAccessPolicy, "from_env", classmethod(refuse))
-    assert node_output_refusal({"record_id": "R1", "output_path": "  "}) == ""
+    assert node_output_refusal("x_y", {"record_id": "R1", "output_path": "  "}) == ""

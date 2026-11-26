@@ -16,13 +16,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from clio_agent import conf, injections
 from clio_agent.errors import CancellationError
-from clio_agent.gact.artifacts.designation import ground_output_paths
 from clio_agent.tools import foreground_cancellation as foreground_cancel
 from clio_agent.tools.execution import (
     MCPToolBridge,
     SyncMCPToolExecutor,
     ToolRuntimeHooks,
-    _ground_output_paths,
     create_async_tool_executor,
     create_sync_tool_executor,
     set_tool_runtime_fallback,
@@ -1082,106 +1080,12 @@ def test_mcp_tool_bridge_remains_sync_compatibility_shim():
 
 
 # ---------------------------------------------------------------------------
-# Output-path workspace grounding (model-agnostic artifact hygiene).
+# Output paths: the call carries what the agent wrote; the server resolves it.
 # ---------------------------------------------------------------------------
 
-_PLOT_SCHEMA = {
-    "properties": {
-        "data_path": {"type": "string"},
-        "output_path": {"type": "string", "default": "timeseries.png"},
-    }
-}
 
-
-def test_ground_output_paths_resolves_relative_emitted_path():
-    """A relative output path the model emits resolves against the workspace root."""
-    grounded = ground_output_paths(
-        {"data_path": "/data/in.csv", "output_path": "plot.png"},
-        _PLOT_SCHEMA,
-        "/work/space",
-    )
-    # Build the expected value with pathlib so the OS-native separator is used.
-    assert grounded["output_path"] == str(Path("/work/space") / "plot.png")
-    # Input path is untouched (not an output-arg name).
-    assert grounded["data_path"] == "/data/in.csv"
-
-
-def test_ground_output_paths_injects_workspace_path_when_omitted():
-    """An omitted output arg with a relative schema default is injected absolute."""
-    grounded = ground_output_paths(
-        {"data_path": "/data/in.csv"},
-        _PLOT_SCHEMA,
-        "/work/space",
-    )
-    assert grounded["output_path"] == str(Path("/work/space") / "timeseries.png")
-
-
-def test_ground_output_paths_leaves_absolute_emitted_path_untouched(tmp_path):
-    """An absolute output path the model emits is preserved verbatim."""
-    # Only OS-native absolute paths are recognized as absolute by pathlib on
-    # the running platform, so build one from tmp_path rather than a POSIX literal.
-    absolute_out = str(tmp_path / "abs.png")
-    grounded = ground_output_paths(
-        {"data_path": "/data/in.csv", "output_path": absolute_out},
-        _PLOT_SCHEMA,
-        "/work/space",
-    )
-    assert grounded["output_path"] == absolute_out
-
-
-def test_ground_output_paths_noop_without_workspace_root():
-    """Without a bound workspace root the args pass through unchanged."""
-    args = {"data_path": "/data/in.csv", "output_path": "plot.png"}
-    grounded = ground_output_paths(args, _PLOT_SCHEMA, "")
-    assert grounded == args
-    # Omission injection is also gated on the workspace root.
-    grounded2 = ground_output_paths({"data_path": "/data/in.csv"}, _PLOT_SCHEMA, "")
-    assert "output_path" not in grounded2
-
-
-def test_ground_output_paths_ignores_absolute_schema_default(tmp_path):
-    """A schema default that is already absolute is not re-grounded on omit."""
-    # Use an OS-native absolute default; only those are seen as absolute here.
-    schema = {
-        "properties": {
-            "output_path": {"type": "string", "default": str(tmp_path / "fixed" / "out.png")},
-        }
-    }
-    grounded = ground_output_paths({"data_path": "/data/in.csv"}, schema, "/work/space")
-    assert "output_path" not in grounded
-
-
-def test_ground_output_paths_ignores_non_artifact_default():
-    """An omitted output arg whose default is not a writable artifact is left alone."""
-    schema = {
-        "properties": {
-            "output": {"type": "string", "default": "stdout"},
-        }
-    }
-    grounded = ground_output_paths({"data_path": "/data/in.csv"}, schema, "/work/space")
-    assert "output" not in grounded
-
-
-def test_execution_grounding_thin_reexport_is_byte_identical():
-    """The execution.py thin re-export (#966 deletion item 2) grounds identically.
-
-    The grounding constants + logic MOVED to the artifacts designation module;
-    ``execution.py`` keeps a thin ``_ground_output_paths`` wrapper. This parity
-    test proves the tool boundary's behavior is byte-identical across a mix of
-    resolve/inject/absolute/no-root cases — the move changed no behavior.
-    """
-    cases = [
-        ({"data_path": "/data/in.csv", "output_path": "plot.png"}, _PLOT_SCHEMA, "/work/space"),
-        ({"data_path": "/data/in.csv"}, _PLOT_SCHEMA, "/work/space"),
-        ({"data_path": "/data/in.csv", "output_path": "plot.png"}, _PLOT_SCHEMA, ""),
-        ({"output": "stdout"}, {"properties": {"output": {"default": "stdout"}}}, "/w"),
-    ]
-    for args, schema, root in cases:
-        assert _ground_output_paths(args, schema, root) == ground_output_paths(args, schema, root)
-
-
-def test_sync_mcp_tool_executor_grounds_relative_output_path(tmp_path):
-    """A relative output_path the model emits is grounded to the workspace root."""
+def test_sync_mcp_tool_executor_passes_a_relative_output_path_as_written(tmp_path):
+    """A relative output_path reaches the server verbatim, and none is injected."""
     fake_client = PlotLikeClient()
     executor = SyncMCPToolExecutor(
         object(),
@@ -1190,34 +1094,15 @@ def test_sync_mcp_tool_executor_grounds_relative_output_path(tmp_path):
     )
     try:
         with tool_workspace_context(tmp_path):
-            result = executor.call_tool(
+            relative = executor.call_tool(
                 "plot_timeseries",
                 {"data_path": "/data/in.csv", "output_path": "plot.png"},
             )
+            omitted = executor.call_tool("plot_timeseries", {"data_path": "/data/in.csv"})
     finally:
         executor.close()
-    grounded = json.loads(result)["args"]["output_path"]
-    assert Path(grounded) == tmp_path / "plot.png"
-
-
-def test_sync_mcp_tool_executor_injects_omitted_output_path(tmp_path):
-    """An omitted output_path is injected absolute from the schema default."""
-    fake_client = PlotLikeClient()
-    executor = SyncMCPToolExecutor(
-        object(),
-        timeout=1.0,
-        client_factory=lambda _: fake_client,
-    )
-    try:
-        with tool_workspace_context(tmp_path):
-            result = executor.call_tool(
-                "plot_timeseries",
-                {"data_path": "/data/in.csv"},
-            )
-    finally:
-        executor.close()
-    injected = json.loads(result)["args"]["output_path"]
-    assert Path(injected) == tmp_path / "timeseries.png"
+    assert json.loads(relative)["args"]["output_path"] == "plot.png"
+    assert "output_path" not in json.loads(omitted)["args"]
 
 
 def test_sync_mcp_tool_executor_keeps_absolute_output_path(tmp_path):
