@@ -406,7 +406,7 @@ def _resolve_permission(
     history = getattr(app.state, "task_history", None)
     task = history.task_snapshot(pid) if history is not None else None
     if task is not None and task.kind == "Question" and task.tool == SOURCE:
-        return respond(app, task, action, grantor)
+        return respond(app, task, action, grantor, comment)
     row = app.state.permissions.get(pid)
     if row is not None and row.get("kind") == "turn_defer":
         raise ValueError(

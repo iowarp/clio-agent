@@ -89,6 +89,7 @@ def question_view(app: Any, task: TaskSnapshot) -> dict[str, Any]:
         "answer": answer.answer,
         "selected_options": list(answer.selected_options),
         "answer_metadata": answer.metadata,
+        "answer_comment": answer.comment,
         "answer_input": receipt.model_dump(
             mode="json",
             include={"id", "session_id", "assignment_id", "iteration_id", "turn_id", "boundary"},
