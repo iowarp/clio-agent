@@ -161,7 +161,10 @@ def completed_presentation(
         elif error:
             explained = _presenter_explained_task_failure(result, presentation)
             presentation["status"] = "failed"
-            presentation["summary"] = ""
+            if not explained:
+                # A presenter that declared the failure from the reply wrote its summary
+                # knowing it failed (a timed-out shell names its limit); keep that one.
+                presentation["summary"] = ""
             if not explained and not any(
                 block.get("severity") == "error" for block in presentation["blocks"]
             ):

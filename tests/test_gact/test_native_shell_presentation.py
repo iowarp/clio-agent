@@ -135,6 +135,21 @@ def test_recorded_failure_shows_output_and_exit_code_not_status_failed() -> None
     assert terminal(view)["text"] == SUCCEEDED["stdout"]
 
 
+def test_a_timed_out_shell_says_so_with_its_limit_not_just_failed() -> None:
+    """The settled envelope says only ``failed``; the row carries the reply's ``timed_out``
+    and ``timeout_s`` (live: a 15 s search read as "status=failed")."""
+    row = shell_row(exit_code=0) | {"exit_code": None, "timed_out": True, "timeout_s": 15.0}
+    result = observed(row)
+    result["structuredContent"]["status"] = "failed"
+    error = structured_tool_result_error(result)
+    _result, view = completed_presentation(
+        "shell_bash", {"command": "sleep 60"}, result, result["structuredContent"], "", error=error
+    )
+    assert view["status"] == "failed"
+    assert view["summary"] == "Timed out at its 15 s limit"
+    assert terminal(view)["timed_out"] is True
+
+
 def test_a_settled_reply_with_its_own_error_still_says_so() -> None:
     """Only a failure the presenter explained from the reply's facts drops the block."""
     result = observed(FAILED)
