@@ -52,6 +52,8 @@ UNSAFE_ID_REASON = "session_scratch_unsafe_session_id"
 MACHINE_NAME_EMPTY_REASON = "session_scratch_machine_name_empty"
 #: Typed reason: a fenced stand-in kept a private Windows ACL that cuts off the fence's grants.
 INHERIT_FAILED_REASON = "session_scratch_inherit_failed"
+#: Typed reason: a short root whose folder is gone (a deleted home or session) was removed.
+ORPHAN_REMOVED_REASON = "session_scratch_short_root_orphan_removed"
 
 #: ``why`` values for :func:`remove_session_scratch`.
 WHY_SESSION_DELETED = "session_deleted"
@@ -564,6 +566,10 @@ def remove_session_scratch(session_id: str, *, why: str) -> bool:
         return False
     _remove_short_root(folder, SOCKET_ROLE)
     _remove_short_root(folder / "uv-cache", UV_CACHE_ROLE)
+    # A fenced child's cache is keyed by its first write root, the session's folder.
+    child_cache = paths.workspace_cache_dir(folder)
+    _remove_short_root(child_cache, SOCKET_ROLE)
+    shutil.rmtree(win_extended_path(child_cache), ignore_errors=True)
     try:
         shutil.rmtree(win_extended_path(folder))
     except OSError as exc:
@@ -617,6 +623,64 @@ def sweep(last_activity: Callable[[str], float | None], *, now: float | None = N
     return removed
 
 
+def _orphaned(short: Path) -> bool:
+    """Whether ``short`` is this user's short root and the folder it serves is gone.
+
+    A link serves its target. A stand-in's target may not exist yet (a cache is named before
+    it is filled), so it is orphaned only when the folder holding that target is gone too.
+    """
+
+    try:
+        info = short.lstat()
+        if not _mine(info):
+            return False
+        if stat.S_ISLNK(info.st_mode) or short.is_junction():
+            target = os.readlink(short)
+            for prefix in ("\\\\?\\", "\\??\\"):
+                target = target.removeprefix(prefix)
+            return not os.path.lexists(target)
+        if not stat.S_ISDIR(info.st_mode):
+            return False
+        owner = (short / _OWNER_FILE).read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    return bool(owner) and not Path(owner).parent.exists()
+
+
+def sweep_short_roots() -> list[Path]:
+    """Remove this user's short roots whose folder is gone; return the removed paths.
+
+    A session's short roots go with its scratch folder (:func:`remove_session_scratch`), but
+    a home or state folder deleted by other means leaves them behind in the system temp.
+    Only names of this user's form (``clio-<uid>-<16 hex>``) are considered.
+    """
+
+    owner = os.getuid() if hasattr(os, "getuid") else "w"
+    name = re.compile(rf"clio-{re.escape(str(owner))}-[0-9a-f]{{16}}")
+    bases = {base for kind in (POSIX_TMP, SYSTEM_TEMP, LOCAL_APP_DATA) if (base := _base_dir(kind))}
+    removed: list[Path] = []
+    for base in sorted(bases):
+        try:
+            entries = sorted(base.iterdir())
+        except OSError:
+            continue
+        for short in entries:
+            if not name.fullmatch(short.name) or not _orphaned(short):
+                continue
+            try:
+                if short.is_junction():
+                    os.rmdir(short)  # removes the junction, never what it leads to
+                elif short.is_symlink():
+                    short.unlink()
+                else:
+                    shutil.rmtree(win_extended_path(short))
+            except OSError:
+                continue
+            trace.event("SCRATCH", "%s path=%s", ORPHAN_REMOVED_REASON, short)
+            removed.append(short)
+    return removed
+
+
 __all__ = [
     "CREATE_FAILED_REASON",
     "REMOVED_REASON",
@@ -637,5 +701,6 @@ __all__ = [
     "socket_safe_dir",
     "socket_safe_temp",
     "sweep",
+    "sweep_short_roots",
     "system_temp_roots",
 ]

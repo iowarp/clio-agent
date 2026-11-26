@@ -397,6 +397,44 @@ def test_a_private_stand_in_is_given_back_its_parents_grants(
     assert calls == [["icacls", str(tmp_path), "/inheritancelevel:e", "/Q"]]
 
 
+def test_short_roots_whose_folder_is_gone_are_swept(
+    tmp_path: Path, short_temp: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A home deleted outright leaves its short roots; the boot sweep removes only those."""
+
+    monkeypatch.setattr(session_scratch, "_base_dir", lambda kind: short_temp)
+    owner = os.getuid() if hasattr(os, "getuid") else "w"
+
+    def name(n: int) -> Path:
+        return short_temp / f"clio-{owner}-{n:016x}"
+
+    def link(short: Path, target: Path) -> None:
+        if os.name == "nt":
+            import _winapi
+
+            _winapi.CreateJunction(str(target), str(short))
+        else:
+            os.symlink(target, short)
+
+    def stand_in(short: Path, target: Path) -> None:
+        short.mkdir()
+        (short / "owner.txt").write_text(f"{target}\n", encoding="utf-8")
+
+    gone, here = tmp_path / "gone", tmp_path / "here"
+    gone.mkdir()
+    here.mkdir()
+    link(name(1), gone)
+    link(name(2), here)
+    stand_in(name(3), gone / "uv-cache")
+    stand_in(name(4), here / "uv-cache")  # not filled yet: its folder still exists
+    foreign = short_temp / "clio-x-0000000000000005"
+    stand_in(foreign, gone / "uv-cache")
+    gone.rmdir()
+    assert session_scratch.sweep_short_roots() == [name(1), name(3)]
+    assert not os.path.lexists(name(1)) and not name(3).exists()
+    assert os.path.lexists(name(2)) and name(4).is_dir() and foreign.is_dir() and here.is_dir()
+
+
 @pytest.mark.parametrize("host", ["windows", "darwin", "linux"])
 def test_clio_core_ipc_past_the_socket_limit_gets_a_short_owned_folder(
     tmp_path: Path, short_temp: Path, monkeypatch: pytest.MonkeyPatch, host: str

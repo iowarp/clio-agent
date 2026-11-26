@@ -2,7 +2,9 @@
 
 A deleted session's scratch folder goes with it
 (:func:`clio_agent.gact.session_tool_output.delete_session_tool_output`). This sweep
-removes the rest: this machine's folders whose session no longer exists, or whose
+removes the rest: this user's short roots in the system temp whose folder is gone
+(:func:`clio_agent.runtime.session_scratch.sweep_short_roots`), and this machine's folders
+whose session no longer exists, or whose
 session's last activity (``last_interaction_at``, else ``created_at``) is older than
 ``paths.scratch_retention_days``. It waits for the session store on the server loop
 (cancelled with the server) and then runs on a worker thread: a worker blocked on the
@@ -89,6 +91,7 @@ def sweep_sessions(sessions: Any) -> list[str]:
 
     from clio_agent.arc import clio_core_wal_repair  # noqa: PLC0415
 
+    session_scratch.sweep_short_roots()  # needs no session store
     suspect = clio_core_wal_repair.restore_suspect()
     if suspect:
         logger.warning(
