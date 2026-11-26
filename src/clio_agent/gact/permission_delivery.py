@@ -54,6 +54,26 @@ def permission_summary(name: str, context: Mapping[str, Any] | None, subject: st
     return f"{subject} call: {name}"
 
 
+def permission_title(row: Mapping[str, Any]) -> str:
+    """The human action a permission card is titled with ("Run command", "Connect to pypi.org").
+
+    The row's own ``title`` wins; a tool call whose summary is the plain ``<subject> call:
+    <name>`` line reads as its tool's declared title; any other summary is already the
+    sentence a person reads. ``summary`` stays the technical line either way.
+    """
+
+    from clio_agent.tools.builtin_annotations import BUILTIN_TOOL_TITLES  # noqa: PLC0415
+
+    if title := str(row.get("title") or ""):
+        return title
+    tool_call = row.get("tool_call")
+    name = str(tool_call.get("tool_name") or "") if isinstance(tool_call, Mapping) else ""
+    summary = str(row.get("summary") or "")
+    if name and summary.endswith(f" call: {name}"):
+        return tool_title(name) or BUILTIN_TOOL_TITLES.get(name, "") or summary
+    return summary
+
+
 def sanitize_title(title: object) -> str:
     from clio_agent.gact.agents.tool_instrumentation import sanitize_tool_title  # noqa: PLC0415
 

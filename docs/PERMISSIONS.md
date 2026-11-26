@@ -709,10 +709,14 @@ chokepoint relays an opaque tunnel and doesn't check what runs inside it.
 | `pypi.org:443`, `files.pythonhosted.org:443` | https | uv and pip installs |
 | `registry.npmjs.org:443` | https | npm installs for skills and tools |
 
-The rules take effect only where the chokepoint gates: deny-mode workspaces, and the
-write gate's plain-HTTP writes. Outside deny mode, every connection is already allowed
-and recorded. Other forges, conda-forge, crates and site mirrors are added the same
-way, as a rule in Settings or with `PUT /v1/policies`.
+Every rule the person sets holds in every workspace mode: a `deny` rule refuses the
+connection and an "Ask every time" (`ask`) rule asks each time, whether or not the
+workspace is in deny mode. Deny mode decides only a host no rule covers: it asks,
+while outside deny mode the connection is allowed and recorded. The ask's card is
+titled "Connect to pypi.org" ("on port 22" when not 80 or 443). A connection served
+from a local cache (a `uv` or npm cache hit) opens no connection, so nothing asks.
+Other forges, conda-forge, crates and site mirrors are added the same way, as a rule
+in Settings or with `PUT /v1/policies`.
 
 ### Local listeners
 

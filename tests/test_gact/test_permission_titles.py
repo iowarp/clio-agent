@@ -157,3 +157,26 @@ def test_a_tool_only_a_view_calls_reads_as_its_own_title(titled: None) -> None:
     # its title; the card reads the title its server declared (more connectors, MC-F1).
     context = {"kind": "external_mcp", "annotations": {}, "title": "Read PDF Bytes"}
     assert permission_summary("viewer_read_bytes", context, EXTERNAL) == "Read PDF Bytes"
+
+
+def test_a_card_is_titled_with_the_action_and_keeps_the_technical_line(titled: None) -> None:
+    from clio_agent.gact.permission_delivery import permission_title
+    from clio_agent.gact.routes.interactions import _permission_interaction
+
+    app = SimpleNamespace(
+        state=SimpleNamespace(sessions=None, workspaces=None, task_history=None, agent_tasks=None)
+    )
+    shell = {
+        "id": "perm_3",
+        "session_id": "sess_1",
+        "status": "pending",
+        "summary": "shell command call: shell_bash",
+        "tool_call": {"tool_name": "shell_bash", "input": {"command": "uv run --with x"}},
+    }
+    card = _permission_interaction(app, shell)
+    assert (card.title, card.payload["summary"]) == ("Run command", shell["summary"])
+    native = {**shell, "summary": "destructive tool call: viewer_set_timestep"}
+    native["tool_call"] = {"tool_name": "viewer_set_timestep", "input": {}}
+    assert permission_title(native) == "Change the timestep"
+    assert permission_title({**shell, "title": "Connect to pypi.org"}) == "Connect to pypi.org"
+    assert permission_title({"summary": "Allow access to another folder?"}).endswith("folder?")

@@ -16,7 +16,7 @@ from clio_agent.gact import agent_needs, connector_setup, core_write_refusal
 from clio_agent.gact.a2ui_actions.record import last_action_wire
 from clio_agent.gact.human_controls import intervene
 from clio_agent.gact.off_loop import run_off_loop
-from clio_agent.gact.permission_delivery import attended_session_id
+from clio_agent.gact.permission_delivery import attended_session_id, permission_title
 from clio_agent.gact.permission_gate import GRANTOR_USER, resolve_permission
 from clio_agent.gact.permission_timeout import REASON_PERMISSION_CANCELLED
 from clio_agent.gact.question_surface import question_row
@@ -197,7 +197,7 @@ def _permission_interaction(app: FastAPI, row: Mapping[str, Any]) -> PendingInte
             row.get("task_id") or tool_call.get("task_id") or _task_id_for_owner(app, owner) or ""
         ),
         status=status,
-        title=str(row.get("summary") or "Permission required"),
+        title=permission_title(row) or "Permission required",
         requires_human_response=status == "pending",
         source=PendingInteractionSource(
             protocol="mcp" if row.get("kind") == "external_mcp" else "native",
@@ -215,6 +215,7 @@ def _permission_interaction(app: FastAPI, row: Mapping[str, Any]) -> PendingInte
         ),
         payload={
             "permission_id": str(row.get("id") or ""),
+            **({"summary": str(row["summary"])} if row.get("summary") else {}),
             "tool_call": dict(tool_call),
             **({"execution": execution} if execution else {}),
             **({"access": row["access"]} if isinstance(row.get("access"), Mapping) else {}),
