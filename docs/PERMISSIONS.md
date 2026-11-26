@@ -16,6 +16,14 @@ Each row carries `id`, `session_id`, `tool_call.{tool_name, input}`,
 `summary`, `created_at`, `status`, `action`, optional `resolved_at` +
 `reason`.
 
+`allow_session` and `allow_workspace` store a policy for the tool in that scope.
+For a call that names a file (`path`, `output_path`, `target_path`), the policy
+covers the folder holding that file and everything below it, so the next file
+written there does not ask again and a waiting question for that folder is
+answered with it. Other folders still ask. The pending row and its interaction
+carry `standing_scope.folder`, the folder such an answer covers, before the
+person answers.
+
 Policy updates are atomic. `PUT /v1/policies` rejects malformed rows with a
 structured `422 invalid_request` and leaves the previous policy set unchanged;
 the backend never silently drops typoed scopes/actions or stores rules that it

@@ -31,8 +31,10 @@ Responsibilities:
 
 from __future__ import annotations
 
+import glob
 import json
 import logging
+import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -91,6 +93,40 @@ def _permission_path_from_args(args: Mapping[str, Any]) -> str:
         if isinstance(value, str) and value:
             return value
     return ""
+
+
+def standing_scope(args: Mapping[str, Any], actions: Any = None) -> dict[str, Any]:
+    """The place a lasting (session or workspace) allow of this call covers, for its row.
+
+    A call that targets a path is allowed, for the rest of the session or workspace, in
+    the folder that holds that path and below. The person answered for writing in that
+    place: not for that one file (every new file would ask again), nor for every path
+    the tool reaches (other folders keep their own question). A relative path that has
+    no workspace to ground it gets no folder, so its allow stays on the exact path. A
+    question that names its answers (``actions``) without a lasting one gets none.
+    """
+
+    raw = _permission_path_from_args(args)
+    if not raw or (actions and not {"allow_session", "allow_workspace"} & set(actions)):
+        return {}
+    target = Path(raw).expanduser()
+    if not target.is_absolute():
+        from clio_agent.tools.execution import get_active_tool_workspace_root  # noqa: PLC0415
+
+        if not (root := get_active_tool_workspace_root()):
+            return {}
+        target = Path(root) / target
+    return {"standing_scope": {"folder": str(target.resolve(strict=False).parent)}}
+
+
+def _standing_path_pattern(row: Mapping[str, Any], args: Mapping[str, Any]) -> str:
+    """The ``path_pattern`` a lasting allow stores: its row's folder, else the exact path."""
+
+    scope = row.get("standing_scope")
+    folder = str(scope.get("folder") or "") if isinstance(scope, Mapping) else ""
+    if folder:
+        return os.path.join(glob.escape(folder), "*")  # fnmatch's * crosses separators
+    return _permission_path_from_args(args)
 
 
 def _validate_permission_policies(
@@ -339,9 +375,8 @@ def _append_permission_policy_from_resolution(
         policy["kind"] = KIND_BROWSER_HOST
         policy.pop("tool_name_pattern", None)
         return _appended(app, policy)
-    path = _permission_path_from_args(args)
-    if path:
-        policy["path_pattern"] = path
+    if path_pattern := _standing_path_pattern(row, args):
+        policy["path_pattern"] = path_pattern
     return _appended(app, policy)
 
 
