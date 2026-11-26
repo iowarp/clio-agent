@@ -664,12 +664,16 @@ class _Loop:
         from clio_agent.gact.runtime.globals import _TurnCancelled  # noqa: PLC0415
         from clio_agent.tools.file_policy import FilePolicyError  # noqa: PLC0415
         from clio_agent.tools.mcp_errors import typed_mcp_protocol_error  # noqa: PLC0415
+        from clio_agent.tools.result_errors import declared_failure  # noqa: PLC0415
 
         try:
             if inspect.iscoroutinefunction(getattr(tool, "func", None)):
                 # The worker thread has no running loop; the task copies this context.
-                return _CallOutcome(run_in_new_loop(tool.acall(**call.input)), False)
-            return _CallOutcome(tool(**call.input), False)
+                value = run_in_new_loop(tool.acall(**call.input))
+            else:
+                value = tool(**call.input)
+            # The call's own verdict: a native ToolFailure or an MCP isError, never its words.
+            return _CallOutcome(value, declared_failure(value))
         except Exception as err:  # noqa: BLE001 - a tool error is the model's observation
             refusal = err if isinstance(err, MCPProtocolError) else typed_mcp_protocol_error(err)
             escalate = (

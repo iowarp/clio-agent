@@ -10,6 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from clio_agent.tools.result_errors import ToolFailure
+
 __all__ = ["build_latex_build_tool", "build_latex_locate_tool", "build_latex_outline_tool"]
 
 
@@ -48,18 +50,22 @@ def latex_build(entry: str, venue: str = "") -> dict[str, Any]:
 
     app, sid, workspace_id = _context()
     if Path(entry).suffix.lower() not in {".tex", ".ltx"}:
-        return {
-            "status": "failed",
-            "entry": entry,
-            "reason": "latex_entry_not_tex",
-            "error": f"{entry} is not a .tex file",
-        }
+        return ToolFailure(
+            {
+                "status": "failed",
+                "entry": entry,
+                "reason": "latex_entry_not_tex",
+                "error": f"{entry} is not a .tex file",
+            }
+        )
     try:
         record, version = comment_targets.register_target(
             app, sid, workspace_id, entry, designation="latex-source"
         )
     except comment_targets.CommentTargetError as exc:
-        return {"status": "failed", "entry": entry, "reason": exc.code, "error": str(exc)}
+        return ToolFailure(
+            {"status": "failed", "entry": entry, "reason": exc.code, "error": str(exc)}
+        )
     row = build_row(app, sid, record, version, entry=entry, venue=venue)
     paper_id = str((row.get("paper") or {}).get("artifact_id") or "")
     found = get_registry(app).get_by_artifact_id(paper_id) if paper_id else None

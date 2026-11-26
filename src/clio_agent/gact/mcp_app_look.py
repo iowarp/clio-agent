@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from clio_agent.runtime import trace
+from clio_agent.tools.result_errors import ToolFailure
 
 __all__ = [
     "HOLDER_LEASE_SECONDS",
@@ -441,13 +442,13 @@ def _identity_fields(view: ViewIdentity) -> dict[str, Any]:
     }
 
 
-def _refusal(reason: str, text: str, **extra: Any) -> dict[str, Any]:
+def _refusal(reason: str, text: str, **extra: Any) -> ToolFailure:
     from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
         declare_structured_content,
     )
 
     trace.event("APPS", "%s %s", reason, " ".join(f"{k}={v}" for k, v in extra.items()))
-    row = {"ok": False, "reason": reason, "text": text, **extra}
+    row = ToolFailure({"ok": False, "reason": reason, "text": text, **extra})
     declare_structured_content(row)
     return row
 

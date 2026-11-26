@@ -30,6 +30,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import context as _ctx
+from clio_agent.tools.result_errors import ToolFailure
 
 if TYPE_CHECKING:
     from clio_agent.gact.a2ui_capability_selection import CatalogSelection
@@ -268,7 +269,7 @@ KNOWN_REFUSAL_REASONS: frozenset[str] = frozenset(
 )
 
 
-def refusal(reason: str, *, detail: str, hint: str = "") -> dict[str, Any]:
+def refusal(reason: str, *, detail: str, hint: str = "") -> ToolFailure:
     """Build a typed producer-tool refusal dict (never raised as an exception).
 
     ``hint`` defaults to :data:`_DEFAULT_HINTS`'s entry for ``reason`` when
@@ -281,7 +282,7 @@ def refusal(reason: str, *, detail: str, hint: str = "") -> dict[str, Any]:
 
     resolved_hint = hint or _DEFAULT_HINTS.get(reason, "")
     _record_repeat_within_turn(reason)
-    return {"ok": False, "reason": reason, "detail": detail, "hint": resolved_hint}
+    return ToolFailure({"ok": False, "reason": reason, "detail": detail, "hint": resolved_hint})
 
 
 def _record_repeat_within_turn(reason: str) -> None:
