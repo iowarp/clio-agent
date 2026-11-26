@@ -119,6 +119,22 @@ def test_strictness_is_a_typed_reason(browser: Any, site: dict[str, Any]) -> Non
     assert "11 elements" in ambiguous.value.message
 
 
+def test_a_missing_target_fails_once_the_page_settles(browser: Any, site: dict[str, Any]) -> None:
+    from clio_agent.gact.browser.presence import REASON_MISSING, resolve
+
+    record = browser.wait(browser.open("sess_a", ""))
+    _goto(browser, record, site["a"] + "/table")
+    target = {"steps": [{"by": "css", "css": "#no-such-element"}]}
+
+    async def read(r: Any) -> str:
+        return await (await resolve(r.page, target)).inner_text()
+
+    with pytest.raises(BrowserError) as missing:
+        browser.run(record, "read text", read)
+    assert missing.value.reason == REASON_MISSING
+    assert "#no-such-element" in missing.value.message
+
+
 def test_a_download_lands_in_session_scratch_and_is_reported_once(
     browser: Any, site: dict[str, Any], tmp_path: Path
 ) -> None:
