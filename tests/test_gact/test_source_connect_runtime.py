@@ -52,7 +52,7 @@ def _collect(
 
     async def collect() -> tuple[dict[str, Any], ClientGetTaskResult]:
         report = await app.state.task_operations.wait(caller, accepted["handle"])
-        assert report["pending"] == [] and len(report["outcomes"]) == 1
+        assert report["unfinished"] == [] and len(report["outcomes"]) == 1
         snapshot = await app.state.task_history.io.run(
             app.state.task_history.task_snapshot, accepted["handle"]
         )

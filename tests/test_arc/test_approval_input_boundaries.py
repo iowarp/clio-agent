@@ -311,11 +311,12 @@ async def test_human_can_wait_for_own_assignment_but_agent_cannot_deadlock_itsel
             TaskCaller(sid, "human", human_action=True), root.handle, timeout_s=0
         )
         agent = await operations.wait(TaskCaller(sid, "human"), root.handle, timeout_s=0)
-        assert human == {"outcomes": [], "pending": [root.handle], "timed_out": True}
+        assert human["outcomes"] == [] and human["timed_out"] is True
+        assert [row["handle"] for row in human["unfinished"]] == [root.handle]
         assert agent["outcomes"] == [
             {"handle": root.handle, "error": "cannot_wait_for_own_active_assignment"}
         ]
-        assert not agent["pending"]
+        assert not agent["unfinished"]
         assert owner.history.task_snapshot(root.handle).terminal_at is None
     finally:
         await owner.shutdown()

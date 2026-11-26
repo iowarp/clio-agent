@@ -93,7 +93,7 @@ async def test_explicit_question_wait_outlives_watchdog_without_extending_a_neig
                 app.state.questions.answer, question.handle, QuestionReply(answer="selected-value")
             )
             result = await asyncio.wait_for(work, 10)
-            assert not result["pending"]
+            assert not result["unfinished"]
             assert result["outcomes"][0]["status"] == "completed"
             assert "selected-value" in json.dumps(result)
         else:

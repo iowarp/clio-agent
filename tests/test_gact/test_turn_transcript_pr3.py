@@ -592,7 +592,7 @@ class _RollupAgent:
         result = asyncio.run(
             app.state.builtin_boundary.bind(wait).acall(tasks=receipt["handle"], timeout_s=30.0)
         )
-        assert not result["pending"] and result["outcomes"][0]["status"] == "completed"
+        assert not result["unfinished"] and result["outcomes"][0]["status"] == "completed"
         return _Pred(answer="parent turn done", selected_expert="")
 
 

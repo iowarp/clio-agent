@@ -205,7 +205,7 @@ async def test_native_cancel_waits_for_body_cleanup(
             snapshot = await operations.wait(
                 TaskCaller("owner", "human"), receipt["handle"], timeout_s=0
             )
-            assert snapshot["pending"] == [receipt["handle"]]
+            assert [row["handle"] for row in snapshot["unfinished"]] == [receipt["handle"]]
             assert not exited.is_set()
             release.set()
             settled = await native.await_settlement(receipt["handle"])

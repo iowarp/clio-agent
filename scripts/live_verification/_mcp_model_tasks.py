@@ -82,7 +82,7 @@ def _start(call: Any, root: Path, sid: str, tool: str, submission: str) -> dict[
     active = next(row for row in observed["tasks"] if row["handle"] == handle)
     assert active["effective_status"] not in evidence.SETTLED
     wait = evidence.observation(evidence.tool_events(root, sid, "wait_tasks")[-1])
-    assert handle in wait["pending"] and wait["timed_out"]
+    assert handle in [row["handle"] for row in wait["unfinished"]] and wait["timed_out"]
     assert not evidence.tool_events(root, sid, "get_task_result")
     return {
         "handle": handle,

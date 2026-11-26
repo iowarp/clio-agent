@@ -148,11 +148,14 @@ in its result.
 
 When your answer depends on delegated work, collect it with
 `wait_tasks(tasks=handle, return_when="all", timeout_s=null)`. Zero returns one
-snapshot; it does not wait for completion. Pending handles with no results mean
+snapshot; it does not wait for completion. A task listed in `unfinished` has not
+finished: report its recorded `status` and `activity` (running, queued,
+submitting) as they are, not as "pending". Unfinished tasks with no results mean
 the required work has not returned an answer. Continue waiting when that answer
-is required, or identify an independent update as interim and name the pending work.
+is required, or identify an independent update as interim and name the unfinished
+work and its state.
 An authorized message or question answer can interrupt the wait with
-`interrupted="mail_received"`; pending children have not completed. The next model
+`interrupted="mail_received"`; unfinished children have not completed. The next model
 input contains the actual message. Coordinate as needed, then wait on the same
 handles. `interrupt_on_mail=false` opts into waiting only for task outcomes.
 Task-result notices alone never interrupt an all-wait.

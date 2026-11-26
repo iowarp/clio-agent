@@ -64,9 +64,20 @@ def _timeout(value: float | None) -> float | None:
     return value
 
 
+def unfinished_state(task: TaskSnapshot) -> dict[str, Any]:
+    """An unfinished member as its own record observes it: running, queued or submitting.
+
+    Observe-level fields only, so any waiter allowed to wait on the task may see them.
+    """
+    state: dict[str, Any] = {"handle": task.handle, "status": task.status}
+    if task.activity:
+        state["activity"] = task.activity
+    return state
+
+
 def _wait_value(
     outcomes: list[dict[str, Any]],
-    pending: list[str],
+    unfinished: list[dict[str, Any]],
     *,
     timed_out: bool,
     interrupted: str = "",
@@ -74,14 +85,19 @@ def _wait_value(
 ) -> CollectedTaskResult:
     """Carry each disclosed wait outcome's permission to recipient-input commitment.
 
-    ``awaiting`` names the pending tasks that asked a question and wait for its answer
+    ``awaiting`` names the unfinished tasks that asked a question and wait for its answer
     (MCP ``input_required``), so a returned wait does not report them as plain running.
     """
     rows = [row for row in outcomes if row.get("handle") and not row.get("error")]
     reads = {row["handle"] for row in rows if row.get("pending") is False}
-    observations = {row["handle"] for row in rows} | set(pending)
-    value: dict[str, Any] = {"outcomes": outcomes, "pending": pending, "timed_out": timed_out}
-    if waiting := [handle for handle in awaiting or () if handle in pending]:
+    unfinished_handles = {row["handle"] for row in unfinished}
+    observations = {row["handle"] for row in rows} | unfinished_handles
+    value: dict[str, Any] = {
+        "outcomes": outcomes,
+        "unfinished": unfinished,
+        "timed_out": timed_out,
+    }
+    if waiting := [handle for handle in awaiting or () if handle in unfinished_handles]:
         value["awaiting_input"] = waiting
     if interrupted:
         value["interrupted"] = interrupted
@@ -274,8 +290,10 @@ class TaskOperations:
         ``settle_awaiting_input`` (a flow's wait) settles a child that yielded, or whose
         turn stopped, with nothing left to wake it as ``awaiting_input`` or ``stopped``
         instead of waiting on it forever (:mod:`clio_agent.gact.assignment_input`).
-        ``interrupt_on_mail`` returns a truthful pending snapshot when authorized
+        ``interrupt_on_mail`` returns a truthful snapshot when authorized
         coordination/input needs the caller. It never settles or consumes a task.
+        A member that has not finished is listed in ``unfinished`` with its own
+        recorded ``status`` and ``activity``.
         """
         with track(timeout_s != 0, session_id=caller.session_id):
             if return_when not in {"all", "any"}:
@@ -304,9 +322,10 @@ class TaskOperations:
             try:
                 while True:
                     changed.clear()
-                    outcomes, pending, awaiting = await self.history.io.run(
+                    outcomes, unfinished, awaiting = await self.history.io.run(
                         self._outcomes, caller, handles, settle_awaiting_input, wake
                     )
+                    pending = [row["handle"] for row in unfinished]
                     for handle in pending:
                         # A cancellation can end unconfirmed with no further history change.
                         if (job := self._cancellation_job(handle)) is not None:
@@ -316,7 +335,7 @@ class TaskOperations:
                     if own is not None and await self.history.io.run(self._stopping, own.handle):
                         return _wait_value(
                             outcomes,
-                            pending,
+                            unfinished,
                             timed_out=False,
                             interrupted="stopped",
                             awaiting=awaiting,
@@ -325,16 +344,16 @@ class TaskOperations:
                         item.get("status") == "task_state_uncertain" for item in outcomes
                     )
                     if not pending or uncertain or (return_when == "any" and outcomes):
-                        return _wait_value(outcomes, pending, timed_out=False, awaiting=awaiting)
+                        return _wait_value(outcomes, unfinished, timed_out=False, awaiting=awaiting)
                     remaining = None if deadline is None else max(0.0, deadline - loop.time())
                     if remaining == 0:
-                        return _wait_value(outcomes, pending, timed_out=True, awaiting=awaiting)
+                        return _wait_value(outcomes, unfinished, timed_out=True, awaiting=awaiting)
                     if interrupt_on_mail and await self.history.io.run(
                         self._has_interrupting_input, caller
                     ):
                         return _wait_value(
                             outcomes,
-                            pending,
+                            unfinished,
                             timed_out=False,
                             interrupted="mail_received",
                             awaiting=awaiting,
@@ -342,10 +361,10 @@ class TaskOperations:
                     try:
                         await asyncio.wait_for(changed.wait(), remaining)
                     except TimeoutError:
-                        outcomes, pending, awaiting = await self.history.io.run(
+                        outcomes, unfinished, awaiting = await self.history.io.run(
                             self._outcomes, caller, handles, settle_awaiting_input
                         )
-                        return _wait_value(outcomes, pending, timed_out=True, awaiting=awaiting)
+                        return _wait_value(outcomes, unfinished, timed_out=True, awaiting=awaiting)
             finally:
                 remove()
 
@@ -406,10 +425,11 @@ class TaskOperations:
         handles: tuple[str, ...],
         settle_awaiting_input: bool = False,
         wake: Callable[[int], None] | None = None,
-    ) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
         outcomes: list[dict[str, Any]] = []
         pending: list[str] = []
         awaiting: list[str] = []
+        observed: dict[str, TaskSnapshot] = {}
         checks: dict[int, tuple[str, CoordinationRight]] = {}
         # Waiting on a handle waits on its forks too (task_forks): read again on every
         # pass, since a fork may be created while the wait is open.
@@ -436,6 +456,7 @@ class TaskOperations:
                         sid = current.owner.session_id
                         self.app.state.conversations.runner.run_when_released(sid, lambda: wake(0))
                     pending.append(handle)
+                    observed[handle] = current
                     if (
                         current.status == "input_required"
                         or current.activity == "waiting_for_input"
@@ -478,7 +499,11 @@ class TaskOperations:
                 member = self.history.task_snapshot(str(row.get("handle") or ""))
                 if member is not None and member.fork_of and member.handle not in handles:
                     row["fork_of"] = member.fork_of
-        return outcomes, pending, [handle for handle in awaiting if handle in pending]
+        return (
+            outcomes,
+            [unfinished_state(observed[handle]) for handle in pending],
+            [handle for handle in awaiting if handle in pending],
+        )
 
     async def observe(
         self,

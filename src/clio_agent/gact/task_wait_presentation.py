@@ -7,6 +7,40 @@ from collections.abc import Mapping
 from typing import Any
 
 _UNSUCCESSFUL = {"failed", "error", "cancelled", "interrupted", "denied"}
+# An unfinished task's recorded status, in words, and the shared status chip it shows.
+_UNFINISHED_WORDS = {
+    "accepted": ("waiting to start", "queued"),
+    "queued": ("queued", "queued"),
+    "running": ("running", "running"),
+    "working": ("running", "running"),
+    "active": ("running", "running"),
+    "input_required": ("waiting for input", "waiting_user"),
+    "paused": ("paused", "pending"),
+}
+
+
+def _unfinished(result: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+    """Each unfinished member's recorded state, by handle.
+
+    Receipts recorded before ``unfinished`` carry a bare ``pending`` handle list.
+    """
+    rows = result.get("unfinished")
+    if isinstance(rows, list):
+        return {
+            str(row["handle"]): row
+            for row in rows
+            if isinstance(row, Mapping) and isinstance(row.get("handle"), str)
+        }
+    legacy = result.get("pending", [])
+    return {handle: {"handle": handle} for handle in legacy if isinstance(handle, str)}
+
+
+def _unfinished_words(state: Mapping[str, Any]) -> tuple[str, str]:
+    """``("running", "running")``: the recorded status as words and as a status chip."""
+    status = str(state.get("status") or "")
+    if not status:
+        return "unfinished", "unknown"
+    return _UNFINISHED_WORDS.get(status, (status.replace("_", " "), "unknown"))
 
 
 def _child(handle: str) -> dict[str, str]:
@@ -35,10 +69,10 @@ def is_wait_task_tool(name: str) -> bool:
 def mark_wait_interrupted(presentation: dict[str, Any], source: str = "") -> None:
     """Mark a returned wait snapshot interrupted without turning it into an error."""
     reason = {
-        "mail_received": "Interrupted by mail; pending tasks continue running.",
-        "stopped": "Interrupted by a stop request; pending tasks continue running.",
-        "session_cancelled": "Interrupted by session cancellation; pending tasks may continue.",
-    }.get(source, "Interrupted; pending tasks may continue running.")
+        "mail_received": "Interrupted by mail; unfinished tasks continue.",
+        "stopped": "Interrupted by a stop request; unfinished tasks continue.",
+        "session_cancelled": "Interrupted by session cancellation; unfinished tasks may continue.",
+    }.get(source, "Interrupted; unfinished tasks may continue.")
     presentation["diagnostic"] = reason
     # Row-level child failures remain in their own error blocks and counts; the
     # wait call itself returned an interrupted snapshot, not a failed invocation.
@@ -124,7 +158,8 @@ def wait_presentation(args: Mapping[str, Any], result: Mapping[str, Any]) -> dic
     requested = args.get("tasks", [])
     if isinstance(requested, str):
         requested = [requested]
-    pending = [handle for handle in result.get("pending", []) if isinstance(handle, str)]
+    unfinished = _unfinished(result)
+    pending = list(unfinished)
     awaiting = {
         handle for handle in result.get("awaiting_input", []) if isinstance(handle, str)
     } & set(pending)
@@ -165,13 +200,13 @@ def wait_presentation(args: Mapping[str, Any], result: Mapping[str, Any]) -> dic
     if poll:
         policy = "Immediate status check; this call did not wait."
     if result.get("timed_out") and not poll:
-        policy += " The deadline expired; pending tasks continue running."
+        policy += " The deadline expired; unfinished tasks continue."
     elif result.get("interrupted") == "mail_received":
-        policy += " New input is available to this agent; pending tasks continue running."
+        policy += " New input is available to this agent; unfinished tasks continue."
     elif result.get("interrupted") == "stopped":
-        policy += " This wait stopped; pending tasks continue running."
+        policy += " This wait stopped; unfinished tasks continue."
     elif pending:
-        policy += " Pending tasks continue running."
+        policy += " Unfinished tasks continue."
     blocks: list[dict[str, Any]] = [
         {"id": "wait-targets", "type": "text", "text": ", ".join(handles)},
         {"id": "wait-policy", "type": "text", "text": policy},
@@ -232,14 +267,17 @@ def wait_presentation(args: Mapping[str, Any], result: Mapping[str, Any]) -> dic
                     "It resumes once the question is answered; it was not cancelled."
                 ),
                 result_kind="snapshot",
-                status="input_required",
+                status=_UNFINISHED_WORDS["input_required"][1],
             )
         elif handle in pending:
+            words, chip = _unfinished_words(unfinished[handle])
+            activity = str(unfinished[handle].get("activity") or "").replace("_", " ")
             block.update(
-                label=handle,
-                text="Pending when this call returned.",
+                label=f"{handle}: {words.capitalize()}",
+                text=f"Still {words} when this call returned"
+                + (f" (activity: {activity})" if activity and activity != words else ""),
                 result_kind="snapshot",
-                status="pending",
+                status=chip,
             )
         else:
             block.update(label=handle, text="No outcome was recorded for this task.")
@@ -266,11 +304,22 @@ def wait_presentation(args: Mapping[str, Any], result: Mapping[str, Any]) -> dic
     if result.get("interrupted") == "mail_received":
         counts.insert(0, "New input received")
     if pending:
-        counts.insert(
-            0,
-            f"{len(pending)} pending"
-            + (f" ({len(awaiting)} waiting for input)" if awaiting else ""),
-        )
+        uncertain = {
+            row.get("handle") for row in rows if row.get("status") == "task_state_uncertain"
+        }
+        failed_handles = {row.get("handle") for row in errors}
+        shown = [
+            _unfinished_words(
+                {"status": "input_required"}
+                if handle in awaiting
+                else unfinished[handle]
+                if unfinished[handle].get("status")
+                else next((row for row in rows if row.get("handle") == handle), {})
+            )[0]
+            for handle in pending
+            if handle not in uncertain and handle not in failed_handles
+        ]
+        counts[:0] = [f"{shown.count(words)} {words}" for words in dict.fromkeys(shown)]
     if failed:
         counts.append(f"{failed} unsuccessful")
     if attention:

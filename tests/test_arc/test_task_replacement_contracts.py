@@ -30,7 +30,7 @@ from clio_agent.gact.questions import QuestionCommands
 from clio_agent.gact.session_mail import SessionMail
 from clio_agent.gact.task_access import TaskCaller
 from clio_agent.gact.task_history import TaskHistory, _encoded
-from clio_agent.gact.task_operations import TaskOperations
+from clio_agent.gact.task_operations import TaskOperations, unfinished_state
 from clio_agent.gact.task_publication import publish_task_notice
 
 STAMP = "2026-10-14T04:00:00Z"
@@ -147,14 +147,16 @@ async def test_uncertain_legacy_status_does_not_require_an_episode_to_end_wait(
     result = await asyncio.wait_for(
         TaskOperations(history, forbid_cancel).wait(TaskCaller("owner", "human"), task.handle), 1
     )
-    assert result["pending"] == [task.handle] and not result["timed_out"]
+    assert [row["handle"] for row in result["unfinished"]] == [task.handle] and not result[
+        "timed_out"
+    ]
     assert result["outcomes"] == [{"handle": task.handle, "status": "task_state_uncertain"}]
     assert history.acknowledged_notifications("owner") == frozenset()
 
 
 @pytest.mark.asyncio
 async def test_wait_names_the_pending_task_that_waits_for_an_answer(arc: ARCMemory) -> None:
-    """A task in ``input_required`` stays pending, and the wait says it awaits an answer."""
+    """A task in ``input_required`` stays unfinished, and the wait says it awaits an answer."""
     history = TaskHistory(arc)
     asks = await asyncio.to_thread(record_task, history, "task_asks")
     runs = await asyncio.to_thread(record_task, history, "task_runs")
@@ -167,7 +169,8 @@ async def test_wait_names_the_pending_task_that_waits_for_an_answer(arc: ARCMemo
     result = await asyncio.wait_for(
         operations.wait(caller, [asks.handle, runs.handle], timeout_s=0), 1
     )
-    assert result["timed_out"] and set(result["pending"]) == {asks.handle, runs.handle}
+    assert result["timed_out"]
+    assert {row["handle"] for row in result["unfinished"]} == {asks.handle, runs.handle}
     assert result["awaiting_input"] == [asks.handle]
     await asyncio.to_thread(finish, history, runs)
     result = await asyncio.wait_for(operations.wait(caller, runs.handle, timeout_s=0), 1)
@@ -217,7 +220,7 @@ async def test_a_cancellation_still_settling_keeps_the_wait_going(arc: ARCMemory
     assert not waiter.done()
     await asyncio.to_thread(finish, history, settles, status="cancelled")
     result = await asyncio.wait_for(waiter, 2)
-    assert result["pending"] == [] and result["outcomes"][0]["status"] == "cancelled"
+    assert result["unfinished"] == [] and result["outcomes"][0]["status"] == "cancelled"
 
     stays = await uncertain("task_stays_uncertain")
     jobs[stays.handle] = asyncio.create_task(release.wait())
@@ -226,7 +229,7 @@ async def test_a_cancellation_still_settling_keeps_the_wait_going(arc: ARCMemory
     assert not waiter.done()
     release.set()
     result = await asyncio.wait_for(waiter, 2)
-    assert result["pending"] == [stays.handle]
+    assert [row["handle"] for row in result["unfinished"]] == [stays.handle]
     assert result["outcomes"] == [{"handle": stays.handle, "status": "task_state_uncertain"}]
 
 
@@ -325,7 +328,7 @@ async def test_expired_mixed_wait_preserves_running_members(arc: ARCMemory) -> N
     result = await operations.wait(
         caller, [running.handle, failed.handle, "task_missing"], timeout_s=0
     )
-    assert result["pending"] == [running.handle]
+    assert [row["handle"] for row in result["unfinished"]] == [running.handle]
     outcomes = {item["handle"]: item for item in result["outcomes"]}
     assert outcomes[failed.handle]["status"] == "failed"
     assert outcomes["task_missing"]["error"] == "task_unavailable"
@@ -347,9 +350,10 @@ async def test_any_wait_reports_member_error_and_leaves_valid_work_pending(arc: 
     )
     assert result == {
         "outcomes": [{"handle": "task_missing", "error": "task_unavailable"}],
-        "pending": [running.handle],
+        "unfinished": [unfinished_state(running)],
         "timed_out": False,
     }
+    assert result["unfinished"][0]["status"] == "running"
     current = await asyncio.to_thread(history.task_snapshot, running.handle)
     assert (
         current is not None
@@ -401,7 +405,7 @@ async def test_revocation_releases_unbounded_peer_wait_without_task_progress(
         result = await waiter
         assert result == {
             "outcomes": [{"handle": running.handle, "error": "task_unavailable"}],
-            "pending": [],
+            "unfinished": [],
             "timed_out": False,
         }
         current = await asyncio.to_thread(history.task_snapshot, running.handle)
@@ -435,7 +439,7 @@ async def test_waiter_cancellation_leaves_question_open(arc: ARCMemory) -> None:
     assert current.cancellation_requested_at is None
     await asyncio.to_thread(questions.answer, question.handle, QuestionReply(answer="Dataset B"))
     collected = await operations.wait(TaskCaller("owner", "human"), question.handle, timeout_s=0)
-    assert collected["pending"] == []
+    assert collected["unfinished"] == []
     assert collected["outcomes"][0]["status"] == "completed"
 
 

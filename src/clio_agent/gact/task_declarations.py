@@ -267,7 +267,7 @@ def build_task_tools() -> list[Any]:
                 "timeout_s": _TIMEOUT,
                 "interrupt_on_mail": {"type": "boolean", "default": True},
             },
-            "Collect independent task outcomes. With return_when='any', a member error is an available outcome; other handles remain explicitly pending and continue running. task_state_uncertain requires inspection, not repeated waits for the same receipt. Default wait is unbounded; zero snapshots; positive expiry or Stop ends only this waiter. By default, authorized messages or answers return interrupted=mail_received with pending tasks so you can coordinate before waiting again. Set interrupt_on_mail=false to wait only for task outcomes; task-result notices alone do not interrupt all.",
+            "Collect independent task outcomes. Tasks that have not finished are listed in unfinished with their own recorded status, such as running or queued, and activity; they continue. With return_when='any', a member error is an available outcome; other handles stay in unfinished. task_state_uncertain requires inspection, not repeated waits for the same receipt. Default wait is unbounded; zero snapshots; positive expiry or Stop ends only this waiter. By default, authorized messages or answers return interrupted=mail_received with the unfinished tasks so you can coordinate before waiting again. Set interrupt_on_mail=false to wait only for task outcomes; task-result notices alone do not interrupt all.",
             read=True,
         ),
         _tool(
