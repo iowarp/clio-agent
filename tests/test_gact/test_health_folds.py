@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from clio_agent.gact.health_folds import default_marketplace_rows
+from clio_agent.gact.health_folds import agent_rows, default_marketplace_rows
 from clio_agent.runtime.status import IntegrationState
 
 
@@ -51,3 +51,18 @@ def test_a_failed_install_degrades_health_with_its_reason() -> None:
 def test_an_installed_marketplace_is_ready() -> None:
     [row] = default_marketplace_rows(_app(done=True, error=None))
     assert row.state is IntegrationState.READY
+
+
+def test_a_failed_agent_build_degrades_health_with_its_error() -> None:
+    """Live: codex with no model selected raised in agent_construct while health read ready."""
+    error = "ValueError('No model configured')"
+    state = SimpleNamespace(agent=None, agent_init_error=error)
+    [row] = agent_rows(SimpleNamespace(state=state))
+    assert row.name == "agent" and row.required
+    assert row.state is IntegrationState.DEGRADED
+    assert error in row.summary
+    assert row.details == {"agent_init_error": error, "reason": "agent_init_failed"}
+
+    rebound = SimpleNamespace(agent=object(), agent_init_error=error)  # a later bind built one
+    assert agent_rows(SimpleNamespace(state=rebound)) == []
+    assert agent_rows(SimpleNamespace(state=SimpleNamespace(agent=None))) == []

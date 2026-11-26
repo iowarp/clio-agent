@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from clio_agent.gact import store_format_boot, store_migrations
+from clio_agent.gact.agent_initialization import AGENT_INIT_FAILED_REASON
 from clio_agent.runtime.status import IntegrationState, IntegrationStatus
 
 
@@ -19,7 +20,32 @@ def folded_rows(app: Any) -> list[IntegrationStatus]:
         store_migrations.health_rows(app)
         + store_format_boot.health_rows(app)
         + default_marketplace_rows(app)
+        + agent_rows(app)
     )
+
+
+def agent_rows(app: Any) -> list[IntegrationStatus]:
+    """The default agent's construction failure, while no agent is live.
+
+    A failed build leaves the server up but every turn refused (``agent_not_available``);
+    readiness does not count it as pending, so without this row health read ready.
+    The row carries the construction error itself. A successful ``PUT
+    /v1/providers/lm`` installs an agent, which retires the row.
+    """
+    error = str(getattr(app.state, "agent_init_error", "") or "")
+    if not error or getattr(app.state, "agent", None) is not None:
+        return []
+    return [
+        IntegrationStatus(
+            name="agent",
+            state=IntegrationState.DEGRADED,
+            summary=f"CLIO's agent could not be built, so messages are refused: {error}",
+            config_source="in-process:agent_construct",
+            next_action="Choose a model (PUT /v1/providers/lm, or the model picker); that "
+            "builds the agent again.",
+            details={"agent_init_error": error, "reason": AGENT_INIT_FAILED_REASON},
+        )
+    ]
 
 
 def default_marketplace_rows(app: Any) -> list[IntegrationStatus]:
@@ -58,4 +84,4 @@ def default_marketplace_rows(app: Any) -> list[IntegrationStatus]:
     ]
 
 
-__all__ = ["default_marketplace_rows", "folded_rows"]
+__all__ = ["agent_rows", "default_marketplace_rows", "folded_rows"]
