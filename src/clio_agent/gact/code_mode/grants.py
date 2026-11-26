@@ -20,6 +20,13 @@ there covers all the script's nested calls from the start, named or not. "Allow 
 there covers the calls the script names, as above. An approval that came from a rule or
 the reviewer rather than a person covers nothing under ``ask``.
 
+A kernel binding the script uses (``browser.open(url)``) is part of the script's code: the
+tools the binding's own source names are named by a script that references the binding,
+so the person who approved ``await browser.open(url)`` approved the ``browser_open`` call
+it makes. "Allow once" on a nested question covers the same subject (the same tool with
+the same arguments, the same browser host) for the rest of that script, never another
+subject; a rule set to "Ask every time" still asks every time.
+
 The grant lives in a ``ContextVar`` that ``run_code`` binds for its nested calls, so
 the gate (which runs in the nested call's thread) sees it, and nothing outside the
 script does. Nothing bounds a script's time, so waiting for an answer costs it nothing
@@ -28,11 +35,13 @@ but the wait.
 
 from __future__ import annotations
 
+import ast
 import contextlib
+import json
 import re
 import threading
-from collections.abc import Iterator, Mapping, Sequence
-from contextvars import ContextVar
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextvars import Context, ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -43,11 +52,15 @@ __all__ = [
     "REASON_SCRIPT_GRANT",
     "ScriptGrant",
     "active_grant",
+    "allow_once",
+    "allowed_once",
     "approval_mode",
     "approving",
     "bind_grant",
+    "binding_tools",
     "covering_postures",
     "covers",
+    "grant_in",
     "max_script_chars",
     "question",
     "reset_grant",
@@ -107,11 +120,17 @@ class ScriptGrant:
     #: it, so changing the mode while a background script runs does not change what the
     #: script may do (CK10). Empty: the session's current mode applies.
     approval_mode: str = ""
+    #: Tools the kernel bindings this script references name in their own source.
+    bound_tools: frozenset[str] = frozenset()
+    #: Subjects a person allowed once during this script (:func:`subject_key`).
+    allowed: set[str] = field(default_factory=set)
 
     def names(self, tool: str) -> bool:
         """Whether the script's code names ``tool`` as one of its calls."""
         from clio_agent.gact.code_mode.stubs import tool_group  # noqa: PLC0415
 
+        if tool in self.bound_tools:
+            return True
         if tool in {m.group(2) for m in _CALL_BY_NAME.finditer(self.code)}:
             return True
         group, function = tool_group(tool, self.servers)
@@ -123,6 +142,39 @@ class ScriptGrant:
 _ATTRIBUTE = re.compile(r"\btools\s*\.\s*([A-Za-z_]\w*)(?:\s*\.\s*([A-Za-z_]\w*))?")
 #: ``tools.call("<name>"`` in a script's code.
 _CALL_BY_NAME = re.compile(r"\btools\s*\.\s*call\s*\(\s*(['\"])([^'\"\n]+)\1")
+
+
+def binding_tools(
+    code: str, bindings: Mapping[str, Mapping[str, Any]], tool_names: Iterable[str]
+) -> frozenset[str]:
+    """The tools named by the kernel bindings ``code`` references, from their own source.
+
+    A binding is the script's library: a script that writes ``browser.open(url)`` calls the
+    ``browser_open`` the binding's source names. A name the source holds as a string
+    constant names a tool when it is one of ``tool_names``.
+    """
+    known = frozenset(tool_names)
+    found: set[str] = set()
+    for name, binding in bindings.items():
+        if not re.search(rf"\b{re.escape(str(name))}\b", code):
+            continue
+        try:
+            tree = ast.parse(str(binding.get("source") or ""))
+        except SyntaxError:
+            continue  # the kernel refuses it too; it names nothing
+        found.update(
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            if node.value in known
+        )
+    return frozenset(found)
+
+
+def subject_key(kind: str, subject: Any) -> str:
+    """One subject a person can allow once (``("tool", [name, args])``, ``("browser_host",
+    host)``), as a stable key."""
+    return json.dumps([kind, subject], sort_keys=True, default=str)
 
 
 _ACTIVE: ContextVar[ScriptGrant | None] = ContextVar("clio_run_code_grant", default=None)
@@ -155,6 +207,24 @@ def active_grant() -> ScriptGrant | None:
     return _ACTIVE.get()
 
 
+def grant_in(context: Context) -> ScriptGrant | None:
+    """The grant of the script whose call captured ``context`` (without entering it)."""
+    return context.get(_ACTIVE)
+
+
+def allow_once(kind: str, subject: Any, grant: ScriptGrant | None = None) -> None:
+    """A person allowed ``subject`` once: it is allowed for the rest of the script."""
+    grant = grant if grant is not None else _ACTIVE.get()
+    if grant is not None:
+        grant.allowed.add(subject_key(kind, subject))
+
+
+def allowed_once(kind: str, subject: Any, grant: ScriptGrant | None = None) -> bool:
+    """Whether a person already allowed ``subject`` once during this script."""
+    grant = grant if grant is not None else _ACTIVE.get()
+    return grant is not None and subject_key(kind, subject) in grant.allowed
+
+
 def bind_grant(grant: ScriptGrant | None) -> Any:
     """Bind ``grant`` for the calls made in this context; returns the reset token."""
     return _ACTIVE.set(grant)
@@ -165,12 +235,14 @@ def reset_grant(token: Any) -> None:
     _ACTIVE.reset(token)
 
 
-def covers(posture: str, tool: str = "") -> bool:
+def covers(posture: str, tool: str = "", args: Any = None) -> bool:
     """Whether a nested call to ``tool`` that would ask runs under the script's approval."""
     grant = _ACTIVE.get()
     if grant is None:
         return False
     if grant.covered or posture in covering_postures():
+        return True
+    if tool and args is not None and allowed_once("tool", [tool, args], grant):
         return True
     return grant.approved and bool(tool) and grant.names(tool)
 
@@ -197,10 +269,11 @@ def question() -> Iterator[None]:
         yield
 
 
-def answered(row: Mapping[str, Any]) -> None:
+def answered(row: Mapping[str, Any], tool: str = "", args: Any = None) -> None:
     """An ``allow_script`` answer covers the rest of the script (all of it, when the
     answer approved the script itself); a person's other allow of the script itself
-    covers the calls its code names."""
+    covers the calls its code names; a person's allow of a nested call to ``tool`` with
+    ``args`` covers that same call for the rest of the script."""
     from clio_agent.gact.runtime.grants import GRANTOR_USER  # noqa: PLC0415
     from clio_agent.gact.runtime.permission_actions import allows  # noqa: PLC0415
 
@@ -210,5 +283,8 @@ def answered(row: Mapping[str, Any]) -> None:
         return
     if row.get("action") == ALLOW_SCRIPT:
         grant.covered = True
-    elif active is None and row.get("grantor") == GRANTOR_USER and allows(row.get("action")):
-        grant.approved = True
+    elif row.get("grantor") == GRANTOR_USER and allows(row.get("action")):
+        if active is None:
+            grant.approved = True
+        elif tool and args is not None:
+            allow_once("tool", [tool, args], active)

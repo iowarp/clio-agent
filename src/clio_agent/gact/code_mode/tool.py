@@ -234,7 +234,11 @@ def new_grant(code: str) -> Any:
 def prepare_script(agent: Any, code: str, grant: Any = None) -> PreparedScript:
     """Capture the calling ``run_code`` call's grant (``grant``, the one its approval
     answered, else a new one) and context for ``code``'s nested calls."""
-    from clio_agent.gact.code_mode.grants import bind_grant, reset_grant  # noqa: PLC0415
+    from clio_agent.gact.code_mode.grants import (  # noqa: PLC0415
+        bind_grant,
+        binding_tools,
+        reset_grant,
+    )
     from clio_agent.gact.model_media import CALL_MEDIA, DETACHED, SCRIPT_MEDIA  # noqa: PLC0415
     from clio_agent.gact.tool_call_nesting import PARENT_CALL_ID  # noqa: PLC0415
 
@@ -252,6 +256,9 @@ def prepare_script(agent: Any, code: str, grant: Any = None) -> PreparedScript:
     direct_only, code_only = _callers(agent)
     servers = tuple(getattr(agent, "_clio_tool_servers", ()) or ())
     grant.servers = servers
+    grant.bound_tools = binding_tools(
+        code, getattr(agent, "_clio_kernel_bindings", None) or {}, getattr(agent, "tools", {}) or {}
+    )
     return PreparedScript(agent, code, context, servers, direct_only, code_only)
 
 

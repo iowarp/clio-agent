@@ -598,7 +598,7 @@ def _ask_and_wait(
     ):
         return decision
     action = row.get("action", "deny")
-    script_grants.answered(row)
+    script_grants.answered(row, name, args)
     if allows(action):
         return "allow"
     return "deny"
@@ -850,7 +850,7 @@ def _make_permission_gate(app: "FastAPI"):
         with script_grants.question():
             if policy_action != "ask" and _page_click_allows(app, sid, name, args, subject):
                 return "allow"
-            if policy_action != "ask" and script_grants.covers(decision_posture, name):
+            if policy_action != "ask" and script_grants.covers(decision_posture, name, args):
                 _record_resolved_permission(
                     app,
                     session_id=sid,

@@ -157,11 +157,14 @@ script was accepted with (a change of mode while it runs does not change it):
 | --- | --- |
 | `bypass` | Run |
 | `auto-edits`, `ai-review`, `spotter-ai`, `spotter-watcher` (`code.covering_postures`) | Covered by the script's approval, recorded with `run_code_script_grant` |
-| `ask` | A person's "Allow once" on the script covers the calls its code names (`tools.<group>.<tool>` or `tools.call("<name>")`), recorded with `run_code_script_grant`. Any other call asks, one question per script at a time, showing the script; denial raises in the script |
+| `ask` | A person's "Allow once" on the script covers the calls its code names (`tools.<group>.<tool>` or `tools.call("<name>")`), including the tools a kernel binding the script uses names in its own source (`browser.open(...)` names `browser_open`), recorded with `run_code_script_grant`. Any other call asks, one question per script at a time, showing the script; denial raises in the script |
 
 In `ask` mode the question offers "Allow for the rest of this script"
 (`allow_script`), which covers that script's remaining calls, named or not; the next
-`run_code` asks again. A script approved by a rule or the reviewer rather than a person
+`run_code` asks again. "Allow once" on a nested call covers that same subject for the
+rest of the script: the same tool with the same arguments, or the same browser host
+(its next calls on that page do not ask again). It covers nothing in the next script,
+and a rule set to "Ask every time" still asks each time. A script approved by a rule or the reviewer rather than a person
 covers nothing in `ask` mode. A tool whose rule or default is `ask` asks even under a
 covering mode or a person's approval of the script. A
 background script's question belongs to its task: it is asked in the owner's

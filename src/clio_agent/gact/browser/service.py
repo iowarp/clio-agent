@@ -75,6 +75,8 @@ class Inflight:
     denied_host: str = ""
     #: The call only navigates (goto, back, open): it may leave a page the agent may not use.
     navigates: bool = False
+    #: Hosts the person allowed once during this call (a call outside a script).
+    allowed_hosts: set[str] = field(default_factory=set)
 
 
 @dataclass
