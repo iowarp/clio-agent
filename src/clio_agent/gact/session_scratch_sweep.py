@@ -7,7 +7,8 @@ session's last activity (``last_interaction_at``, else ``created_at``) is older 
 ``paths.scratch_retention_days``. It waits for the session store on the server loop
 (cancelled with the server) and then runs on a worker thread: a worker blocked on the
 clio-core attach held the server's shutdown, which joins its threads. A failure is logged
-with a typed reason and removes nothing more.
+with a typed reason and removes nothing more. The short roots that stood in for deleted
+homes and sessions go next (``runtime.short_root_sweep``).
 """
 
 from __future__ import annotations
@@ -116,7 +117,22 @@ async def sweep_when_readable(sessions: Any) -> list[str]:
             return []
         await asyncio.sleep(_READY_POLL_S)
         waited += _READY_POLL_S
-    return await asyncio.to_thread(sweep_sessions, sessions)
+    removed = await asyncio.to_thread(sweep_sessions, sessions)
+    await asyncio.to_thread(sweep_short_roots)
+    return removed
+
+
+def sweep_short_roots() -> list[str]:
+    """Remove stale short roots after the scratch folders they stood in for are gone."""
+
+    from clio_agent.runtime import short_root_sweep  # noqa: PLC0415
+
+    try:
+        return short_root_sweep.sweep()
+    except OSError as exc:  # typed reason; retried next boot
+        logger.warning("short root sweep stopped reason=%s error=%r", SWEEP_FAILED_REASON, exc)
+        trace.event("SCRATCH", "%s scope=short_roots error=%r", SWEEP_FAILED_REASON, exc)
+        return []
 
 
 def start(app: "FastAPI") -> None:
@@ -138,5 +154,6 @@ __all__ = [
     "SWEEP_FAILED_REASON",
     "last_activity",
     "start",
+    "sweep_short_roots",
     "sweep_when_readable",
 ]
