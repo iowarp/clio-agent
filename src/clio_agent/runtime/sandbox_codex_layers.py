@@ -138,4 +138,25 @@ def composed_layer(args: Sequence[str]) -> str:
     return ""
 
 
-__all__ = ["composed_layer", "release_codex_layer", "write_codex_layer"]
+class LayerHold:
+    """One spawn's hold on its Codex ``-p`` layer, dropped once however often it is released."""
+
+    def __init__(self, layer: str) -> None:
+        self.layer = layer
+        self._held = True
+        self._lock = threading.Lock()
+
+    def release(self) -> None:
+        with self._lock:
+            held, self._held = self._held, False
+        if held:
+            release_codex_layer(self.layer)
+
+
+def layer_hold(args: Sequence[str]) -> LayerHold | None:
+    """The hold on the layer a :func:`compose_codex_spawn` argv names, ``None`` without one."""
+    layer = composed_layer(args)
+    return LayerHold(layer) if layer else None
+
+
+__all__ = ["LayerHold", "composed_layer", "layer_hold", "release_codex_layer", "write_codex_layer"]

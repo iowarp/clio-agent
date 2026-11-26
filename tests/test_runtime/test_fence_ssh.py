@@ -16,9 +16,10 @@ from pathlib import Path
 import pytest
 
 from clio_agent.runtime import execution_environment as execution
-from clio_agent.runtime import fence_ssh, net_connect, sandbox
+from clio_agent.runtime import fence_ssh, net_connect, net_git_ssh, sandbox
 
 HELPER = str(Path(net_connect.__file__).resolve())
+GIT_HELPER = str(Path(net_git_ssh.__file__).resolve())
 
 
 def _fake_http_proxy(
@@ -446,11 +447,10 @@ def test_a_fenced_shell_finds_the_shims_first(monkeypatch: pytest.MonkeyPatch) -
     assert shlex.split(overlay["GIT_SSH_COMMAND"]) == [
         sys.executable,
         "-I",
-        HELPER,
+        GIT_HELPER,
         str(shims),
-        net_connect.GIT_SSH_TOOL,
     ]
-    assert net_connect.PERSON_GIT_SSH_COMMAND not in overlay
+    assert net_git_ssh.PERSON_GIT_SSH_COMMAND not in overlay
     for tool in net_connect.TOOLS:
         shim = shims / f"{tool}{suffix}"
         text = shim.read_text(encoding="utf-8")
@@ -470,24 +470,24 @@ def test_a_chosen_git_ssh_still_crosses_the_fence(monkeypatch: pytest.MonkeyPatc
     overlay = fence_ssh.fence_ssh_environment(
         {"PATH": "/usr/bin", "GIT_SSH": "/my/ssh", "GIT_SSH_COMMAND": "/my/ssh -i key"}
     )
-    assert overlay["GIT_SSH_COMMAND"].endswith(net_connect.GIT_SSH_TOOL)
-    assert overlay[net_connect.PERSON_GIT_SSH_COMMAND] == "/my/ssh -i key"
-    assert overlay[net_connect.PERSON_GIT_SSH] == "/my/ssh"
+    assert GIT_HELPER in overlay["GIT_SSH_COMMAND"]
+    assert overlay[net_git_ssh.PERSON_GIT_SSH_COMMAND] == "/my/ssh -i key"
+    assert overlay[net_git_ssh.PERSON_GIT_SSH] == "/my/ssh"
     again = fence_ssh.fence_ssh_environment({"PATH": "/usr/bin", **overlay})
-    assert again[net_connect.PERSON_GIT_SSH_COMMAND] == "/my/ssh -i key"
+    assert again[net_git_ssh.PERSON_GIT_SSH_COMMAND] == "/my/ssh -i key"
 
 
 def test_git_ssh_runs_core_ssh_command_through_the_proxy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A global core.sshCommand keeps its options and gains the helper as ProxyCommand."""
-    monkeypatch.delenv(net_connect.PERSON_GIT_SSH_COMMAND, raising=False)
-    monkeypatch.delenv(net_connect.PERSON_GIT_SSH, raising=False)
+    monkeypatch.delenv(net_git_ssh.PERSON_GIT_SSH_COMMAND, raising=False)
+    monkeypatch.delenv(net_git_ssh.PERSON_GIT_SSH, raising=False)
     monkeypatch.setattr(
-        net_connect, "_git_config_ssh_command", lambda: "'/opt/open ssh/ssh' -i key"
+        net_git_ssh, "_git_config_ssh_command", lambda: "'/opt/open ssh/ssh' -i key"
     )
     monkeypatch.setattr(net_connect, "_effective_config", lambda _real, _args: {})
-    argv = net_connect.git_ssh_argv("/shims", ["git@github.com", "git-upload-pack 'o/r'"])
+    argv = net_git_ssh.git_ssh_argv("/shims", ["git@github.com", "git-upload-pack 'o/r'"])
     assert argv[0] == "/opt/open ssh/ssh"
     assert any(item.startswith("ProxyCommand=") and "connect" in item for item in argv)
     assert "-i" in argv and "key" in argv

@@ -942,8 +942,9 @@ def test_wrap_confined_codex_records_egress_recipe_a(
     assert captured["mechanism"] == nc.MECHANISM_PROXY_ENFORCED
     assert captured["workspace_root"] == str(tmp_path)
     # The spawn's Codex layer leaves the Codex home once the spawn is released, exactly once.
-    layer = tmp_path / f"{confined.codex_layer}.config.toml"
-    assert confined.codex_layer and layer.is_file()
+    assert confined.codex_layer is not None
+    layer = tmp_path / f"{confined.codex_layer.layer}.config.toml"
+    assert layer.is_file()
     confined.release()
     confined.release()
     assert not layer.exists()

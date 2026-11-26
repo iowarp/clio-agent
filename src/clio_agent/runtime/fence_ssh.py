@@ -31,7 +31,7 @@ import zipfile
 from importlib import resources
 from pathlib import Path
 
-from clio_agent.runtime import net_connect
+from clio_agent.runtime import net_connect, net_git_ssh
 
 logger = logging.getLogger(__name__)
 
@@ -160,9 +160,9 @@ def fence_ssh_environment(environment: dict[str, str]) -> dict[str, str]:
 
 
 def git_ssh_command(directory: Path) -> str:
-    """The fence's ``GIT_SSH_COMMAND``: Git's shell runs the launcher's ``git-ssh`` entry."""
-    argv = [sys.executable, "-I", str(_helper()), str(directory), net_connect.GIT_SSH_TOOL]
-    return shlex.join(argv)
+    """The fence's ``GIT_SSH_COMMAND``: Git's shell runs :mod:`net_git_ssh`."""
+    helper = Path(net_git_ssh.__file__).resolve()
+    return shlex.join([sys.executable, "-I", str(helper), str(directory)])
 
 
 def _git_ssh_overlay(environment: dict[str, str], directory: Path) -> dict[str, str]:
@@ -177,8 +177,8 @@ def _git_ssh_overlay(environment: dict[str, str], directory: Path) -> dict[str, 
     overlay = {"GIT_SSH_COMMAND": ours}
     shim = net_connect.shim_ssh(str(directory))
     for name, keep in (
-        ("GIT_SSH_COMMAND", net_connect.PERSON_GIT_SSH_COMMAND),
-        ("GIT_SSH", net_connect.PERSON_GIT_SSH),
+        ("GIT_SSH_COMMAND", net_git_ssh.PERSON_GIT_SSH_COMMAND),
+        ("GIT_SSH", net_git_ssh.PERSON_GIT_SSH),
     ):
         value = environment.get(name, os.environ.get(name, ""))
         kept = environment.get(keep, os.environ.get(keep, ""))
