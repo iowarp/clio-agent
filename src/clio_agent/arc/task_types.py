@@ -551,6 +551,9 @@ class QuestionReply(TaskRecord):
     responder_session: str | None = None
     source_action: QuestionAnswerAction | None = None
     action: Literal["accept", "decline", "cancel"] = "accept"
+    #: An MCP elicitation answer's comment from the person (not a form value); it reaches
+    #: the server as ``_meta["io.iowarp/approval"].comment``.
+    comment: str = ""
 
 
 def question_surface_resource(session_id: str, surface_id: str) -> str:

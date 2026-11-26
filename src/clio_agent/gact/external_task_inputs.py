@@ -600,12 +600,14 @@ async def _input(self: ExternalTasks, host: ExternalConnection, params: Any, req
             q = self.history.task_snapshot(qid)
             if q.status == "completed":
                 reply = QuestionReply.model_validate(self.history.read_content(q.result))
+                approval = {"comment": reply.comment} if reply.comment else None
                 value = mcp_types.ElicitResult.model_validate(
                     {
                         "action": reply.action,
                         "content": reply.metadata
                         if reply.action == "accept" and getattr(params, "mode", "form") == "form"
                         else None,
+                        "_meta": {"io.iowarp/approval": approval} if approval else None,
                     }
                 )
             else:

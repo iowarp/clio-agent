@@ -659,6 +659,7 @@ def register_interaction_routes(app: FastAPI, deps: "GactDeps") -> None:
                     action,
                     grantor=GRANTOR_USER,
                     intercept=_permission_intercept(request.metadata),
+                    comment=request.answer,  # the person's comment, passed to the agent
                 )
             )
             if updated_permission is None:

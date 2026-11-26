@@ -180,3 +180,23 @@ def test_a_card_is_titled_with_the_action_and_keeps_the_technical_line(titled: N
     assert permission_title(native) == "Change the timestep"
     assert permission_title({**shell, "title": "Connect to pypi.org"}) == "Connect to pypi.org"
     assert permission_title({"summary": "Allow access to another folder?"}).endswith("folder?")
+
+
+def test_a_card_is_never_titled_with_a_tool_id(titled: None) -> None:
+    from clio_agent.gact.permission_delivery import permission_title
+
+    deferred = {
+        "kind": "pretool_defer",
+        "summary": "tool 'shell_bash' deferred by a PreToolUse hook (awaiting approval)",
+        "tool_call": {"tool_name": "shell_bash", "input": {}},
+    }
+    assert permission_title(deferred) == "Run command"
+    untitled = {
+        "kind": "external_mcp",
+        "summary": "external MCP tool call: viewer_untitled",
+        "tool_call": {"tool_name": "viewer_untitled", "input": {}},
+    }
+    assert permission_title(untitled) == "Use a tool from viewer"
+    assert permission_title({**untitled, "kind": "tool"}) == "Use a tool"
+    script = {**untitled, "summary": "Run a Python script (1 line): print(1)"}
+    assert permission_title(script) == script["summary"]

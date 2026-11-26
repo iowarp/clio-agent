@@ -70,6 +70,7 @@ from clio_agent.gact.cancellation_check import (
 from clio_agent.gact.code_mode import grants as script_grants
 from clio_agent.gact.code_task_context import question_cancel_token
 from clio_agent.gact.folder_access import bind_folder_gate
+from clio_agent.gact.permission_comment import person_decision
 from clio_agent.gact.permission_context import (
     _external_mcp_permission_context as _external_mcp_permission_context,
 )
@@ -364,21 +365,22 @@ def resolve_permission(
     *,
     grantor: str = GRANTOR_USER,
     intercept: Mapping[str, Any] | None = None,
+    comment: str = "",
 ) -> dict[str, Any] | None:
-    """Resolve a request, serializing folder grants against duplicate responses."""
+    """Resolve a request (with the person's ``comment``), serializing folder grants."""
     from clio_agent.gact.folder_access import FOLDER_RESOLUTION_LOCK
 
     with FOLDER_RESOLUTION_LOCK:
-        return _resolve_permission(app, pid, action, grantor=grantor, intercept=intercept)
+        return _resolve_permission(app, pid, action, grantor, intercept, comment)
 
 
 def _resolve_permission(
     app: "FastAPI",
     pid: str,
     action: str,
-    *,
     grantor: str = GRANTOR_USER,
     intercept: Mapping[str, Any] | None = None,
+    comment: str = "",
 ) -> dict[str, Any] | None:
     """Resolve one pending permission row and wake any blocked bridge thread.
 
@@ -420,6 +422,7 @@ def _resolve_permission(
     row["action"] = action
     row["resolved_at"] = datetime.now(timezone.utc).isoformat()
     row["grantor"] = grantor
+    row.update({"comment": comment.strip()} if comment.strip() else {})  # the person's words
     # P2.6: an APPROVED PreToolUse defer may carry the modify/synthesize the approval
     # decides — stashed on the row BEFORE the event wake below so the parked call reads
     # it and drives the ``tool_interceptor`` (run-with-modified-args / synthesize).
@@ -597,11 +600,8 @@ def _ask_and_wait(
         app, pid, row, evt, tool_name=name, cancelled=cancelled
     ):
         return decision
-    action = row.get("action", "deny")
     script_grants.answered(row, name, args)
-    if allows(action):
-        return "allow"
-    return "deny"
+    return person_decision(row)  # carries the comment the person wrote, if any
 
 
 def _layered_deny(

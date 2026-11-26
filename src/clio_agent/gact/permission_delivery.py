@@ -57,9 +57,11 @@ def permission_summary(name: str, context: Mapping[str, Any] | None, subject: st
 def permission_title(row: Mapping[str, Any]) -> str:
     """The human action a permission card is titled with ("Run command", "Connect to pypi.org").
 
-    The row's own ``title`` wins; a tool call whose summary is the plain ``<subject> call:
-    <name>`` line reads as its tool's declared title; any other summary is already the
-    sentence a person reads. ``summary`` stays the technical line either way.
+    The row's own ``title`` wins, then a summary that is already the sentence a person reads
+    (a native tool's, a view tool's declared title, a consent). A summary that names the
+    tool by its identifier (the plain ``<subject> call: <name>`` line, a hook deferral)
+    reads as the tool's declared title, else as a generic action: a card is never titled
+    with a tool id. ``summary`` stays the technical line either way.
     """
 
     from clio_agent.tools.builtin_annotations import BUILTIN_TOOL_TITLES  # noqa: PLC0415
@@ -69,9 +71,12 @@ def permission_title(row: Mapping[str, Any]) -> str:
     tool_call = row.get("tool_call")
     name = str(tool_call.get("tool_name") or "") if isinstance(tool_call, Mapping) else ""
     summary = str(row.get("summary") or "")
-    if name and summary.endswith(f" call: {name}"):
-        return tool_title(name) or BUILTIN_TOOL_TITLES.get(name, "") or summary
-    return summary
+    if not name or (summary and name not in summary):
+        return summary
+    if title := tool_title(name) or BUILTIN_TOOL_TITLES.get(name, ""):
+        return title
+    server = name.partition("_")[0] if row.get("kind") == "external_mcp" else ""
+    return f"Use a tool from {server}" if server else "Use a tool"
 
 
 def sanitize_title(title: object) -> str:

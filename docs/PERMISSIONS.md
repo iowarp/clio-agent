@@ -16,6 +16,21 @@ Each row carries `id`, `session_id`, `tool_call.{tool_name, input}`,
 `summary`, `created_at`, `status`, `action`, optional `resolved_at` +
 `reason`.
 
+The card is titled with the human action (`interaction.title`, and `title` on the
+`permission.requested` event): the row's own `title` ("Connect to pypi.org"), else a
+summary that is already a sentence, else the tool's declared title ("Run command"),
+else "Use a tool from <server>". It is never a tool id. `payload.summary` keeps the
+technical line.
+
+A person may write a comment with either answer: `answer` on
+`POST /v1/sessions/{sid}/interactions/{iid}/respond` (or on `POST /v1/permissions/{pid}`).
+It is kept on the row as `comment` and reaches the agent with the decision. With Deny the
+agent reads "The person denied <tool> and said: …" in place of the generic refusal; with
+Allow it reads "The person allowed <tool> and commented: …" before the tool's result (a
+`run_code` script's result too). A hook deferral's approval does not carry a comment.
+An MCP elicitation answer's comment (any `answer` that is not a form field's own value)
+reaches the server in the `ElicitResult` as `_meta["io.iowarp/approval"].comment`.
+
 `allow_session` and `allow_workspace` store a policy for the tool in that scope.
 For a call that names a file (`path`, `output_path`, `target_path`), the policy
 covers the folder holding that file and everything below it, so the next file
