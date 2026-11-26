@@ -309,7 +309,7 @@ class _Loop:
         self.tools = self._listed_tools()
         self.config = _with_cache_key(config_from_lm_kwargs(sendable_lm_kwargs(self.lm)), self.lm)
         self.tool_media = str(getattr(self.lm, "_clio_tool_result_media", "native"))
-        self.max_images = int(getattr(self.lm, "_clio_max_request_images", 0) or 0)
+        self.max_images = getattr(self.lm, "_clio_max_request_images", None)
         self.arc, self.session, self.scope = record.arc_scope()
         if self.arc is None:
             raise NoContextStoreError()

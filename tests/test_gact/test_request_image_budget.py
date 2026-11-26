@@ -49,7 +49,7 @@ def test_only_the_newest_images_are_sent_and_the_older_one_leaves_a_note() -> No
 
 def test_no_cap_sends_every_image() -> None:
     messages = _conversation()
-    assert _within_image_budget(messages, 0) is messages
+    assert _within_image_budget(messages, None) is messages
     assert _images(_within_image_budget(messages, 2)) == ["Zmlyc3Q=", "c2Vjb25k"]
 
 
@@ -67,4 +67,21 @@ def test_the_cap_is_read_from_configuration(monkeypatch) -> None:
     monkeypatch.setenv("CLIO_LM_MAX_REQUEST_IMAGES", "1")
     assert _max_request_images() == 1
     monkeypatch.delenv("CLIO_LM_MAX_REQUEST_IMAGES")
+    assert _max_request_images() is None
+    monkeypatch.setenv("CLIO_LM_ACCEPTS_IMAGES", "false")
     assert _max_request_images() == 0
+
+
+def test_a_text_only_model_gets_a_note_for_every_image() -> None:
+    """Live (ALCF beam-1.0-fp8, 2026-11-26): one view_image, then HTTP 400 "beam-1.0-fp8
+    is not a multimodal model" came back as the turn's answer."""
+    out = _within_image_budget(_conversation(), 0)
+    assert _images(out) == []
+    notes = [
+        p.text
+        for m in out
+        for part in m.parts
+        for p in (part.content if isinstance(part, ToolResultPart) else (part,))
+        if isinstance(p, TextPart) and p.text.startswith("[image omitted")
+    ]
+    assert len(notes) == 2 and "does not take images" in notes[0]

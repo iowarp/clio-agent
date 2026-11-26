@@ -167,16 +167,18 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     return _record_identity(lm, config)
 
 
-def _max_request_images() -> int:
-    """The per-request image cap the serving endpoint enforces (0 = none known)."""
+def _max_request_images() -> int | None:
+    """Images one request may carry: ``None`` = no known cap, 0 = the model takes none."""
     from clio_agent import conf  # noqa: PLC0415 - read when the LM is built
 
-    return max(
-        0,
-        conf.resolve(
-            "lm.max_request_images", env="CLIO_LM_MAX_REQUEST_IMAGES", default=0, cast=conf.as_int
-        ),
+    if not conf.resolve(
+        "lm.accepts_images", env="CLIO_LM_ACCEPTS_IMAGES", default=True, cast=conf.as_bool
+    ):
+        return 0
+    cap = conf.resolve(
+        "lm.max_request_images", env="CLIO_LM_MAX_REQUEST_IMAGES", default=0, cast=conf.as_int
     )
+    return cap if cap > 0 else None
 
 
 #: LiteLLM prefixes whose engine is a stateless OpenAI-compatible chat-completions

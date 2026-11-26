@@ -950,6 +950,10 @@ KEY_NOTES: dict[str, str] = {
         "CLAUDE_CODE_MAX_OUTPUT_TOKENS); set it to bound a runaway reply, else the provider "
         "default applies."
     ),
+    "lm.accepts_images": (
+        "Set false for a text-only model (ALCF's beam answers HTTP 400 'not a multimodal "
+        "model'): each image in a request becomes a one-line note instead."
+    ),
     "lm.max_request_images": (
         "Caps the images sent in one request to the newest N (older ones become a one-line "
         "note), for a server that limits images per prompt (vLLM --limit-mm-per-prompt; "

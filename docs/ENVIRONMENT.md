@@ -205,6 +205,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_LIVE_EDGE_STREAMING` | `gact.live_edge_streaming` | bool | `false` | `src/clio_agent/gact/live_edge.py` |
 | `CLIO_LM15_SSE_LIMIT` | `lm15.sse_limit` | int | `1048576` | `src/clio_agent/providers/codex/sse_wire.py` |
 | `CLIO_LMSTUDIO_FLASH_ATTENTION` | `lm.lmstudio_flash_attention` | bool | `true` | `src/clio_agent/gact/routes/providers.py` |
+| `CLIO_LM_ACCEPTS_IMAGES` | `lm.accepts_images` | bool | `true` | `src/clio_agent/lm/factory.py` |
 | `CLIO_LM_API_BASE` | `lm.api_base` | str | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_CONTEXT_SIZING_STRATEGY` | `lm.context_sizing_strategy` | str | `fit_to_gpu` | `src/clio_agent/context_sizing/strategies.py` |
 | `CLIO_LM_CONTEXT_WINDOW` | `lm.context_window` | int | `0` | `src/clio_agent/config.py` |

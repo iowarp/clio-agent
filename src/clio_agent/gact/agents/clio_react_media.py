@@ -25,19 +25,23 @@ def _media_part(item: Any) -> ImagePart | DocumentPart:
     return DocumentPart(data=data, media_type=media_type or "application/pdf")
 
 
-def _within_image_budget(messages: list[Message], limit: int) -> list[Message]:
-    """At most ``limit`` images in the request: the latest ones (``limit`` <= 0: all).
+def _within_image_budget(messages: list[Message], limit: int | None) -> list[Message]:
+    """At most ``limit`` images in the request: the latest ones (``None``: all).
 
     A server can cap images per prompt (vLLM ``--limit-mm-per-prompt``; ALCF's
-    nemotron: "At most 1 image(s) may be provided in one prompt", HTTP 400). A
-    model that looks at a second figure would then fail every later step, so the
-    request keeps the newest images and an older one becomes a one-line note.
-    The recorded transcript is unchanged.
+    nemotron: "At most 1 image(s) may be provided in one prompt", HTTP 400), or
+    take none (ALCF's beam: "is not a multimodal model", HTTP 400). Either error
+    would fail every later step, so the request keeps the newest images that fit
+    and each other one becomes a one-line note. The recorded transcript is unchanged.
     """
-    if limit <= 0:
+    if limit is None:
         return messages
     keep = limit
-    note = TextPart(text=f"[earlier image omitted: this model takes at most {limit} per request]")
+    note = TextPart(
+        text=f"[earlier image omitted: this model takes at most {limit} per request]"
+        if limit
+        else "[image omitted: this model does not take images; inspect the file another way]"
+    )
 
     def budget(parts: tuple[Any, ...]) -> tuple[Any, ...]:
         nonlocal keep
@@ -91,7 +95,9 @@ def _place_tool_media(messages: list[Message], placement: str) -> list[Message]:
     return out
 
 
-def request_messages(context: list[Message], max_images: int, placement: str) -> list[Message]:
+def request_messages(
+    context: list[Message], max_images: int | None, placement: str
+) -> list[Message]:
     """The context as a request carries it: wire tags stripped, images capped, media placed."""
     return _place_tool_media(
         _within_image_budget(without_wire_tags(context), max_images), placement

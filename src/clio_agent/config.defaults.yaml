@@ -111,6 +111,12 @@ system.release_manifest_url: "https://github.com/iowarp/clio-agent/releases/late
 # LM sampling/provider selection and the per-provider transport knobs
 # (Claude Code, Codex).
 
+# CLIO_LM_ACCEPTS_IMAGES  (bool)  <- src/clio_agent/lm/factory.py
+# Set false for a text-only model (ALCF's beam answers HTTP 400 'not a
+# multimodal model'): each image in a request becomes a one-line note
+# instead.
+lm.accepts_images: true
+
 # CLIO_LM_API_BASE  (str)  <- src/clio_agent/config.py
 # Overrides the LM provider's default API base URL; set to point at a non-
 # default endpoint for a provider (custom LM Studio/OpenAI host).
