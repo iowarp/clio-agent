@@ -31,6 +31,7 @@ from typing import Any, Literal, Optional
 
 from clio_agent import paths
 from clio_agent.runtime.fence_loopback_agent import MXC_LOOPBACK_DETAILS
+from clio_agent.runtime.fence_powershell import execution_policy_env
 from clio_agent.runtime.fenced_removal import remove_tree
 from clio_agent.runtime.sandbox_codex_layers import LayerHold, layer_hold
 
@@ -465,14 +466,13 @@ def _mxc_container_env(
     state: SandboxResult,
     chosen: Optional[Mapping[str, str]] = None,
 ) -> dict[str, str]:
-    """``LOCALAPPDATA``/``TEMP``/``TMP`` for inside the MXC container, else empty.
+    """``LOCALAPPDATA``/``TEMP``/``TMP`` and the person's PowerShell policy
+    (:mod:`fence_powershell`) for inside the MXC container, else empty.
 
     They point at the child's cache folder (``paths.workspace_cache_dir`` of its first root):
-    granted, under ``CLIO_AGENT_HOME`` and the same on every launch, so app data a tool keeps
-    there survives. ``chosen`` carries values the caller picked in granted territory (the
-    shell's session scratch ``TEMP``), which win. Empty when the cache folder is not inside
-    the child's write territory, which leaves MXC's own profile in place rather than
-    pointing a tool at a folder it cannot write.
+    granted, under ``CLIO_AGENT_HOME`` and the same on every launch. ``chosen`` carries values
+    the caller picked in granted territory (the shell's session scratch ``TEMP``), which win.
+    Empty when the cache folder is not in the child's write territory (MXC's profile stays).
     """
 
     if not write_roots or not _is_mxc(state):
@@ -508,7 +508,7 @@ def _mxc_container_env(
     environment.update(
         {key: value for key, value in (chosen or {}).items() if key in MXC_CONTAINER_ENV_KEYS}
     )
-    return environment
+    return environment | execution_policy_env()
 
 
 def _with_container_env(

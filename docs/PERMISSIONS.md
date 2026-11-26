@@ -572,6 +572,16 @@ credentials and other tools' settings: a fenced child reads it but does not writ
 these variables, so inside MXC it still names the per-launch profile; tools built on it
 need their own override (`FASTMCP_HOME`, `CLIO_KIT_CACHE_DIR`).
 
+The MXC token also cannot open the person's CurrentUser PowerShell policy key
+(`HKCU\...\PowerShell\1\ShellIds\Microsoft.PowerShell`). Windows PowerShell reads it
+before it runs any `.ps1`, so every script and `.ps1` shim (`npm`, `npx`, `pnpm`, `yarn`,
+which PowerShell prefers over their `.cmd` siblings) failed with *AuthorizationManager
+check failed*. The same shim gives the child the person's own effective policy (CLIO asks
+`Get-ExecutionPolicy` as the person) as `PSExecutionPolicyPreference`, the Process scope.
+It ranks above CurrentUser, so PowerShell stops there, while Group Policy still outranks
+it. A policy the person already set for the process is inherited unchanged, and CLIO
+never widens it (for example to `Bypass`) (`runtime/fence_powershell.py`).
+
 A fenced MCP server's loopback is its own network namespace's, so a port an MCP App
 declares for its live service (MA23) is not on the host's `127.0.0.1`. CLIO reaches it
 from inside instead: each Linux-fenced child carries `CLIO_FENCE_CHILD` (its egress
