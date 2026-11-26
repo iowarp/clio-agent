@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import time
 import uuid
@@ -74,7 +73,7 @@ class ToolObservation:
         return ToolCall(
             tool=self.tool,
             params=self.params,
-            result=compact_tool_result(self.result, tool=self.tool, ok=self.ok),
+            result=compact_tool_result(self.result, ok=self.ok),
             duration_ms=self.duration_ms,
             cached=False,
         )
@@ -184,15 +183,6 @@ class RunTrace:
         return (time.time() - self.started_at) * 1000
 
 
-def tool_result_ok(result: Any) -> bool:
-    """Return whether a tool result represents success."""
-    if isinstance(result, dict) and "error" in result:
-        return False
-    if isinstance(result, str) and result.startswith("Error:"):
-        return False
-    return True
-
-
 def extract_file_paths(question: str, file_context: str, suffixes: AbstractSet[str]) -> list[Path]:
     """Extract file paths with one of the requested suffixes.
 
@@ -240,107 +230,23 @@ def extract_file_paths(question: str, file_context: str, suffixes: AbstractSet[s
     return paths
 
 
-def normalize_tool_error(
-    error: Any,
-    *,
-    tool: str | None = None,
-    code: str = "tool_failed",
-    next_action: str = "Check the tool arguments and gateway health, then retry.",
-    details: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Normalize all native tool failures to one ARC/API-compatible shape."""
-    if isinstance(error, MappingABC) and "error" in error:
-        return normalize_tool_error(
-            error["error"],
-            tool=tool,
-            code=code,
-            next_action=next_action,
-            details=details,
-        )
-
-    if isinstance(error, str):
-        parsed_error = _parse_json_error_text(error)
-        if parsed_error is not None:
-            return normalize_tool_error(
-                parsed_error,
-                tool=tool,
-                code=code,
-                next_action=next_action,
-                details=details,
-            )
-
-    normalized: dict[str, Any]
-    if isinstance(error, MappingABC):
-        normalized = {
-            "type": str(error.get("type") or "tool_error"),
-            "code": str(error.get("code") or code),
-            "message": str(error.get("message") or error),
-            "next_action": str(error.get("next_action") or next_action),
-        }
-        for key in ("field", "path"):
-            value = error.get(key)
-            if value is not None:
-                normalized[key] = str(value)
-        if error.get("handled") is not None:
-            normalized["handled"] = bool(error.get("handled"))
-        if error.get("handled_reason") is not None:
-            normalized["handled_reason"] = str(error.get("handled_reason"))
-        if error.get("details") is not None:
-            normalized["details"] = _json_safe(error["details"])
-    else:
-        normalized = {
-            "type": "tool_error",
-            "code": code,
-            "message": str(error) if error else "Tool returned an error.",
-            "next_action": next_action,
-        }
-
-    if tool:
-        normalized["tool"] = tool
-    if details:
-        existing = normalized.get("details")
-        if isinstance(existing, dict):
-            existing.update(_json_safe(details))
-        else:
-            normalized["details"] = _json_safe(details)
-    return normalized
-
-
-def normalize_tool_result(result: Any, *, tool: str | None = None) -> Any:
-    """Return a tool result with normalized error payloads."""
-    if isinstance(result, MappingABC) and "error" in result:
-        normalized = dict(result)
-        normalized["error"] = normalize_tool_error(result["error"], tool=tool)
-        return normalized
-    if isinstance(result, str) and result.startswith("Error:"):
-        return {
-            "error": normalize_tool_error(
-                result.removeprefix("Error:").strip(),
-                tool=tool,
-            )
-        }
-    return result
-
-
 def compact_tool_result(
     result: Any,
     *,
-    tool: str | None = None,
-    ok: bool | None = None,
+    ok: bool,
     max_items: int = 8,
     max_text: int = 500,
 ) -> Any:
-    """Compact a tool result for durable ARC provenance."""
-    normalized = normalize_tool_result(result, tool=tool)
-    if isinstance(normalized, MappingABC) and "error" in normalized:
-        return {"ok": False, "error": normalize_tool_error(normalized["error"], tool=tool)}
+    """Compact a tool result for durable ARC provenance, under the call's recorded verdict.
 
-    compacted = _compact_value(normalized, max_items=max_items, max_text=max_text, depth=0)
+    ``ok`` is the verdict the call's transport gave (an MCP ``isError``, a raise or a
+    native tool's own declared failure); the result's words and keys never decide it.
+    """
+    compacted = _compact_value(result, max_items=max_items, max_text=max_text, depth=0)
     if isinstance(compacted, dict):
-        if ok is not None:
-            compacted.setdefault("ok", bool(ok))
+        compacted.setdefault("ok", bool(ok))
         return compacted
-    return {"ok": bool(ok) if ok is not None else tool_result_ok(normalized), "value": compacted}
+    return {"ok": bool(ok), "value": compacted}
 
 
 def _compact_value(value: Any, *, max_items: int, max_text: int, depth: int) -> Any:
@@ -385,16 +291,3 @@ def _json_safe(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     return str(value)
-
-
-def _parse_json_error_text(text: str) -> Any | None:
-    stripped = text.removeprefix("Error:").strip()
-    if not stripped.startswith("{"):
-        return None
-    try:
-        decoded = json.loads(stripped)
-    except json.JSONDecodeError:
-        return None
-    if isinstance(decoded, MappingABC):
-        return decoded
-    return None
