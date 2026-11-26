@@ -592,15 +592,28 @@ On macOS the Codex write fence does not restrict network routes. Tools that hono
 ignores those variables (an `ssh` called by absolute path, raw sockets, some Node
 `fetch` clients) connects directly: that connection works but is not recorded.
 
-On Windows, Windows' own network stack (WinHTTP, which CryptoAPI uses) does not read
-those variables either. The legacy Codex fence blocks its direct connections. The
-visible case is the certificate revocation check of the `curl.exe` that ships with
-Windows (schannel): it fails with `CRYPT_E_REVOCATION_OFFLINE` while the download
-itself would have gone through the proxy. Go-based tools such as `gh` and Python, pip
-and uv honor the variables and work. The tool's own error reaches the agent. Neither
-CLIO nor Codex sets a WinHTTP proxy for the sandbox account, so such a download runs
-outside the sandbox, with the person's approval, or through a tool that honors
-the variables.
+On Windows, the system's own clients (WinHTTP, WinINet, and so CryptoAPI's revocation
+fetches, .NET Framework and many installers) do not read those variables. They take
+their proxy from the machine's WinHTTP setting or from the registry of the current user
+(HKCU). The legacy Codex fence blocks their direct connections, so they fail closed:
+nothing leaves unrecorded, but no ask appears either. The visible case is the
+certificate revocation check of the `curl.exe` that ships with Windows (schannel). It
+fails with `CRYPT_E_REVOCATION_OFFLINE`, although the download itself would have gone
+through the proxy. Go-based tools such as `gh`, and Python, pip and uv, honor the
+variables and work. The tool's own error reaches the agent.
+
+CLIO cannot hand these clients a proxy:
+
+- Codex runs the fenced child without loading the sandbox account's profile, so the
+  child's HKCU is the machine's default hive, `HKU\.DEFAULT`.
+- The child's restricted token cannot write HKCU.
+- Writing `.DEFAULT` or the machine's WinHTTP setting needs administrator rights and
+  would redirect every profile-less process on the machine.
+- Concurrent children each get their own proxy port, and one shared registry value
+  cannot tell them apart.
+
+Such a download runs outside the sandbox with the person's approval, or through a tool
+that honors the variables.
 
 **Deny-by-default** is an opt-in per-workspace mode: egress is refused unless the
 domain is granted, and the first connection to a new domain raises a
