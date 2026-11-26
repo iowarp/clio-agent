@@ -1,13 +1,10 @@
-"""Structured tool-result failure extraction.
+"""A tool call's failure, read from its transport's own signal and nothing else.
 
-A tool result carries its failure on one of TWO lanes and clio must read both.
-The structured lane (``structuredContent`` / ``data`` / ``isError``) is what a
-FastMCP server produces. The content lane is what a server returning an
-explicit ``ToolResult`` produces: fastmcp leaves ``data`` as ``None`` when no
-``structuredContent`` is present, so such a server's error envelope exists ONLY
-inside its text content blocks. Reading the structured lane alone recorded
-those failures as successes on the transcript, the ledger row and the semantic
-event.
+A call failed when its transport says so: an MCP result's ``isError``, a native
+tool's raise, or a native tool's own :class:`ToolFailure`. The words and keys of
+a result never decide it (owner ruling, 2026-11): an ``error`` key, a
+``status: failed``, an ``ok: false`` or a leading ``error:`` is the tool's report,
+which the model reads like any other result, not a verdict clio guesses from it.
 """
 
 from __future__ import annotations
@@ -17,111 +14,56 @@ from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from typing import Any
 
+_TEXT_LIMIT = 500
 
-def _content_block_error(result: Any) -> str | None:
-    """Return the error a result's structured content blocks carry, if any.
 
-    Text blocks are the only lane an error envelope can ride; every other block
-    type (image, audio, resource) is evidence, never a verdict. A block whose
-    text is a JSON object is judged by the same rules as a structured payload,
-    so the same envelope gets the same verdict whichever lane the server chose.
+class ToolFailure(dict[str, Any]):
+    """A native tool's declaration that it could not do what was asked.
 
-    Args:
-        result: The raw tool result object or mapping.
-
-    Returns:
-        The first content-block error string, or ``None``.
+    The payload is exactly what the model reads, as it reads any result: returning it,
+    rather than raising, keeps the tool's detail and next step in front of the model
+    (``gact/a2ui_producer/_refusal.py``). The type is the verdict: the built-in MCP
+    boundary carries it as ``isError`` and every reader of a call's outcome sees it as
+    failed. A tool that answered with an empty or negative finding (no hits, no data
+    for a date) returns a plain result instead.
     """
 
-    result_map = result if isinstance(result, Mapping) else {}
-    blocks = getattr(result, "content", None)
-    if blocks is None:
-        blocks = result_map.get("content")
-    if isinstance(blocks, (str, bytes, bytearray)) or not isinstance(blocks, Sequence):
-        return None
-    for block in blocks:
-        block_map = block if isinstance(block, Mapping) else {}
-        block_type = getattr(block, "type", None)
-        if block_type is None:
-            block_type = block_map.get("type")
-        text = getattr(block, "text", None)
-        if text is None:
-            text = block_map.get("text")
-        if block_type not in (None, "text") or not isinstance(text, str) or not text.strip():
-            continue
-        stripped = text.strip()
-        payload: Any = stripped
-        if stripped.startswith("{"):
-            with suppress(json.JSONDecodeError, TypeError, ValueError):
-                payload = json.loads(stripped)
-        if block_error := structured_tool_result_error(payload):
-            return block_error
-    return None
+
+class FailedObservation(str):
+    """The model-facing text of a call whose transport reported it failed (``isError``)."""
+
+
+def declared_failure(value: Any) -> bool:
+    """Whether ``value`` is a call's own failure: a :class:`ToolFailure` or failed text."""
+
+    return isinstance(value, (ToolFailure, FailedObservation))
 
 
 def structured_tool_result_error(result: Any) -> str | None:
-    """Return an error string when a tool returns a structured error payload."""
+    """The failure text of a call whose transport says it failed, else ``None``.
 
-    decoded = result
-    if isinstance(result, str):
-        stripped = result.strip()
-        if stripped.startswith("{") and '"error"' in stripped:
-            with suppress(json.JSONDecodeError, TypeError):
-                decoded = json.loads(stripped)
-    if isinstance(decoded, Mapping):
-        error = decoded.get("error")
-        if error:
-            if isinstance(error, Mapping):
-                code = str(error.get("code") or error.get("type") or "tool_error")
-                message = str(error.get("message") or "").strip()
-                return f"{code}: {message}" if message else code
-            # A typed code beside its message and next step: keep all three, not just the code.
-            parts = [str(decoded.get(key) or "").strip() for key in ("message", "hint")]
-            detail = " ".join(part for part in parts if part)
-            return f"{error}: {detail}" if detail else str(error)
+    Reads only the transport's signal: a :class:`ToolFailure` or
+    :class:`FailedObservation`, or an MCP result's ``isError`` (a live result's
+    attribute or a recorded result's key). The text is the result's own.
+    """
 
-        status = str(decoded.get("status") or "").strip().lower()
-        if status in {"error", "failed", "failure"}:
-            message = str(decoded.get("message") or decoded.get("detail") or "").strip()
-            return f"status={status}: {message}" if message else f"status={status}"
-        if decoded.get("ok") is False:
-            message = str(decoded.get("message") or decoded.get("detail") or "").strip()
-            return f"ok=false: {message}" if message else "ok=false"
-    elif isinstance(decoded, str) and decoded.strip().casefold().startswith("error:"):
-        return decoded.strip()
-
+    if isinstance(result, ToolFailure):
+        return json.dumps(result, default=str, ensure_ascii=False)[:_TEXT_LIMIT]
+    if isinstance(result, FailedObservation):
+        return str(result).strip()[:_TEXT_LIMIT] or "tool_result_is_error"
     result_map = result if isinstance(result, Mapping) else {}
-    # Read the legacy camelCase attribute only when the SDK v2 name is absent: on a
-    # current result the old name is a deprecated alias that warns on access.
-    structured = getattr(result, "structured_content", None)
-    if not hasattr(result, "structured_content"):
-        structured = getattr(result, "structuredContent", None)
-    candidates = (
-        structured,
-        result_map.get("structuredContent"),
-        result_map.get("structured_content"),
-        getattr(result, "data", None),
-        result_map.get("data"),
+    explicitly_failed = getattr(
+        result,
+        "is_error",
+        getattr(result, "isError", result_map.get("isError", result_map.get("is_error"))),
     )
-    for candidate in candidates:
-        if candidate is not None and candidate is not result:
-            if nested_error := structured_tool_result_error(candidate):
-                return nested_error
-    if content_error := _content_block_error(result):
-        return content_error
-    if hasattr(result, "is_error"):
-        explicitly_failed = result.is_error
-    else:
-        explicitly_failed = getattr(
-            result, "isError", result_map.get("isError", result_map.get("is_error"))
-        )
     if explicitly_failed is not True:
         return None
     # A failed result's own text (e.g. a ToolError's code and message) beats a bare flag.
     return _first_text(result) or "tool_result_is_error"
 
 
-def _first_text(result: Any, limit: int = 500) -> str:
+def _first_text(result: Any, limit: int = _TEXT_LIMIT) -> str:
     """The first non-empty text block of a result, decoded from a JSON envelope when it is one."""
     result_map = result if isinstance(result, Mapping) else {}
     blocks = getattr(result, "content", None)
@@ -144,4 +86,9 @@ def _first_text(result: Any, limit: int = 500) -> str:
     return ""
 
 
-__all__ = ["structured_tool_result_error"]
+__all__ = [
+    "FailedObservation",
+    "ToolFailure",
+    "declared_failure",
+    "structured_tool_result_error",
+]

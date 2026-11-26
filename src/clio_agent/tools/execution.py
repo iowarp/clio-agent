@@ -48,7 +48,7 @@ from clio_agent.tools.mcp_executor import (
 )
 from clio_agent.tools.mcp_namespace_executor import SyncNamespacePreparationMixin
 from clio_agent.tools.path_hints import missing_path_hint
-from clio_agent.tools.result_errors import structured_tool_result_error
+from clio_agent.tools.result_errors import FailedObservation, structured_tool_result_error
 from clio_agent.tools.tool_hooks import InterceptDecision, PostToolHook, assemble_model_observation
 from clio_agent.tools.tool_observation import (
     LegacyToolObserver,
@@ -857,6 +857,9 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             is_error=structured_error is not None,
             synthetic=False,
         )
+        if structured_error is not None and isinstance(result, str):
+            # The transport's isError reaches the calling loop with the text (gap 2).
+            result = FailedObservation(result)
         return result
 
     def read_resource(self, namespace: str | None, uri: str) -> Any:

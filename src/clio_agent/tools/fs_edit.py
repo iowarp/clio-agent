@@ -26,6 +26,7 @@ from clio_agent.tools.file_policy import (
     validate_write_path,
 )
 from clio_agent.tools.fs_write import write_text_with_policy
+from clio_agent.tools.result_errors import ToolFailure
 
 #: The namespaced tools that write a file through this module.
 FILE_WRITE_TOOLS = frozenset({"fs_write_file", "fs_edit_file"})
@@ -46,14 +47,16 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _error(code: str, message: str, path: str, **details: Any) -> dict[str, Any]:
+def _error(code: str, message: str, path: str, **details: Any) -> ToolFailure:
     """A typed refusal the model reads as the tool result (nothing was written)."""
 
-    return {
-        "ok": False,
-        "path": path,
-        "error": {"type": "file_edit", "code": code, "message": message, "details": details},
-    }
+    return ToolFailure(
+        {
+            "ok": False,
+            "path": path,
+            "error": {"type": "file_edit", "code": code, "message": message, "details": details},
+        }
+    )
 
 
 def _diff_counts(diff: str) -> tuple[int, int]:
