@@ -644,13 +644,13 @@ clio_agent/gact/agent_initialization.py
 clio_agent/gact/agent_task_limits.py
 clio_agent/gact/agents/__init__.py
 clio_agent/gact/agents/agent_prompt.py
-clio_agent/gact/agents/always_load_tools.py
 clio_agent/gact/agents/builders.py
 clio_agent/gact/agents/composition.py
 clio_agent/gact/agents/live_tool_refresh.py
 clio_agent/gact/agents/lm_resolution.py
 clio_agent/gact/agents/native_presenters_inspection.py
 clio_agent/gact/agents/native_tool_registry.py
+clio_agent/gact/agents/person_servers.py
 clio_agent/gact/agents/prompt_basis.py
 clio_agent/gact/agents/recorded_inspection_presentation.py
 clio_agent/gact/agents/resolution.py
@@ -1732,6 +1732,7 @@ clio_agent/tools/mcp_handlers.py
 clio_agent/tools/mcp_inventory_snapshot.py
 clio_agent/tools/mcp_namespace_executor.py
 clio_agent/tools/mcp_oauth_storage.py
+clio_agent/tools/mcp_person_precedence.py
 clio_agent/tools/mcp_prepare.py
 clio_agent/tools/mcp_probe_hardening.py
 clio_agent/tools/mcp_redaction.py

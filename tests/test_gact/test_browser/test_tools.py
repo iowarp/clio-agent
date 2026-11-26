@@ -124,6 +124,42 @@ def test_pages_loading_one_new_host_at_once_share_one_question(
     assert len(asked) == 1
 
 
+def test_allow_once_covers_the_host_for_the_rest_of_the_script_only(
+    conversation: Any, site: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """QA: "Allow once" for a host, then the script's next call on that page asked for the
+    same host again (``admit_call``). The answer covers the host for the rest of that
+    script; the next script asks again.
+
+    SABOTAGE: drop ``_allowed_in_call`` from ``admit_call`` and the snapshot asks."""
+    from clio_agent.gact.code_mode import grants
+
+    app, _sid = conversation
+    _ungranted(monkeypatch)
+
+    def host_asks() -> int:
+        return len([r for r in app.state.permissions.values() if r.get("kind") == "browser_host"])
+
+    token = grants.bind_grant(grants.ScriptGrant("call_1", "await browser.open(u)"))
+    try:
+        answering = _answer(app, "allow", seen=[])
+        page = tools.browser_open(url=site["a"] + "/table")["page"]["id"]
+        answering.join(5)
+        tools.browser_snapshot(page)
+        tools.browser_navigate(page, url=site["a"] + "/form")
+    finally:
+        grants.reset_grant(token)
+    assert host_asks() == 1
+    token = grants.bind_grant(grants.ScriptGrant("call_2", "await browser.page(p)"))
+    try:
+        answering = _answer(app, "allow", seen=[])
+        tools.browser_snapshot(page)
+        answering.join(5)
+    finally:
+        grants.reset_grant(token)
+    assert host_asks() == 2
+
+
 def test_a_denied_redirect_raises_and_the_page_stays(
     conversation: Any, site: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

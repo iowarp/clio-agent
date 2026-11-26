@@ -25,11 +25,16 @@ from clio_agent.tools.workspace_mcp_trust import (
 
 
 def declared_mcp_specs(
-    app: Any, cwd: Path | None = None, *, session_id: str = ""
+    app: Any,
+    cwd: Path | None = None,
+    *,
+    session_id: str = "",
+    taken: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Return MCP specs declared for the selected session and workspace.
 
-    The session agent's plugin servers, then user and workspace ``mcp.yaml``.
+    The session agent's plugin servers, then user and workspace ``mcp.yaml``. ``taken``
+    collects the person's entries left out for a plugin server's name.
     """
 
     from clio_agent.plugins.servers import server_set_declarations  # noqa: PLC0415
@@ -37,10 +42,12 @@ def declared_mcp_specs(
 
     server_set = session_server_set(app, session_id) if session_id else ""
     plugin_servers = server_set_declarations(server_set) if server_set else {}
-    return load_mcp_servers(cwd=cwd, plugin_servers=plugin_servers)
+    return load_mcp_servers(cwd=cwd, plugin_servers=plugin_servers, taken=taken)
 
 
-def _draft_mcp_specs(app: Any, cwd: Path | None, agent_ref: str) -> dict[str, Any]:
+def _draft_mcp_specs(
+    app: Any, cwd: Path | None, agent_ref: str, taken: list[dict[str, str]] | None = None
+) -> dict[str, Any]:
     """The MCP specs a new conversation on ``agent_ref`` in this workspace would declare."""
 
     from clio_agent.plugins.servers import server_set_declarations  # noqa: PLC0415
@@ -48,7 +55,7 @@ def _draft_mcp_specs(app: Any, cwd: Path | None, agent_ref: str) -> dict[str, An
 
     server_set = agent_server_set(app, agent_ref)
     plugin_servers = server_set_declarations(server_set) if server_set else {}
-    return load_mcp_servers(cwd=cwd, plugin_servers=plugin_servers)
+    return load_mcp_servers(cwd=cwd, plugin_servers=plugin_servers, taken=taken)
 
 
 @dataclass(frozen=True)
@@ -75,13 +82,14 @@ def session_mcp_inventory(
     ``threading.Lock``. Async callers run it on a worker (see ``routes.mcp``).
     """
 
+    taken: list[dict[str, str]] = []
     if session_id:
         try:
             agent_ref = str(session_resolution(app, session_id).agent.get("ref") or "")
         except SessionAgentUnavailable as exc:
             agent_ref = exc.ref
         try:
-            specs = declared_mcp_specs(app, cwd=cwd, session_id=session_id)
+            specs = declared_mcp_specs(app, cwd=cwd, session_id=session_id, taken=taken)
             connection_error = ""
         except SessionAgentUnavailable as exc:
             specs = {}
@@ -90,7 +98,7 @@ def session_mcp_inventory(
         # No conversation chosen: what a new one here would get, on the default agent.
         agent_ref = default_agent_ref(app)
         try:
-            specs = _draft_mcp_specs(app, cwd, agent_ref)
+            specs = _draft_mcp_specs(app, cwd, agent_ref, taken)
             connection_error = ""
         except SessionAgentUnavailable as exc:
             specs = {}
@@ -104,6 +112,15 @@ def session_mcp_inventory(
         }
         for row in unreadable_mcp_yaml_snapshot()
     ]
+    degradations.extend(
+        {
+            "reason": row["reason"],
+            "detail": f"{row['path']}: {row['server']!r} is the name of plugin "
+            f"{row['plugin']}'s server, which keeps it; rename this entry, or add "
+            "replaces_plugin_server: true to use it in the plugin's place",
+        }
+        for row in taken
+    )
     # A workspace mcp.yaml is mounted only once its content is trusted.
     degradations.extend(
         {

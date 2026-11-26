@@ -94,7 +94,8 @@ class CodeError(RuntimeError):
         self.reason = reason
 
 
-def _approve(app: Any, code: str) -> None:
+def _approve(app: Any, code: str) -> str:
+    """Ask for the script; return the person's comment on their Allow (``""`` without one)."""
     from clio_agent.gact.permission_gate import _invoke_permission_gate  # noqa: PLC0415
 
     gate = getattr(app.state, "pending_permission_gate", None) or app.state.make_permission_gate()
@@ -104,7 +105,7 @@ def _approve(app: Any, code: str) -> None:
     context = {"kind": "native", "summary": summary}
     decision = _invoke_permission_gate(gate, "run_code", {"code": code}, context)
     if decision == "allow":
-        return
+        return str(getattr(decision, "note", "") or "")
     if getattr(decision, "outcome", "") == "cancelled":
         # Stopped while the approval waited: nobody refused the script.
         from clio_agent.tools.foreground_cancellation import (  # noqa: PLC0415
@@ -234,7 +235,11 @@ def new_grant(code: str) -> Any:
 def prepare_script(agent: Any, code: str, grant: Any = None) -> PreparedScript:
     """Capture the calling ``run_code`` call's grant (``grant``, the one its approval
     answered, else a new one) and context for ``code``'s nested calls."""
-    from clio_agent.gact.code_mode.grants import bind_grant, reset_grant  # noqa: PLC0415
+    from clio_agent.gact.code_mode.grants import (  # noqa: PLC0415
+        bind_grant,
+        binding_tools,
+        reset_grant,
+    )
     from clio_agent.gact.model_media import CALL_MEDIA, DETACHED, SCRIPT_MEDIA  # noqa: PLC0415
     from clio_agent.gact.tool_call_nesting import PARENT_CALL_ID  # noqa: PLC0415
 
@@ -252,6 +257,9 @@ def prepare_script(agent: Any, code: str, grant: Any = None) -> PreparedScript:
     direct_only, code_only = _callers(agent)
     servers = tuple(getattr(agent, "_clio_tool_servers", ()) or ())
     grant.servers = servers
+    grant.bound_tools = binding_tools(
+        code, getattr(agent, "_clio_kernel_bindings", None) or {}, getattr(agent, "tools", {}) or {}
+    )
     return PreparedScript(agent, code, context, servers, direct_only, code_only)
 
 
@@ -560,7 +568,11 @@ def build_run_code_tool() -> Any:
         read_only = _plan_mode_refusal(app, session_id)
         grant = new_grant(code)
         with approving(grant):  # its question offers "Allow for the rest of this script"
-            _approve(app, code)
+            note = _approve(app, code)
+
+        def said(text: str) -> str:  # the person's comment on their Allow comes first
+            return f"{note}\n\n{text}" if note else text
+
         if background:
             receipt = launch_background(
                 app,
@@ -572,7 +584,7 @@ def build_run_code_tool() -> Any:
                 grant=grant,
             )
             declare_structured_content(receipt)
-            return background_text(receipt, label)
+            return said(background_text(receipt, label))
         scope = _ctx.run_keyed_scope(_ctx.active_react_scope() or "")
         outcome = run_script(
             loop.agent,
@@ -586,11 +598,11 @@ def build_run_code_tool() -> Any:
         )
         if outcome["status"] == "backgrounded":
             declare_structured_content(outcome)
-            return outcome["text"]
+            return said(outcome["text"])
         if viewed := CALL_MEDIA.get():
             outcome["attached_media"] = [_attached_row(item) for item in viewed]
         declare_structured_content(outcome)
-        return model_text(outcome)
+        return said(model_text(outcome))
 
     return self_gated(
         native_tool(

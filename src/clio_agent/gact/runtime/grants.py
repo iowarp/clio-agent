@@ -429,9 +429,11 @@ def replay_persisted_root_grants(app: "FastAPI") -> None:
 
 
 def _egress_gate_decision(app: "FastAPI", rec: "EgressRecord") -> str:
-    """Decide allow/deny for one deny-mode CONNECT (B5 #979.5). Returns ``"allow"``/``"deny"``.
+    """Decide allow/deny for one gated CONNECT (B5 #979.5). Returns ``"allow"``/``"deny"``.
 
-    Consults the workspace's ``host_pattern`` policies; an unknown domain opens the EXISTING
+    Consults the workspace's ``host_pattern`` policies in every mode: a person's ``deny`` rule
+    refuses and an ``ask`` rule asks whether or not the workspace is in deny mode. Deny mode
+    decides only a host no rule covers: an unknown domain opens the EXISTING
     interactive permission gate via a ``network_egress`` request kind and blocks the chokepoint
     connection thread until the user resolves it (or a typed timeout denial). A resolution of
     ``allow``/``allow_session``/``allow_workspace`` lets the CONNECT through and (for
@@ -489,15 +491,18 @@ def _egress_gate_decision(app: "FastAPI", rec: "EgressRecord") -> str:
             exc,
         )
         return "deny"
-    if not deny:
-        return "allow"  # default is ALLOW + RECORD (B4); deny mode is strictly opt-in
-    return _policy_egress_decision(app, rec, workspace_id)
+    # Deny mode decides only what a host NO rule covers: ask in deny mode, else ALLOW + RECORD
+    # (B4). A rule the person set ("Ask every time", "Deny") holds in every mode.
+    return _policy_egress_decision(app, rec, workspace_id, unmatched="ask" if deny else "allow")
 
 
-def _policy_egress_decision(app: "FastAPI", rec: "EgressRecord", workspace_id: str | None) -> str:
-    """Decide by the workspace's ``host_pattern`` policies, else ask the person.
+def _policy_egress_decision(
+    app: "FastAPI", rec: "EgressRecord", workspace_id: str | None, *, unmatched: str = "ask"
+) -> str:
+    """Decide by the workspace's ``host_pattern`` policies; a host no rule covers gets
+    ``unmatched`` (``ask`` opens the person's question, ``allow`` lets it through).
 
-    Used for a deny-mode workspace and for a private, link-local or loopback host
+    Used for every egress the gate decides, and for a private, link-local or loopback host
     (``rec.network`` set, ``workspace_id`` ``None``): only the Linux fence's relay tunnel
     reaches such a host, and only with consent, whether or not the workspace is in deny mode.
     Any error refuses the connection with a typed reason.
@@ -511,9 +516,9 @@ def _policy_egress_decision(app: "FastAPI", rec: "EgressRecord", workspace_id: s
         if action == "deny":
             _record_egress_denied(app, resolved, host, reason=REASON_EGRESS_POLICY_DENY)
             return "deny"
-        if action in POLICY_ALLOWING:
+        if action in POLICY_ALLOWING or (not action and unmatched == "allow"):
             return "allow"
-        return _prompt_egress(app, resolved, rec)
+        return _prompt_egress(app, resolved, rec, rule=action == "ask")
     except Exception as exc:  # noqa: BLE001 — an egress decision error must fail closed, typed
         _record_egress_denied(app, resolved, host, reason=REASON_EGRESS_DECISION_ERROR)
         logger.warning(
@@ -559,11 +564,17 @@ def _write_gate_decision(app: "FastAPI", rec: "EgressRecord") -> Optional[str]:
 
 
 def _prompt_egress(
-    app: "FastAPI", workspace_id: str, rec: "EgressRecord", *, write: bool = False
+    app: "FastAPI",
+    workspace_id: str,
+    rec: "EgressRecord",
+    *,
+    write: bool = False,
+    rule: bool = False,
 ) -> str:
     """Open the interactive gate for an un-granted egress domain; block until resolved.
 
-    Serves BOTH escalation kinds: a deny-mode unknown domain (any verb, ``write=False``) and an
+    Serves the escalation kinds: a deny-mode unknown domain or a host a person's "Ask every
+    time" rule covers (any verb, ``write=False``, ``rule`` naming the second), and an
     N2 WRITE-shaped egress (``write=True``) — the row is labelled distinctly so the approver sees
     whether it is a WRITE. The request KIND stays :data:`NETWORK_EGRESS_REQUEST_KIND` either way
     (a new request kind, not a new gate — ⚑ #974.8), so an ``allow_workspace`` resolution derives
@@ -608,8 +619,11 @@ def _prompt_egress(
                     f"network egress to {host}:{rec.port} requested ({rec.network} address, "
                     "not a public host)"
                 )
+            elif rule:
+                summary = f"network egress to {host}:{rec.port} requested (a rule asks)"
             else:
                 summary = f"network egress to {host}:{rec.port} requested (deny mode)"
+            on_port = "" if port in (80, 443) else f" on port {port}"
             prompt = {
                 "pid": pid,
                 "event": threading.Event(),
@@ -629,6 +643,7 @@ def _prompt_egress(
                         },
                     },
                     "summary": summary,
+                    "title": f"{'Send data to' if write else 'Connect to'} {host}{on_port}",
                     "created_at": datetime.now(timezone.utc).isoformat(),
                     "status": "pending",
                 },

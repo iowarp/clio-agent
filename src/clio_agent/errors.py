@@ -70,6 +70,10 @@ MCP_PROTOCOL_DOWNGRADED_TO_LEGACY = "mcp_protocol_downgraded_to_legacy"
 #: treating "malformed" the same as "no servers declared". A MISSING file is
 #: still normal and returns ``{}`` without this reason.
 MCP_YAML_DECLARATION_UNREADABLE = "mcp_yaml_declaration_unreadable"
+#: A person's ``mcp.yaml`` server has the name of a server the session's plugin
+#: declares. The plugin keeps its own server; the person's entry is left out of
+#: that fleet (configure a plugin's server through its connection instead).
+MCP_SERVER_NAME_TAKEN_BY_PLUGIN = "mcp_server_name_taken_by_plugin"
 #: #1232 pt 2: a declared MCP namespace did not answer its bounded discovery
 #: attempt (connect + list_tools) before the per-namespace deadline. NEVER
 #: blocks "agent ready" -- the namespace's tools are simply absent from the

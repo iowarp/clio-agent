@@ -88,4 +88,22 @@ def person_allowed(app: Any, session_id: str, invocation_id: str) -> str:
     return ""
 
 
-__all__ = ["COVERED_ANSWER", "REASON_COVERED", "person_allowed", "plain_confirm"]
+def approval_comment(app: Any, permission_id: str) -> str:
+    """What the person wrote when granting ``permission_id``; ``""`` when nothing.
+
+    A covered confirm is answered by that grant, so the grant's comment is the
+    person's reply to the server too.
+    """
+
+    rows = getattr(app.state, "permissions", None) or {}
+    row = rows.get(permission_id)
+    return str((row or {}).get("comment") or "").strip()
+
+
+__all__ = [
+    "COVERED_ANSWER",
+    "REASON_COVERED",
+    "approval_comment",
+    "person_allowed",
+    "plain_confirm",
+]

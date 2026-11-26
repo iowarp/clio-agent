@@ -16,6 +16,21 @@ Each row carries `id`, `session_id`, `tool_call.{tool_name, input}`,
 `summary`, `created_at`, `status`, `action`, optional `resolved_at` +
 `reason`.
 
+The card is titled with the human action (`interaction.title`, and `title` on the
+`permission.requested` event): the row's own `title` ("Connect to pypi.org"), else a
+summary that is already a sentence, else the tool's declared title ("Run command"),
+else "Use a tool from <server>". It is never a tool id. `payload.summary` keeps the
+technical line.
+
+A person may write a comment with either answer: `answer` on
+`POST /v1/sessions/{sid}/interactions/{iid}/respond` (or on `POST /v1/permissions/{pid}`).
+It is kept on the row as `comment` and reaches the agent with the decision. With Deny the
+agent reads "The person denied <tool> and said: …" in place of the generic refusal; with
+Allow it reads "The person allowed <tool> and commented: …" before the tool's result (a
+`run_code` script's result too). A hook deferral's approval does not carry a comment.
+An MCP elicitation answer's comment (any `answer` that is not a form field's own value)
+reaches the server in the `ElicitResult` as `_meta["io.iowarp/approval"].comment`.
+
 `allow_session` and `allow_workspace` store a policy for the tool in that scope.
 For a call that names a file (`path`, `output_path`, `target_path`), the policy
 covers the folder holding that file and everything below it, so the next file
@@ -157,11 +172,14 @@ script was accepted with (a change of mode while it runs does not change it):
 | --- | --- |
 | `bypass` | Run |
 | `auto-edits`, `ai-review`, `spotter-ai`, `spotter-watcher` (`code.covering_postures`) | Covered by the script's approval, recorded with `run_code_script_grant` |
-| `ask` | A person's "Allow once" on the script covers the calls its code names (`tools.<group>.<tool>` or `tools.call("<name>")`), recorded with `run_code_script_grant`. Any other call asks, one question per script at a time, showing the script; denial raises in the script |
+| `ask` | A person's "Allow once" on the script covers the calls its code names (`tools.<group>.<tool>` or `tools.call("<name>")`), including the tools a kernel binding the script uses names in its own source (`browser.open(...)` names `browser_open`), recorded with `run_code_script_grant`. Any other call asks, one question per script at a time, showing the script; denial raises in the script |
 
 In `ask` mode the question offers "Allow for the rest of this script"
 (`allow_script`), which covers that script's remaining calls, named or not; the next
-`run_code` asks again. A script approved by a rule or the reviewer rather than a person
+`run_code` asks again. "Allow once" on a nested call covers that same subject for the
+rest of the script: the same tool with the same arguments, or the same browser host
+(its next calls on that page do not ask again). It covers nothing in the next script,
+and a rule set to "Ask every time" still asks each time. A script approved by a rule or the reviewer rather than a person
 covers nothing in `ask` mode. A tool whose rule or default is `ask` asks even under a
 covering mode or a person's approval of the script. A
 background script's question belongs to its task: it is asked in the owner's
@@ -706,10 +724,14 @@ chokepoint relays an opaque tunnel and doesn't check what runs inside it.
 | `pypi.org:443`, `files.pythonhosted.org:443` | https | uv and pip installs |
 | `registry.npmjs.org:443` | https | npm installs for skills and tools |
 
-The rules take effect only where the chokepoint gates: deny-mode workspaces, and the
-write gate's plain-HTTP writes. Outside deny mode, every connection is already allowed
-and recorded. Other forges, conda-forge, crates and site mirrors are added the same
-way, as a rule in Settings or with `PUT /v1/policies`.
+Every rule the person sets holds in every workspace mode: a `deny` rule refuses the
+connection and an "Ask every time" (`ask`) rule asks each time, whether or not the
+workspace is in deny mode. Deny mode decides only a host no rule covers: it asks,
+while outside deny mode the connection is allowed and recorded. The ask's card is
+titled "Connect to pypi.org" ("on port 22" when not 80 or 443). A connection served
+from a local cache (a `uv` or npm cache hit) opens no connection, so nothing asks.
+Other forges, conda-forge, crates and site mirrors are added the same way, as a rule
+in Settings or with `PUT /v1/policies`.
 
 ### Local listeners
 

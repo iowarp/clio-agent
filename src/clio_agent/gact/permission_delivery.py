@@ -54,6 +54,32 @@ def permission_summary(name: str, context: Mapping[str, Any] | None, subject: st
     return f"{subject} call: {name}"
 
 
+def permission_title(row: Mapping[str, Any]) -> str:
+    """The human action a permission card is titled with ("Run command", "Connect to pypi.org").
+
+    The row's own ``title`` wins, then a summary that is already the sentence a person reads
+    (a native tool's, a view tool's declared title, a consent). A summary that names the
+    tool by its identifier (the plain ``<subject> call: <name>`` line, a hook deferral)
+    reads as a built-in's curated action (the shell server's ``bash`` reads "Run command",
+    not its name as a word), else the tool's declared title, else a generic action: a card
+    is never titled with a tool id. ``summary`` stays the technical line either way.
+    """
+
+    from clio_agent.tools.builtin_annotations import BUILTIN_TOOL_TITLES  # noqa: PLC0415
+
+    if title := str(row.get("title") or ""):
+        return title
+    tool_call = row.get("tool_call")
+    name = str(tool_call.get("tool_name") or "") if isinstance(tool_call, Mapping) else ""
+    summary = str(row.get("summary") or "")
+    if not name or (summary and name not in summary):
+        return summary
+    if title := BUILTIN_TOOL_TITLES.get(name, "") or tool_title(name):
+        return title
+    server = name.partition("_")[0] if row.get("kind") == "external_mcp" else ""
+    return f"Use a tool from {server}" if server else "Use a tool"
+
+
 def sanitize_title(title: object) -> str:
     from clio_agent.gact.agents.tool_instrumentation import sanitize_tool_title  # noqa: PLC0415
 

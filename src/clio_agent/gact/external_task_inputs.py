@@ -311,6 +311,7 @@ def _covered_confirm(
     permission = coverage.person_allowed(self.app, task.owner.session_id, task.invocation_id)
     if not permission:
         return None
+    comment = coverage.approval_comment(self.app, permission)
     self.app.state.questions.answer(
         qid,
         QuestionReply(
@@ -318,13 +319,18 @@ def _covered_confirm(
             selected_options=("yes",) if content else (),
             metadata=content,
             action="accept",
+            comment=comment,
         ),
     )
     decision = {"reason": coverage.REASON_COVERED, "permission_id": permission}
     self.app.state.questions.freeze_resolution(qid, decision)
-    value = mcp_types.ElicitResult(action="accept", content=content).model_dump(
-        mode="json", by_alias=True, exclude_none=True
-    )
+    value = mcp_types.ElicitResult.model_validate(
+        {
+            "action": "accept",
+            "content": content,
+            "_meta": {"io.iowarp/approval": {"comment": comment}} if comment else None,
+        }
+    ).model_dump(mode="json", by_alias=True, exclude_none=True)
     details.setdefault("answers", {})[key] = value
     details.setdefault("covered_inputs", {})[key] = decision
     reference = self.history.write_content(task.owner.session_id, details)
@@ -600,12 +606,14 @@ async def _input(self: ExternalTasks, host: ExternalConnection, params: Any, req
             q = self.history.task_snapshot(qid)
             if q.status == "completed":
                 reply = QuestionReply.model_validate(self.history.read_content(q.result))
+                approval = {"comment": reply.comment} if reply.comment else None
                 value = mcp_types.ElicitResult.model_validate(
                     {
                         "action": reply.action,
                         "content": reply.metadata
                         if reply.action == "accept" and getattr(params, "mode", "form") == "form"
                         else None,
+                        "_meta": {"io.iowarp/approval": approval} if approval else None,
                     }
                 )
             else:

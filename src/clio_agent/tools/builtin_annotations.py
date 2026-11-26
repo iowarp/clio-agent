@@ -63,3 +63,20 @@ WEB_TOOL_ANNOTATIONS: dict[str, dict[str, Any]] = {
     "literature_search": _WEB_ANNOTATIONS,
     "literature_lookup": _WEB_ANNOTATIONS,
 }
+
+#: Namespaced tool name → the action a person reads for a call to a built-in tool: the
+#: title of its permission card ("Run command", not "shell command call: shell_bash").
+BUILTIN_TOOL_TITLES: dict[str, str] = {
+    "fs_list_directory": "List folder",
+    "fs_search_text": "Search text",
+    "fs_glob": "Find files",
+    "fs_read_file": "Read file",
+    "fs_write_file": "Write file",
+    "fs_edit_file": "Edit file",
+    "fs_git_commit": "Commit changes",
+    "shell_bash": "Run command",
+    "web_search": "Search the web",
+    "web_fetch": "Fetch a web page",
+    "literature_search": "Search the literature",
+    "literature_lookup": "Look up a paper",
+}

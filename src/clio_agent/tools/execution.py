@@ -845,8 +845,8 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
         if breaker_warning:
             result = f"{breaker_warning}\n\n{result}"
             injections.note("circuit_breaker", breaker_warning)
-        if hook_note:
-            result = f"{hook_note}\n\n{result}"
+        if hook_note := "\n\n".join(filter(None, (getattr(decision_seen, "note", ""), hook_note))):
+            result = f"{hook_note}\n\n{result}"  # a person's comment on their Allow comes first
         # The model-visible observation (minted artifact identity, then P2.3 PostToolUse),
         # assembled AFTER the observer recorded the real effect (the trace keeps the result).
         result = assemble_model_observation(

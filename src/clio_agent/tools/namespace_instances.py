@@ -9,7 +9,8 @@ connector-values change started a new fleet's server beside the old fleet's, and
 
 Every stdio namespace proxy a gateway builds for a folder is registered here
 (:func:`register`) with its launch: the command, arguments, environment and folder the
-server starts with. Fleets of one folder differ only by the connector values a
+server starts with. A connector is its name and its owner (:func:`connector_owner`): a
+plugin's ``probe`` and the person's own ``probe`` are two connectors. Fleets of one folder differ only by the connector values a
 conversation set (CV-D3), so most of their servers launch the same way. Before an
 executor starts a namespace's server through its proxy P, :func:`adopt` routes it to
 a sibling fleet's proxy of the same launch that an open fleet already routes to: one
@@ -80,7 +81,7 @@ InUseProbe = Callable[[Any, str], str]
 ViewNamer = Callable[[Any, str], list[str]]
 
 _LOCK = threading.Lock()
-_PROXIES: dict[tuple[str, str], weakref.WeakSet[Any]] = {}
+_PROXIES: dict[tuple[str, ...], weakref.WeakSet[Any]] = {}
 _STOPPERS: list[tuple[asyncio.AbstractEventLoop, Stopper]] = []
 _PROBES: list[InUseProbe] = []
 _NAMERS: list[ViewNamer] = []
@@ -91,7 +92,7 @@ _RETAINED: weakref.WeakKeyDictionary[Any, asyncio.AbstractEventLoop] = weakref.W
 #: Calls in flight on each proxy's server, by any route (:func:`begin_call`).
 _CALLS_ON: weakref.WeakKeyDictionary[Any, int] = weakref.WeakKeyDictionary()
 #: The proxy the latest :func:`claim` of each (folder, namespace) started.
-_CURRENT: dict[tuple[str, str], weakref.ref[Any]] = {}
+_CURRENT: dict[tuple[str, ...], weakref.ref[Any]] = {}
 #: Retirement stops scheduled (kept referenced until done).
 _RETIRING: set[Any] = set()
 
@@ -125,18 +126,36 @@ def launch_key(spec: Any, root: str | None) -> str:
     )
 
 
+def connector_owner(spec: Any) -> str:
+    """Whose connector ``spec`` is: its plugin's ``spec.source``, or "" for the person's.
+
+    A plugin keeps its server's name over the person's ``mcp.yaml`` entry
+    (``mcp_person_precedence``), so one folder can run a ``probe`` of each: two
+    connectors, never one server superseding the other.
+    """
+
+    source = str(getattr(spec, "source", "") or "")
+    return source if source.startswith("plugin") else ""
+
+
 def register(
-    proxy: Any, namespace: str, root: str | None, transport: Any, launch: str | None = None
+    proxy: Any,
+    namespace: str,
+    root: str | None,
+    transport: Any,
+    launch: str | None = None,
+    owner: str = "",
 ) -> None:
     """Record that ``proxy`` runs ``namespace``'s stdio server in folder ``root``.
 
     ``launch`` (:func:`launch_key`) lets a fleet share a sibling's server of the same
-    launch; without it the proxy is never shared.
+    launch; without it the proxy is never shared. ``owner`` (:func:`connector_owner`)
+    tells two connectors of one name apart.
     """
 
     if not root or proxy is None:
         return
-    key = (_folder(root), namespace)
+    key = (_folder(root), namespace, owner)
     try:
         setattr(proxy, _KEY, key)
         setattr(proxy, _TRANSPORT, transport)

@@ -527,6 +527,42 @@ def test_deny_mode_off_is_allow(tmp_path, captured_events) -> None:
     assert grants._egress_gate_decision(app, rec) == "allow"  # default ALLOW + RECORD (B4)
 
 
+def test_a_persons_ask_and_deny_rules_hold_outside_deny_mode(tmp_path, captured_events) -> None:
+    """Deny mode decides only hosts no rule covers; "Ask every time" asks, "Deny" refuses."""
+    from clio_agent.gact.routes.interactions import _permission_interaction
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    ws = app.state.workspaces.create(name="p", root_path=str(root))
+    app.state.sessions.create(workspace_id=ws.id)
+    for action, host in (("ask", "pypi.org:443"), ("deny", "evil.test")):
+        app.state.permission_policies.append(
+            {"scope": "workspace", "scope_id": ws.id, "action": action, "host_pattern": host}
+        )
+    assert grants._egress_gate_decision(app, _egress_record("evil.test", str(root))) == "deny"
+    result: dict = {}
+    t = threading.Thread(
+        target=lambda: result.update(
+            decision=grants._egress_gate_decision(app, _egress_record("pypi.org", str(root)))
+        ),
+        daemon=True,
+    )
+    t.start()
+    deadline, pid = time.time() + 5, ""
+    while time.time() < deadline and not pid:
+        pid = next((p for p, r in list(app.state.permissions.items()) if r.get("kind")), "")
+        time.sleep(0.02)
+    assert pid, "a person's ask rule must ask outside deny mode"
+    row = app.state.permissions[pid]
+    assert row["summary"].endswith("(a rule asks)")
+    assert _permission_interaction(app, row).title == "Connect to pypi.org"
+    row.update(status="resolved", action="allow")
+    app.state.permission_events[pid].set()
+    t.join(timeout=5)
+    assert result["decision"] == "allow"
+
+
 def test_deny_mode_unknown_domain_prompts_then_grant_unblocks(tmp_path, captured_events) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")
     root = tmp_path / "proj"

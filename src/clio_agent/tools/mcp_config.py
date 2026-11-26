@@ -17,7 +17,8 @@ For the rare case that needs env vars, headers, or OAuth, a mapping value is
 also accepted (``{command, args, env}`` or ``{url, headers, auth}``), but the string form is
 the documented, default surface.
 
-Scopes: workspace ``mcp.yaml`` (once trusted) > user config > plugin servers > built-ins.
+Scopes: workspace ``mcp.yaml`` (once trusted) > user config, beside the session's plugin
+servers, whose names stay theirs (``mcp_person_precedence``). Built-ins are core's.
 
 Parsing only; ``transport_for`` turns a spec into a transport ``execution.py`` accepts.
 """
@@ -45,6 +46,7 @@ from clio_agent.tools.mcp_cache import _mcp_uv_cache_dir
 from clio_agent.tools.mcp_command_line import split_command
 from clio_agent.tools.mcp_config_values import optional_int
 from clio_agent.tools.mcp_environment import stdio_environment
+from clio_agent.tools.mcp_person_precedence import merge_person_specs
 from clio_agent.tools.workspace_mcp_trust import workspace_mcp_trusted
 
 if TYPE_CHECKING:
@@ -174,6 +176,8 @@ class MCPServerSpec:
     #: place. Empty on a spec built without expansion.
     declared: Mapping[str, Any] = field(default_factory=dict, repr=False)
     connector: str = ""  # the connector this connection was saved for
+    #: Takes the place of a session plugin's same-named server (``mcp_person_precedence``).
+    replaces_plugin_server: bool = False
 
     @property
     def usable(self) -> bool:
@@ -385,6 +389,7 @@ def _spec_from_mapping(
         source=source,
         validation_errors=tuple(errors),
         declared=declared_text,
+        replaces_plugin_server=entry.get("replaces_plugin_server") is True,
     )
 
 
@@ -470,12 +475,14 @@ def load_mcp_servers(
     cwd: str | Path | None = None,
     plugin_servers: Mapping[str, Mapping[str, Any]] = (),  # type: ignore[assignment]
     env: Mapping[str, str] | None = None,
+    taken: list[dict[str, str]] | None = None,
 ) -> dict[str, MCPServerSpec]:
     """Discover + merge declared MCP servers across all scopes.
 
     Precedence (highest wins, merged whole by name): a trusted workspace
-    ``<cwd>/.clio/mcp.yaml`` > user ``<config>/clio-agent/mcp.yaml`` > the
-    session's plugin servers (``plugin_servers`` = ``{plugin_id: {name: declaration}}``). Built-in
+    ``<cwd>/.clio/mcp.yaml`` > user ``<config>/clio-agent/mcp.yaml``, beside the session's
+    plugin servers (``plugin_servers`` = ``{plugin_id: {name: declaration}}``), whose names
+    stay theirs (``mcp_person_precedence``; left-out entries go to ``taken``). Built-in
     ``fs``/``shell`` are provided by core, not part of this map.
     """
     home = home or Path.home()
@@ -485,17 +492,18 @@ def load_mcp_servers(
     with _UNREADABLE_MCP_YAML_LOCK:
         _UNREADABLE_MCP_YAML.clear()
 
-    # lowest precedence first
     for plugin_id, servers in dict(plugin_servers).items():
         if isinstance(servers, Mapping):
             merged.update(specs_from_mapping(servers, source=f"plugin:{plugin_id}", env=env))
     from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
 
+    person: dict[str, MCPServerSpec] = {}
     user_mcp = paths.user_config_dir_for(home, lookup) / "mcp.yaml"
-    _merge_mcp_yaml(merged, user_mcp, source="user", env=env)
+    _merge_mcp_yaml(person, user_mcp, source="user", env=env)
     workspace_mcp = paths.workspace_config_path(cwd, "mcp.yaml")
     if workspace_mcp_trusted(workspace_mcp, home=home, env=lookup):  # workspace_mcp_trust
-        _merge_mcp_yaml(merged, workspace_mcp, source="workspace", env=env)
+        _merge_mcp_yaml(person, workspace_mcp, source="workspace", env=env)
+    merge_person_specs(merged, person, {"user": user_mcp, "workspace": workspace_mcp}, taken)
 
     return {n: replace(s, name=n) for n, s in merged.items()}
 

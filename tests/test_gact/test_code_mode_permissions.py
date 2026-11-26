@@ -226,6 +226,48 @@ def test_a_script_names_its_calls_by_attribute_or_by_name() -> None:
     assert not grant.names("lab_delete") and not grant.names("lab")
 
 
+def test_a_binding_the_script_uses_names_the_tools_its_own_source_names() -> None:
+    """QA: ``await browser.open(url)`` asked again for ``browser_open`` after "Allow once" on
+    the script, because the script's text names the binding, not the tool.
+
+    SABOTAGE: return an empty set from ``binding_tools`` and ``browser_open`` is unnamed."""
+    source = (
+        "async def _call(name, **a):\n    return await tools.call(name, **a)\n"
+        "class Browser:\n    async def open(self, url):\n"
+        "        return await _call('browser_open', url=url)\n"
+        "    async def act(self):\n        return await _call('browser_act')\n"
+        "export = Browser()\n"
+    )
+    bindings = {"browser": {"source": source, "digest": "d"}}
+    tools = ("browser_open", "browser_act", "browser_evaluate", "shell_bash")
+    used = grants.binding_tools("page = await browser.open('https://example.org')", bindings, tools)
+    assert used == {"browser_open", "browser_act"}
+    assert grants.binding_tools("print(1)", bindings, tools) == frozenset()
+    grant = grants.ScriptGrant("c", "await browser.open(u)", bound_tools=used)
+    assert grant.names("browser_open") and not grant.names("browser_evaluate")
+
+
+def test_allow_once_on_a_nested_call_covers_only_that_same_call_in_the_script() -> None:
+    """One intent, one answer: "Allow once" on a nested call covers the same tool with the
+    same arguments for the rest of that script; other arguments, another script ask."""
+    from clio_agent.gact.runtime.grants import GRANTOR_USER
+
+    grant = grants.ScriptGrant("c", "await tools.call(name, path='a')")
+    token = grants.bind_grant(grant)
+    try:
+        assert not grants.covers("ask", "lab_delete", {"path": "a"})
+        grants.answered({"action": "allow", "grantor": GRANTOR_USER}, "lab_delete", {"path": "a"})
+        assert grants.covers("ask", "lab_delete", {"path": "a"})
+        assert not grants.covers("ask", "lab_delete", {"path": "b"})
+    finally:
+        grants.reset_grant(token)
+    other = grants.bind_grant(grants.ScriptGrant("d", "await tools.call(name, path='a')"))
+    try:
+        assert not grants.covers("ask", "lab_delete", {"path": "a"})
+    finally:
+        grants.reset_grant(other)
+
+
 def test_only_a_persons_allow_of_the_script_covers_its_named_calls() -> None:
     from clio_agent.gact.runtime.grants import GRANTOR_REVIEWER, GRANTOR_USER
 
