@@ -263,6 +263,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_MCP_NO_PROGRESS_S` | `tools.mcp.no_progress_s` | float | `30.0` | `src/clio_agent/tools/mcp_server_progress.py` |
 | `CLIO_MCP_PAGE_PRESTART_S` | `tools.mcp.page_prestart_s` | float | `1800.0` | `src/clio_agent/gact/plugin_prebuild.py` |
 | `CLIO_MCP_PROBE_TIMEOUT_RETRIES` | `tools.mcp.probe_timeout_retries` | int | `3` | `src/clio_agent/tools/mcp_probe_hardening.py` |
+| `CLIO_MCP_PROVISIONED_DIRECT` | `tools.mcp.provisioned_direct` | bool | `true` | `src/clio_agent/tools/uv_provisioned_launch.py` |
 | `CLIO_MCP_PROVISION_MAX_WAIT_S` | `tools.mcp.provision_max_wait_s` | float | `900.0` | `src/clio_agent/tools/mcp_prepare.py` |
 | `CLIO_MCP_RESPONSE_CACHE_ENABLED` | `tools.mcp.response_cache_enabled` | bool | `false` | `src/clio_agent/tools/mcp_runtime.py` |
 | `CLIO_MCP_SESSION_WARMUP` | `tools.mcp.session_warmup` | bool | `true` | `src/clio_agent/gact/session_warmup.py` |
@@ -452,6 +453,8 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_KIT_CACHE_DIR` | unmigrated | `src/clio_agent/connectors/kit_readiness.py`, `src/clio_agent/runtime/disk_gc.py`, `src/clio_agent/runtime/fleet_runtime_paths.py`, `src/clio_agent/tools/desktop_mcp_runtime.py`, `src/clio_agent/tools/mcp_environment.py`, `src/clio_agent/tools/mcp_environment_relocation.py` |
 | `CLIO_LM_API_KEY` | secret | `src/clio_agent/config.py`, `src/clio_agent/providers/model_discovery/overlay.py`, `src/clio_agent/runtime/status.py` |
 | `CLIO_LOG` | unmigrated | `src/clio_agent/runtime/log_sources.py` |
+| `CLIO_PERSON_GIT_SSH` | unmigrated | `src/clio_agent/runtime/net_connect.py` |
+| `CLIO_PERSON_GIT_SSH_COMMAND` | unmigrated | `src/clio_agent/runtime/net_connect.py` |
 | `CLIO_RUNTIME_STATE_DIR` | unmigrated | `src/clio_agent/arc/clio_core_config.py`, `src/clio_agent/arc/clio_core_effective_runtime.py`, `src/clio_agent/arc/home_runtime.py` |
 | `CLIO_SECRET_VARIABLES` | unmigrated | `src/clio_agent/gact/infrastructure/node_service.py` |
 | `CLIO_SEMANTIC_TRACE_BACKEND` | unmigrated | `src/clio_agent/provenance_config.py` |

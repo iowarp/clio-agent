@@ -137,10 +137,10 @@ def _session_write_roots(root: Any) -> list[str]:
     """The roots this session's file tools may write, its workspace first.
 
     Read with the workspace bound, as a tool call reads them: outside that binding the
-    policy holds only ``CLIO_ALLOWED_ROOTS`` (by default the server's working directory),
-    and naming that alone would point the agent at the server's folder instead of its
-    workspace. CLIO's own state and cache folders for the workspace are left out; the
-    agent's file tools do not write there.
+    policy's default roots hold the server's working directory, and naming that would
+    point the agent at the folder CLIO was started from instead of its workspace. CLIO's
+    own state and cache folders for the workspace are left out; the agent's file tools do
+    not write there.
     """
     from clio_agent import paths  # noqa: PLC0415
     from clio_agent.tools.execution import tool_workspace_context  # noqa: PLC0415
