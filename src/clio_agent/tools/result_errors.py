@@ -39,6 +39,16 @@ def declared_failure(value: Any) -> bool:
     return isinstance(value, (ToolFailure, FailedObservation))
 
 
+def observed_value(value: Any) -> Any:
+    """``value`` as it is recorded: a :class:`FailedObservation` becomes plain text.
+
+    The verdict is read (:func:`declared_failure`) before recording; encoders such as
+    msgspec refuse a ``str`` subclass, so nothing past the call keeps the marker type.
+    """
+
+    return str(value) if isinstance(value, FailedObservation) else value
+
+
 def structured_tool_result_error(result: Any) -> str | None:
     """The failure text of a call whose transport says it failed, else ``None``.
 
@@ -90,5 +100,6 @@ __all__ = [
     "FailedObservation",
     "ToolFailure",
     "declared_failure",
+    "observed_value",
     "structured_tool_result_error",
 ]

@@ -665,8 +665,8 @@ class _Loop:
         from clio_agent.tools.file_policy import FilePolicyError  # noqa: PLC0415
         from clio_agent.tools.mcp_errors import typed_mcp_protocol_error  # noqa: PLC0415
         from clio_agent.tools.result_errors import (  # noqa: PLC0415
-            FailedObservation,
             declared_failure,
+            observed_value,
         )
 
         try:
@@ -676,11 +676,8 @@ class _Loop:
             else:
                 value = tool(**call.input)
             # The call's own verdict: a native ToolFailure or an MCP isError, never its words.
-            failed = declared_failure(value)
-            if isinstance(value, FailedObservation):
-                # The verdict now lives on the outcome; a str subclass cannot be recorded.
-                value = str(value)
-            return _CallOutcome(value, failed)
+            # The verdict lives on the outcome; the recorded value is plain.
+            return _CallOutcome(observed_value(value), declared_failure(value))
         except Exception as err:  # noqa: BLE001 - a tool error is the model's observation
             refusal = err if isinstance(err, MCPProtocolError) else typed_mcp_protocol_error(err)
             escalate = (
