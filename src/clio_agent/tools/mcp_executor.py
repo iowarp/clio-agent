@@ -507,6 +507,11 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                         if proxy_route
                         else None
                     )
+                    end_call = (
+                        namespace_instances.begin_call(pool_owner)
+                        if pool_owner is not None
+                        else None
+                    )
                     stopped_under = None
                     if pool_owner is not None:
                         born = namespace_instances.stops_begun(self, namespace)
@@ -542,6 +547,8 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                     finally:
                         if end_proxy_call is not None:
                             end_proxy_call()
+                        if end_call is not None:
+                            end_call()
                     self._namespace_succeeded(namespace if proxy is not None else None)
                     if pool_owner is not None and getattr(result, "is_error", False):
                         result = _with_held_note(result, name, namespace, proxy)

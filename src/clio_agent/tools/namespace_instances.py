@@ -25,13 +25,16 @@ with Reopen (``gact.mcp_app_fleet``) instead of pointing at a dead service. A fl
 that closes or rebinds a namespace leaves a proxy another open fleet still routes to
 running (:func:`unshared`).
 
-An open view outranks "one live server": a superseded server that still draws open
-App views is retained (typed ``mcp_namespace_instance_retained``), so for as long as
-those views are open the folder runs two servers of that connector, the retained one
-for its views and the new one for every other call. Setting a connector value must
-not close the person's open view (take 1s, gap 15). The view's own calls keep going
-to the fleet that drew it. :func:`retire_superseded` stops the retained server once
-its last view has closed, or its session ended (typed reason
+An open view or a call still running outranks "one live server": a superseded server
+that still draws open App views, or still answers a call (:func:`begin_call`), is
+retained (typed ``mcp_namespace_instance_retained``), so for that long the folder runs
+two servers of that connector, the retained one for its views and running calls and
+the new one for every other call. Setting a connector value must not close the
+person's open view (take 1s, gap 15) nor cut off a call another agent of the tree is
+waiting on (rerun 7b: setting ``kicad_cli`` cut off ``pcb_set_board_outline`` in four
+sessions). The view's own calls keep going to the fleet that drew it.
+:func:`retire_superseded` stops the retained server once its last view has closed and
+its last call ended, or its session ended (typed reason
 ``superseded_views_closed``). When a call to the new server fails while a retained one
 runs, the executor names the open views holding it (:func:`holding_views`, typed
 ``mcp_namespace_instance_held``) after the new server's own failure, never before it:
@@ -83,8 +86,10 @@ _PROBES: list[InUseProbe] = []
 _NAMERS: list[ViewNamer] = []
 #: Every executor that started a namespace through a registered proxy.
 _EXECUTORS: weakref.WeakSet[Any] = weakref.WeakSet()
-#: Superseded proxies kept for their open views, with the loop their stop runs on.
+#: Superseded proxies kept for their open views or calls, with the loop their stop runs on.
 _RETAINED: weakref.WeakKeyDictionary[Any, asyncio.AbstractEventLoop] = weakref.WeakKeyDictionary()
+#: Calls in flight on each proxy's server, by any route (:func:`begin_call`).
+_CALLS_ON: weakref.WeakKeyDictionary[Any, int] = weakref.WeakKeyDictionary()
 #: The proxy the latest :func:`claim` of each (folder, namespace) started.
 _CURRENT: dict[tuple[str, str], weakref.ref[Any]] = {}
 #: Retirement stops scheduled (kept referenced until done).
@@ -297,14 +302,24 @@ def begin_proxy_call(executor: Any, namespace: str) -> Callable[[], None]:
     return end
 
 
-def proxy_calls_in_flight(namespace: str) -> int:
-    """How many calls are in flight on ``namespace``'s proxy route, over every fleet."""
+def begin_call(proxy: Any) -> Callable[[], None]:
+    """Count a call in flight on ``proxy``'s server, by any route; return its end.
+
+    The last call to end on a retained superseded server lets it retire.
+    """
 
     with _LOCK:
-        tracked = tuple(_EXECUTORS)
-    return sum(
-        int(executor.__dict__.get(_PROXY_CALLS, {}).get(namespace, 0)) for executor in tracked
-    )
+        _CALLS_ON[proxy] = _CALLS_ON.get(proxy, 0) + 1
+
+    def end() -> None:
+        with _LOCK:
+            left = max(0, _CALLS_ON.get(proxy, 0) - 1)
+            _CALLS_ON[proxy] = left
+            held = proxy in _RETAINED
+        if not left and held:
+            retire_superseded()
+
+    return end
 
 
 def in_use(executor: Any, namespace: str) -> str:
@@ -337,14 +352,18 @@ def _owners(proxy: Any) -> list[Any]:
 
 
 def _views(proxy: Any, namespace: str) -> str:
-    """Why ``proxy``'s server still draws a view ("" when none): the probes only.
+    """Why ``proxy``'s server must keep running ("" when nothing holds it).
 
-    A call in flight is not a reason to keep a superseded server: it gets the typed
-    stop error and is retried on the new one.
+    A call still in flight on it holds it like an open view: stopping the server
+    would cut the call off unanswered, so a superseded server is retired only once
+    its last call has ended and its last view has closed.
     """
 
     with _LOCK:
         probes = tuple(_PROBES)
+        calls = _CALLS_ON.get(proxy, 0)
+    if calls:
+        return "calls_in_flight"
     for executor in _owners(proxy):
         for probe in probes:
             try:
@@ -397,10 +416,10 @@ def _is_current(proxy: Any) -> bool:
 
 
 def retire_superseded() -> int:
-    """Stop each retained superseded server whose last view has closed.
+    """Stop each retained superseded server whose last view has closed and last call ended.
 
     Called whenever a view leaves (closed, cleaned up, expired, or its session
-    ended). A retained server that became current again, or whose fleet closed, is
+    ended) and when the last call on a retained server ends. A retained server that became current again, or whose fleet closed, is
     forgotten. Returns how many stops were scheduled.
     """
 
@@ -588,9 +607,9 @@ async def claim(executor: Any, namespace: str, proxy: Any) -> int:
     run has it stopped (:func:`stop_instance`, reason ``superseded``), unless it
     launches the same way and an open fleet still routes to it: that one is the same
     server, shared through :func:`adopt`, and is never stopped for a sibling's change.
-    One whose server still draws open App views is retained instead (typed
-    ``mcp_namespace_instance_retained``) and stopped by :func:`retire_superseded`
-    once those views close. Returns how many connections were stopped.
+    One whose server still draws open App views or answers a call is retained instead
+    (typed ``mcp_namespace_instance_retained``) and stopped by
+    :func:`retire_superseded` once those views close and those calls end. Returns how many connections were stopped.
     """
 
     key = getattr(proxy, _KEY, None)
@@ -680,6 +699,7 @@ __all__ = [
     "add_view_namer",
     "adopt",
     "backend_live",
+    "begin_call",
     "begin_proxy_call",
     "claim",
     "generation",
@@ -687,7 +707,6 @@ __all__ = [
     "in_use",
     "launch_key",
     "may_go_direct",
-    "proxy_calls_in_flight",
     "register",
     "retained_owners",
     "retire_superseded",
