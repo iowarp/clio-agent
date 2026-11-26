@@ -50,6 +50,8 @@ CREATE_FAILED_REASON = "session_scratch_create_failed"
 UNSAFE_ID_REASON = "session_scratch_unsafe_session_id"
 #: Typed reason: the machine name sanitized to nothing; the stand-in segment is used.
 MACHINE_NAME_EMPTY_REASON = "session_scratch_machine_name_empty"
+#: Typed reason: a fenced stand-in kept a private Windows ACL that cuts off the fence's grants.
+INHERIT_FAILED_REASON = "session_scratch_inherit_failed"
 
 #: ``why`` values for :func:`remove_session_scratch`.
 WHY_SESSION_DELETED = "session_deleted"
@@ -129,7 +131,7 @@ def _safe_session_id(session_id: str | None) -> str:
 
 
 def session_scratch_dir(session_id: str | None, *, create: bool = True) -> Path | None:
-    """``<root>/<machine>/<session id>`` (mode 0o700), ``None`` for an unsafe or empty id.
+    """``<root>/<machine>/<session id>`` (this user's, :func:`_make_folder`), ``None`` for an unsafe or empty id.
 
     With ``create`` the folder is made when missing; a failure to make it is recorded
     (:data:`CREATE_FAILED_REASON`) and returns ``None``, so callers keep their
@@ -145,8 +147,9 @@ def session_scratch_dir(session_id: str | None, *, create: bool = True) -> Path 
     if not create:
         return folder.resolve()
     try:
-        folder.mkdir(mode=_FOLDER_MODE, parents=True, exist_ok=True)
-        folder.chmod(_FOLDER_MODE)  # mkdir's mode is masked by the umask
+        _make_folder(folder, fenced=True)
+        if _host_os() != "windows":
+            folder.chmod(_FOLDER_MODE)  # mkdir's mode is masked by the umask
     except OSError as exc:
         logger.warning(
             "session scratch not created reason=%s session=%s path=%s error=%r",
@@ -344,6 +347,85 @@ def _owns_short_root(short: Path, target: Path, role: ShortRootRole) -> bool:
     return _same_path(owner, target)
 
 
+def _make_folder(folder: Path, *, fenced: bool) -> None:
+    """Make ``folder`` and its parents; this user's alone, or inheriting for a fenced child.
+
+    POSIX gets mode 0o700. On Windows Python 3.13+ turns ``mode=0o700`` into a protected,
+    owner-only ACL, which cuts off the grants the Windows fence places on the parent (the
+    system temp), so a fenced child is refused its own folder. A folder a fenced child uses
+    inherits its parent's ACL instead; those parents (the user's temp and state folders) are
+    already this user's.
+    """
+
+    windows_inherit = fenced and _host_os() == "windows"
+    folder.mkdir(mode=0o777 if windows_inherit else _FOLDER_MODE, parents=True, exist_ok=True)
+
+
+def _dacl_protected(folder: Path) -> bool:
+    """Whether ``folder``'s Windows ACL is protected from its parent's (``False`` elsewhere)."""
+
+    if _host_os() != "windows":
+        return False
+    import ctypes  # noqa: PLC0415
+    from ctypes import wintypes  # noqa: PLC0415
+
+    api = ctypes.WinDLL("advapi32", use_last_error=True)
+    get_security = api.GetFileSecurityW
+    get_security.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    get_security.restype = wintypes.BOOL
+    get_control = api.GetSecurityDescriptorControl
+    get_control.argtypes = [
+        wintypes.LPVOID,
+        ctypes.POINTER(wintypes.WORD),
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    get_control.restype = wintypes.BOOL
+    dacl_information = 4
+    needed = wintypes.DWORD()
+    get_security(str(folder), dacl_information, None, 0, ctypes.byref(needed))
+    if not needed.value:
+        return False
+    descriptor = ctypes.create_string_buffer(needed.value)
+    if not get_security(
+        str(folder), dacl_information, descriptor, needed.value, ctypes.byref(needed)
+    ):
+        return False
+    control, revision = wintypes.WORD(), wintypes.DWORD()
+    if not get_control(descriptor, ctypes.byref(control), ctypes.byref(revision)):
+        return False
+    return bool(control.value & 0x1000)  # SE_DACL_PROTECTED
+
+
+def _inherit_parent_grants(short: Path, role: ShortRootRole) -> None:
+    """Let a fenced stand-in made with a private Windows ACL inherit its parent's again.
+
+    Earlier releases made stand-ins with ``mode=0o700`` (:func:`_make_folder`). Turning
+    inheritance on keeps the folder's own entries and lets Windows pass the parent's down
+    to what the folder holds.
+    """
+
+    if role.mechanism != STAND_IN or not role.fenced or not _dacl_protected(short):
+        return
+    import subprocess  # noqa: PLC0415
+
+    try:
+        subprocess.run(  # noqa: S603
+            ["icacls", str(short), "/inheritancelevel:e", "/Q"],  # noqa: S607
+            capture_output=True,
+            check=True,
+            timeout=120,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        trace.event("SCRATCH", "%s path=%s error=%r", INHERIT_FAILED_REASON, short, exc)
+
+
 def _make_short_root(short: Path, target: Path, role: ShortRootRole) -> None:
     if role.mechanism == LINK:
         if _host_os() == "windows":
@@ -353,7 +435,7 @@ def _make_short_root(short: Path, target: Path, role: ShortRootRole) -> None:
         else:
             os.symlink(target, short)
         return
-    short.mkdir(mode=_FOLDER_MODE, parents=True, exist_ok=True)
+    _make_folder(short, fenced=role.fenced)
     info = short.lstat()
     if not stat.S_ISDIR(info.st_mode) or short.is_junction() or not _mine(info):
         raise FileExistsError(f"{short} is not this user's folder")
@@ -388,6 +470,7 @@ def short_root(target: Path, role: ShortRootRole) -> Path:
     if len(str(short)) >= len(str(target)):
         return target
     if _owns_short_root(short, target, role):
+        _inherit_parent_grants(short, role)
         return short
     try:
         _make_short_root(short, target, role)

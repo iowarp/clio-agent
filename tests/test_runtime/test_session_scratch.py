@@ -363,6 +363,41 @@ def test_a_uv_cache_past_its_os_budget_gets_a_short_owned_stand_in(
 
 
 @pytest.mark.parametrize("host", ["windows", "darwin", "linux"])
+def test_a_fenced_folder_inherits_its_parents_grants_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    """Python 3.13+ on Windows turns mode 0o700 into a private ACL the fence cannot reach."""
+
+    monkeypatch.setattr(session_scratch, "_host_os", lambda: host)
+    modes: list[int] = []
+    real_mkdir = Path.mkdir
+
+    def recording_mkdir(self: Path, mode: int = 0o777, *args: Any, **kwargs: Any) -> None:
+        modes.append(mode)
+        real_mkdir(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", recording_mkdir)
+    session_scratch._make_folder(tmp_path / "fenced", fenced=True)
+    session_scratch._make_folder(tmp_path / "own", fenced=False)
+    fenced_mode = 0o777 if host == "windows" else 0o700
+    assert modes == [fenced_mode, 0o700]
+
+
+def test_a_private_stand_in_is_given_back_its_parents_grants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(session_scratch, "_dacl_protected", lambda folder: True)
+    monkeypatch.setattr(
+        "subprocess.run", lambda argv, **kwargs: calls.append(argv) or SimpleNamespace()
+    )
+    session_scratch._inherit_parent_grants(tmp_path, session_scratch.UV_CACHE_ROLE)
+    session_scratch._inherit_parent_grants(tmp_path, session_scratch.SOCKET_ROLE)  # a link
+    session_scratch._inherit_parent_grants(tmp_path, session_scratch.CORE_IPC_ROLE)  # unfenced
+    assert calls == [["icacls", str(tmp_path), "/inheritancelevel:e", "/Q"]]
+
+
+@pytest.mark.parametrize("host", ["windows", "darwin", "linux"])
 def test_clio_core_ipc_past_the_socket_limit_gets_a_short_owned_folder(
     tmp_path: Path, short_temp: Path, monkeypatch: pytest.MonkeyPatch, host: str
 ) -> None:
