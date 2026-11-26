@@ -663,14 +663,18 @@ def test_the_boot_sweep_waits_for_the_store_on_the_loop(
 ) -> None:
     """Until the store can be read the sweep waits on the server loop, starts no worker,
     and is cancelled with the server: a worker blocked on the clio-core attach held the
-    shutdown (a startup test hung 180 s under load).
-    SABOTAGE: run ``sweep_sessions`` on a worker straight away and this fails."""
+    shutdown (a startup test hung 180 s under load). Orphaned short roots need no store, so
+    they are swept before the wait: a store that never attaches must not keep them.
+    SABOTAGE: run ``sweep_sessions`` on a worker straight away, or sweep the short roots
+    only after the store is readable, and this fails."""
     import asyncio
 
     threads: list[str] = []
+    roots: list[str] = []
     monkeypatch.setattr(
         session_scratch_sweep, "sweep_sessions", lambda sessions: threads.append("ran") or []
     )
+    monkeypatch.setattr(session_scratch, "sweep_short_roots", lambda: roots.append("ran") or [])
     monkeypatch.setattr(session_scratch_sweep, "_READY_POLL_S", 0.01)
 
     class Attaching:
@@ -680,7 +684,7 @@ def test_the_boot_sweep_waits_for_the_store_on_the_loop(
         store = Attaching()
         task = asyncio.create_task(session_scratch_sweep.sweep_when_readable(store))
         await asyncio.sleep(0.05)
-        assert threads == [] and not task.done()
+        assert threads == [] and roots == ["ran"] and not task.done()
         store.readable = True
         assert await asyncio.wait_for(task, 1.0) == []
         assert threads == ["ran"]
@@ -689,7 +693,7 @@ def test_the_boot_sweep_waits_for_the_store_on_the_loop(
         waiting.cancel()
         with pytest.raises(asyncio.CancelledError):
             await waiting
-        assert threads == ["ran"]
+        assert threads == ["ran"] and roots == ["ran", "ran"]
 
     asyncio.run(scenario())
 
