@@ -160,6 +160,26 @@ def test_unavailable_says_whether_the_surface_is_unmounted_hidden_or_closed(
             future.result(timeout=3)
 
 
+def test_a_closed_conversation_says_so_and_an_open_one_waits_for_its_viewer() -> None:
+    """Live: a capture right after a surface was created, with no CLIO window open.
+
+    The agent was told no viewer was mounted, which read like a broken surface. With no
+    window following the conversation, the refusal says so and names a route that needs
+    none; with one open, the capture waits for the new surface's viewer to mount.
+    """
+    bridge = A2UIVisualFeedback()
+    with pytest.raises(VisualFeedbackError, match="No CLIO window has this conversation open"):
+        bridge.capture("sid", "surface", 1, conversation_open=False)
+    report = viewer()
+    with ThreadPoolExecutor(1) as pool:
+        future = pool.submit(bridge.capture, "sid", "surface", 1, conversation_open=True)
+        time.sleep(0.3)
+        job = claim(bridge, report)
+        bridge.complete("sid", reply(job, report))
+        data, _ = future.result(timeout=2)
+    assert data == base64.b64decode(png())
+
+
 def test_concurrent_captures_survive_a_page_too_busy_to_renew(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

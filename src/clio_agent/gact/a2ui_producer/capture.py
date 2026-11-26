@@ -24,6 +24,13 @@ from clio_agent.gact.view_image_tool import VIEW_IMAGE_DESCRIPTOR_TYPE
 from clio_agent.tools.execution import tool_workspace_context
 
 
+def _conversation_open(app: Any, sid: str) -> bool | None:
+    """Whether a CLIO window follows this session's events; None when unknown."""
+    bus = getattr(app.state, "bus", None)
+    count = getattr(bus, "subscriber_count", None)
+    return None if count is None else count(sid) > 0
+
+
 def build_capture_a2ui_surface_tool() -> Any:
     """Build a session-scoped native media tool, with no implicit answer submission."""
 
@@ -43,7 +50,9 @@ def build_capture_a2ui_surface_tool() -> Any:
         result says which. Optionally select a viewer and view epoch.
         Use expected_view_revision=null while loading; zero is a real epoch.
         component_id captures a displayed component, otherwise the whole view.
-        Hidden tabs and absent viewers fail explicitly. A stale view must be re-inspected.
+        It needs the conversation open in a CLIO window. A hidden tab or a closed
+        conversation fails explicitly, saying which; to check a page or file with no
+        window, open it in your browser and screenshot it. A stale view must be re-inspected.
         The result attaches the matching PNG to your next model step and retains an artifact.
         Use it to review framing, labels and visible patterns, then refine declared controls.
         This operation does not answer an ask_user question.
@@ -92,6 +101,7 @@ def build_capture_a2ui_surface_tool() -> Any:
                 view_revision=expected_view_revision,
                 artifact_id=artifact_id,
                 timeout=timeout_seconds,
+                conversation_open=_conversation_open(app, sid),
             )
             current = app.state.a2ui_store.get(sid, surface_id)
             if not artifact_id and (current is None or current.revision != expected_revision):

@@ -21,6 +21,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 MAX_IMAGE_BYTES = 5_000_000
 VIEWER_TTL = 4.0
+#: How long a capture waits for an open conversation's window to mount a surface: the
+#: surface reaches the window by its event stream, and its viewer reports every 0.75 s.
+MOUNT_WAIT = 3.0
 
 
 _NOT_MOUNTED = (
@@ -29,6 +32,19 @@ _NOT_MOUNTED = (
     "a person has its conversation open in CLIO with that part loaded; it need not be on "
     "screen, since a surface scrolled out of view is captured where it is. Otherwise ask the "
     "person to open it, or show the view again in a new surface."
+)
+_NOT_OPEN = (
+    "No CLIO window has this conversation open, so nothing renders the surface to capture. "
+    "This is not a fault in the surface: it is kept, and it shows when the person opens the "
+    "conversation. Pixels from it need that window. To check a page or file without one, "
+    "render it yourself, for example open it in your browser, take a screenshot and look "
+    "at it with view_image."
+)
+_OPEN_NOT_MOUNTED = (
+    "This conversation is open in CLIO, but no window rendered this surface within "
+    f"{MOUNT_WAIT:g} s: it is in an older part of a long conversation that is not loaded, "
+    "or it is still loading. A surface scrolled out of view is captured where it is. Retry, "
+    "ask the person to scroll back to it, or show the view again in a new surface."
 )
 _VIEWER_HIDDEN = (
     "The surface is open but hidden: its CLIO window is in the background or minimized, "
@@ -246,18 +262,29 @@ class A2UIVisualFeedback:
                 "a2ui_view_stale", "The view changed during capture; inspect and retry."
             )
 
-    def _unavailable_detail(
+    def _viewers_of(
         self, sid: str, surface_id: str, artifact_id: str, viewer_id: str
-    ) -> str:
-        """Why no viewer can take this capture, and what would make one able to."""
-        hidden = any(
-            session == sid
+    ) -> list[_Viewer]:
+        """Every live viewer of this surface, visible or hidden."""
+        return [
+            row
+            for (session, _), row in self._viewers.items()
+            if session == sid
             and row.report.surface_id == surface_id
             and row.report.artifact_id == artifact_id
             and (not viewer_id or row.report.viewer_id == viewer_id)
-            for (session, _), row in self._viewers.items()
-        )
-        if hidden:
+        ]
+
+    def _unavailable_detail(
+        self,
+        sid: str,
+        surface_id: str,
+        artifact_id: str,
+        viewer_id: str,
+        conversation_open: bool | None = None,
+    ) -> str:
+        """Why no viewer can take this capture, and what would make one able to."""
+        if self._viewers_of(sid, surface_id, artifact_id, viewer_id):
             return _VIEWER_HIDDEN
         if artifact_id:
             return (
@@ -269,6 +296,10 @@ class A2UIVisualFeedback:
                 "That viewer is no longer open. Inspect the surface again for the viewers "
                 "showing it now."
             )
+        if conversation_open is False:
+            return _NOT_OPEN
+        if conversation_open:
+            return _OPEN_NOT_MOUNTED
         return _NOT_MOUNTED
 
     def control(
@@ -362,8 +393,14 @@ class A2UIVisualFeedback:
         view_revision: int | None = None,
         artifact_id: str = "",
         timeout: float = 15,
+        conversation_open: bool | None = None,
     ) -> tuple[bytes, dict[str, Any]]:
-        """Wait for an eligible mounted renderer and its matching fresh PNG."""
+        """Wait for an eligible mounted renderer and its matching fresh PNG.
+
+        ``conversation_open`` says whether a CLIO window follows the session's events.
+        While one does, a surface it has not mounted yet (one just created) gets up to
+        ``MOUNT_WAIT`` to appear before the capture says why it cannot be taken.
+        """
         if not 0 < timeout <= 20:
             raise VisualFeedbackError(
                 "a2ui_capture_timeout_invalid", "Timeout must be in (0, 20] seconds."
@@ -373,17 +410,32 @@ class A2UIVisualFeedback:
             self._prune()
             eligible = [
                 row
-                for (session, _), row in self._viewers.items()
-                if session == sid
-                and row.report.surface_id == surface_id
-                and row.report.artifact_id == artifact_id
-                and row.report.visible
-                and (not viewer_id or row.report.viewer_id == viewer_id)
+                for row in self._viewers_of(sid, surface_id, artifact_id, viewer_id)
+                if row.report.visible
             ]
+            mount_by = min(deadline, time.monotonic() + MOUNT_WAIT)
+            while (
+                conversation_open
+                and not artifact_id
+                and not viewer_id
+                and not self._viewers_of(sid, surface_id, artifact_id, viewer_id)
+            ):
+                remaining = mount_by - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._condition.wait(min(remaining, 0.25))
+                self._prune()
+                eligible = [
+                    row
+                    for row in self._viewers_of(sid, surface_id, artifact_id, viewer_id)
+                    if row.report.visible
+                ]
             if not eligible:
                 raise VisualFeedbackError(
                     "a2ui_viewer_unavailable",
-                    self._unavailable_detail(sid, surface_id, artifact_id, viewer_id),
+                    self._unavailable_detail(
+                        sid, surface_id, artifact_id, viewer_id, conversation_open
+                    ),
                 )
             matched = [
                 row
