@@ -415,8 +415,9 @@ enforced fence the shell's `ssh`, `scp` and `sftp`, and those of fenced MCP serv
 resolve to small shims
 (`runtime/fence_ssh.py`) that run the real program with CLIO's CONNECT helper
 (`runtime/net_connect.py`) as its `ProxyCommand`. Git reaches the same shim through
-`PATH`, or through `GIT_SSH` when the person has not set an ssh command of their own
-(`GIT_SSH_COMMAND` and `core.sshCommand` still win). A `ProxyCommand` from the
+`GIT_SSH_COMMAND`, which outranks the person's `core.sshCommand`. The person's own
+`GIT_SSH_COMMAND`, `core.sshCommand` or `GIT_SSH` program is kept and run through the
+helper, so their options and keys still apply. A `ProxyCommand` from the
 person's ssh config is kept, and a `ProxyJump` chain is rewritten so every hop goes
 through the helper. The connection therefore crosses the chokepoint below like any
 other egress: it is recorded as `net.egress` with its host and port 22, and a host
@@ -590,6 +591,16 @@ On macOS the Codex write fence does not restrict network routes. Tools that hono
 `ssh`/`scp`/`sftp` shims go through CLIO's proxy and are recorded. A client that
 ignores those variables (an `ssh` called by absolute path, raw sockets, some Node
 `fetch` clients) connects directly: that connection works but is not recorded.
+
+On Windows, Windows' own network stack (WinHTTP, which CryptoAPI uses) does not read
+those variables either. The legacy Codex fence blocks its direct connections. The
+visible case is the certificate revocation check of the `curl.exe` that ships with
+Windows (schannel): it fails with `CRYPT_E_REVOCATION_OFFLINE` while the download
+itself would have gone through the proxy. Go-based tools such as `gh` and Python, pip
+and uv honor the variables and work. The tool's own error reaches the agent. Neither
+CLIO nor Codex sets a WinHTTP proxy for the sandbox account, so such a download runs
+outside the sandbox, with the person's approval, or through a tool that honors
+the variables.
 
 **Deny-by-default** is an opt-in per-workspace mode: egress is refused unless the
 domain is granted, and the first connection to a new domain raises a
