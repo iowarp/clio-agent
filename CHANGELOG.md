@@ -103,21 +103,9 @@ TUI/HTTP surface aren't tracked here.
   as a PDF that `web_fetch` downloaded into the workspace's `tool-output/` state. It
   used to refuse them as "not inside the active workspace", so the agent had to copy
   them into the project first. Other workspace state stays refused.
-- The KiCad connector (kicad-mcp-pro 63d22a88) reports a failed tool as a failure
-  with the real error. Every tool that cannot do its job now returns `isError` with
-  its own text and, for a `kicad-cli` step, every command it tried with its exit
-  code and output. Before, many failures came back as ordinary results, a DRC, ERC,
-  board summary or sourcing check that could not run read as a verdict, and only the
-  last `kicad-cli` spelling's usage error was kept. The error code and hint now come
-  from the error's type; they used to be guessed from the message's words, which
-  told the agent to install KiCad when KiCad was installed. An argument a tool does
-  not take is refused by name instead of silently dropped, and the zone layer input
-  lists KiCad's layer names. `fp_get_info`, which called a `kicad-cli` verb that does
-  not exist, is removed, and `fp_upgrade` says how to write an upgrade. When a symbol
-  is not found, the message names the library tables it searched. The 3D model
-  environment takes its Python version from what the package declares. The
-  sym-lib-table registration and the footprint fallback without 3D bodies are taken
-  back out.
+- The KiCad connector (kicad-mcp-pro d1299cff) no longer adds "Cause: the KiCad
+  IPC connection dropped" to a board tool's error when KiCad is not installed. KiCad
+  never ran, so the error now says only that it was not found and how to install it.
 - When one part of a task fails, the agent keeps finishing the parts that do not
   depend on it, then reports what is done, what failed and why. It used to stop
   with the rest unfinished.
@@ -128,10 +116,8 @@ TUI/HTTP surface aren't tracked here.
   last one ends.
 - An output path a tool call names is passed to the server as the agent wrote it.
   CLIO used to rewrite a relative path, and fill in an omitted one, against the
-  workspace or a workflow node's folder. Inside an isolated workflow node, an output
-  that would land outside the node's folder is refused before the tool runs. The
-  refusal names the node's folder and, for a relative path, the server's working
-  directory it resolves against, so the agent picks the path.
+  workspace or a workflow node's folder. A relative path now lands where the server
+  itself resolves it, in its working directory.
 - On Windows, a shell command whose program the sandbox cannot start at all
   (`ERROR_CANT_ACCESS_FILE`, 1920, which is what a packaged app such as winget
   gives inside the fence) now has a `launch_blocked` boundary. It tells the agent to

@@ -667,8 +667,6 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
         tool_paths.bind_call(name, self._mcp_tools.get(name))  # its paths
         effective_args = dict(args)
         _bind_server_cwd(name, self._server_cwd(name))
-        if refusal := _node_output_refusal(name, effective_args):  # outside a node's folder
-            raise notify_refused_call(tool_observer, name, effective_args, refusal)
 
         approval = task_calls.capture_approval(name, effective_args) if permission_gate else None
         decision_seen: Any = None
@@ -980,12 +978,6 @@ def _bind_server_cwd(name: str, cwd: str) -> None:
     from clio_agent.gact.artifacts.designation import bind_server_cwd  # noqa: PLC0415
 
     bind_server_cwd(name, cwd)
-
-
-def _node_output_refusal(name: str, args: "Mapping[str, Any]") -> str:
-    from clio_agent.gact.artifacts.designation import node_output_refusal  # noqa: PLC0415
-
-    return node_output_refusal(name, args)
 
 
 def _make_dspy_tools(

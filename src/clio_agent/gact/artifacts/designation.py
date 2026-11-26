@@ -8,9 +8,9 @@ declares, and where such a path lands.
 A call runs with the arguments the agent gave: a relative output path is the
 server's to resolve, against its own working directory (a stdio server's is the
 folder CLIO started it in, the workspace root). The execution boundary binds that
-directory for the call (:func:`bind_server_cwd`), so the isolated-node check
-(:func:`node_output_refusal`) and the mint (:func:`grounded_output_paths`) resolve a
-relative path the same way the server does, and never rewrite it.
+directory for the call (:func:`bind_server_cwd`), so the mint
+(:func:`grounded_output_paths`) resolves a relative path the same way the server
+does, and never rewrites it. Where a tool may write is the sandbox's to enforce.
 """
 
 from __future__ import annotations
@@ -192,45 +192,6 @@ def resolve_output(value: str, cwd: str) -> Path | None:
     if not cwd:
         return None
     return Path(cwd) / path
-
-
-def node_output_refusal(tool_name: str, effective_args: Mapping[str, Any]) -> str:
-    """Why a call's declared output path may not be written by an isolated node, or ``""``.
-
-    Each output path is resolved as the server resolves it (:func:`resolve_output`,
-    against the bound :func:`server_cwd`); one outside the node's write territory is
-    refused with the file policy's typed reason, which names the node's folder, before
-    the tool runs. The call is never rewritten: the agent picks the path.
-    """
-
-    from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError  # noqa: PLC0415
-
-    outputs = {
-        key: value
-        for key, value in effective_args.items()
-        if key in OUTPUT_PATH_ARG_NAMES and isinstance(value, str) and value.strip()
-    }
-    if not outputs:
-        return ""  # nothing to check: the policy (filesystem-resolved roots) is not built
-    policy = FileAccessPolicy.from_env()
-    if not policy.write_roots:
-        return ""
-    cwd = server_cwd(tool_name)
-    for key, value in outputs.items():
-        target = resolve_output(value, cwd)
-        if target is None:
-            continue  # the server's files are not on this machine
-        try:
-            policy._ensure_writable(target.resolve(strict=False), field=key)
-        except FilePolicyError as refused:
-            text = refused.to_text()
-            if not Path(value.strip()).expanduser().is_absolute():
-                text += (
-                    f"\n{key}={value!r} is relative: the server resolves it against its "
-                    f"working directory {cwd}."
-                )
-            return text
-    return ""
 
 
 def grounded_output_paths(effective_args: Mapping[str, Any], tool_name: str = "") -> dict[str, str]:
