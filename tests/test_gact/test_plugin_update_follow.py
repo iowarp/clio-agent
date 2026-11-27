@@ -70,8 +70,16 @@ class _Session:
 
 
 @pytest.fixture
-def moved(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """A session pinned on ``fx`` at d1, with every side of a re-pin recorded."""
+def moved(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> dict[str, Any]:
+    """A session pinned on ``fx`` at d1, with every side of a re-pin recorded.
+
+    Its workspace ``/work`` has a resident fleet still running ``fx`` from ``/snap/a``.
+    """
+
+    import threading  # noqa: PLC0415
+
+    from clio_agent.gact import session_fleet  # noqa: PLC0415
+    from clio_agent.plugins import service  # noqa: PLC0415
 
     seen: dict[str, Any] = {
         "pins": [],
@@ -80,6 +88,7 @@ def moved(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "tabs": [],
         "restarts": [],
         "digest": "new",
+        "keys": {"s1": "/work", "s2": "/work"},
     }
     sessions = {
         "s1": _Session({AGENT_RESOLUTION_KEY: "old"}),
@@ -89,18 +98,29 @@ def moved(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     }
     workspaces = {"ws_1": SimpleNamespace(root_path="/work")}
 
-    def restart(root: str) -> str:
-        seen["restarts"].append(root)
+    def restart(key: str) -> str:
+        seen["restarts"].append(key)
         return "restarted_live"
 
+    def fleet(root: str) -> Any:
+        env = {"PLUGIN_ROOT": root, "PLUGIN_DATA": str(tmp_path / "data" / "fx")}
+        return SimpleNamespace(_clio_namespace_specs={"fx": SimpleNamespace(env=env)})
+
+    seen["fleets"] = {"/work": fleet("/snap/a"), "/elsewhere": fleet("/snap/a")}
+    seen["fleet"] = fleet
     seen["app"] = SimpleNamespace(
         state=SimpleNamespace(
             bus=_Bus(),
             sessions=SimpleNamespace(get=sessions.get),
             workspaces=SimpleNamespace(get=workspaces.get),
-            agent=SimpleNamespace(request_fleet_restart=restart),
+            agent=SimpleNamespace(
+                _workspace_state=lambda: (threading.Lock(), seen["fleets"], {}),
+                _workspace_reaper=SimpleNamespace(request_restart=restart),
+            ),
         )
     )
+    monkeypatch.setattr(service, "plugin_store_root", lambda: tmp_path)
+    monkeypatch.setattr(session_fleet, "session_fleet_key", lambda _app, sid: seen["keys"][sid])
 
     def pin(_app: Any, sid: str) -> Any:
         seen["pins"].append(sid)
@@ -162,6 +182,20 @@ def test_sessions_sharing_a_workspace_restart_its_fleet_once(moved: dict[str, An
     assert follow.follow_session(app, "s2", records, restarted) == ["fx"]
     assert moved["tabs"] == ["s1", "s2"]
     assert moved["restarts"] == ["/work"]
+
+
+def test_a_rootless_session_restarts_its_own_fleet_still_on_the_older_copy(
+    moved: dict[str, Any],
+) -> None:
+    app = moved["app"]
+    # The session's set now has a new token (new copy), so a new key; the fleet it ran on
+    # still runs the older copy under the key of the older set.
+    moved["keys"]["s1"] = "|cv=+set=new"
+    moved["fleets"]["|cv=+set=old"] = moved["fleet"]("/snap/a")
+    moved["fleets"]["|cv=+set=other"] = moved["fleet"]("/snap/b")
+
+    assert follow.follow_session(app, "s1", [_record("fx", "d2", root="/snap/b")]) == ["fx"]
+    assert moved["restarts"] == ["|cv=+set=old"], "only the rootless fleet on the older copy"
 
 
 def test_an_unchanged_or_unpinned_session_is_left_alone(moved: dict[str, Any]) -> None:

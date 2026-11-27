@@ -35,10 +35,10 @@ def _tree_root(app: Any, sid: str) -> str:
 
 
 def _rootless_lease_target(server_set: str) -> str:
-    """The fleet key a rootless turn leases: its variant fleet's, or "" (none to pin).
+    """The fleet key a rootless turn leases: its server set's fleet, or "" (none to pin).
 
     A workspace without a root folder runs on the default executor, which is never
-    reaped, unless its server set has a fleet of its own (``fleet_own_set``).
+    reaped, only while its session has no plugin servers (``fleet_own_set``).
     """
     from clio_agent.tools.fleet_serving import serving_fleet_key  # noqa: PLC0415
 

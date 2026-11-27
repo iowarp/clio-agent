@@ -223,10 +223,10 @@ def stamp_fresh_fleet(
 def stamp_default_fleet(agent: Any, executor: Any, gateway: Any) -> None:
     """Stamp the default (no-root) executor like a fresh workspace fleet.
 
-    A workspace without a root folder runs on this executor. Its declared specs carry
-    the user-scope ``mcp.yaml`` servers, so ``always_load`` services mount there too,
-    and :func:`clio_agent.tools.workspace_fleet.resolve_workspace_executor` merges a
-    rootless session's plugin server set into it.
+    A workspace without a root folder runs on this executor when its session has no
+    plugin servers. Its declared specs carry the user-scope ``mcp.yaml`` servers, so
+    ``always_load`` services mount there too; a rootless session's plugin server set
+    has a fleet of its own (:mod:`clio_agent.tools.fleet_own_set`).
     """
 
     stamp_fresh_fleet(
