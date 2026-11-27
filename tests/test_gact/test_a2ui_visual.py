@@ -398,16 +398,18 @@ def test_a_slow_view_is_captured_however_long_it_takes() -> None:
 
 
 def test_unready_view_says_why_when_the_viewer_knows() -> None:
-    """A chart that failed to load its data names the failure, not only that it is unready."""
+    """A chart still loading its data names why, whole, not only that it is unready."""
     bridge = A2UIVisualFeedback()
-    reason = "Chart unavailable: the artifact is not a CSV or Parquet table."
+    reason = "Chart unavailable: the artifact is not a CSV or Parquet table. " + "x" * 400
     bridge.report(
         "sid",
         viewer(ready=False, state={"readiness": {"ready": False, "detail": reason}}),
     )
     # A pinned view epoch does not wait for readiness (an unpinned capture waits, unbounded).
-    with pytest.raises(VisualFeedbackError, match="not a CSV or Parquet table"):
+    with pytest.raises(VisualFeedbackError, match="not a CSV or Parquet table") as unready:
         bridge.capture("sid", "surface", 1, view_revision=0)
+    assert unready.value.reason == "a2ui_render_not_ready"
+    assert str(unready.value).endswith(reason)
 
 
 def test_saved_view_control_requires_its_owner_and_advancing_epoch() -> None:

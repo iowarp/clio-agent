@@ -466,7 +466,7 @@ class A2UIVisualFeedback:
                 if failed := _failed(matched):
                     raise VisualFeedbackError(
                         "a2ui_render_failed",
-                        "The view failed to render" + _viewer_reasons(failed, bound=None),
+                        "The view failed to render" + _viewer_reasons(failed),
                     )
                 raise VisualFeedbackError(
                     "a2ui_render_not_ready",
@@ -529,16 +529,16 @@ def _failed(rows: list[_Viewer]) -> list[_Viewer]:
     return [row for row in rows if _readiness(row).get("state") == "failed"]
 
 
-def _viewer_reasons(rows: list[_Viewer], *, bound: int | None = 300) -> str:
-    """What the viewers say keeps the view from being ready (a chart's own error).
+def _viewer_reasons(rows: list[_Viewer]) -> str:
+    """What the viewers say keeps the view from being ready (a chart's own error), verbatim.
 
-    Its reason tells the producer what to change (its data, a field name). ``bound``
-    shortens each reason; ``None`` keeps a failure's text verbatim (the report is bounded).
+    Its reason tells the producer what to change (its data, a field name). The report
+    state is bounded on intake, so each reason is kept whole.
     """
 
     reasons: list[str] = []
     for row in rows:
-        detail = str(_readiness(row).get("detail") or "").strip()[:bound]
+        detail = str(_readiness(row).get("detail") or "").strip()
         if detail and detail not in reasons:
             reasons.append(detail)
     return f": {'; '.join(reasons)}" if reasons else "; inspect viewer state."
