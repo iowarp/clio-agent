@@ -190,7 +190,7 @@ def call_refusal(program: Any, name: str) -> str:
             f"{name} is blocked by a permission setting ({TOOL_PERMISSION_DENY}); "
             "it cannot be called."
         )
-    code_only = getattr(program, "_clio_code_only", frozenset()) or frozenset()
+    code_only: frozenset[str] = getattr(program, "_clio_code_only", frozenset()) or frozenset()
     if name in code_only and not _code_unavailable(program):
         return (
             f"{name} can only be called from a run_code script "

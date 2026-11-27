@@ -247,9 +247,11 @@ class TestArgonne:
         monkeypatch.setattr(
             argonne_auth,
             "begin_authentication",
-            lambda **kwargs: calls.append(kwargs)
-            or argonne_auth.PendingAuthentication(
-                flow_id="flow_1", authorization_url="https://globus/auth"
+            lambda **kwargs: (
+                calls.append(kwargs)
+                or argonne_auth.PendingAuthentication(
+                    flow_id="flow_1", authorization_url="https://globus/auth"
+                )
             ),
         )
         preset = _preset(provider="argonne")
@@ -287,9 +289,11 @@ class TestArgonne:
         monkeypatch.setattr(
             argonne_auth,
             "flow_status",
-            lambda flow_id: ("pending", "")
-            if flow_id == "still_pending"
-            else ("failed", argonne_auth.FLOW_NOT_FOUND_REASON),
+            lambda flow_id: (
+                ("pending", "")
+                if flow_id == "still_pending"
+                else ("failed", argonne_auth.FLOW_NOT_FOUND_REASON)
+            ),
         )
         preset = _preset(provider="argonne")
         pending = await handle_auth_action(

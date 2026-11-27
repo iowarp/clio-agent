@@ -541,9 +541,9 @@ def register_connected_storage_routes(app: FastAPI) -> None:
             return materialize_once(app, prepare_resource())
 
         resource = await run(
-            lambda: drafts().prepare(source_id, body.draft_id, prepare)
-            if body.draft_id
-            else prepare()
+            lambda: (
+                drafts().prepare(source_id, body.draft_id, prepare) if body.draft_id else prepare()
+            )
         )
         payload = resource.to_wire()
         emit_workspace_event(app, wid, "resource.ready", payload)

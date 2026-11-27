@@ -228,9 +228,11 @@ class Redactor:
         text = self._sub(
             "credential_header",
             _HEADER_LINE,
-            lambda m: m.group(0)
-            if m.group(3).startswith(REDACTED)
-            else f"{m.group(1)}{m.group(2)}{REDACTED}",
+            lambda m: (
+                m.group(0)
+                if m.group(3).startswith(REDACTED)
+                else f"{m.group(1)}{m.group(2)}{REDACTED}"
+            ),
             text,
         )
         text = self._sub("bearer", _BEARER, lambda m: f"{m.group(1)} {REDACTED}", text)

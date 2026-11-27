@@ -612,12 +612,14 @@ def test_transport_from_spec_uses_bundled_desktop_launcher(
     monkeypatch.setattr(
         "clio_agent.tools.desktop_mcp_runtime.bundled_module_launcher",
         lambda command, args: (
-            r"D:\CLIO\python\python.exe",
-            ["-c", "from web_mcp.server import main; main()", *args],
-            {"CLIO_KIT_CACHE_DIR": r"D:\CLIO\data\cache"},
-        )
-        if command == "clio-web-search-mcp"
-        else None,
+            (
+                r"D:\CLIO\python\python.exe",
+                ["-c", "from web_mcp.server import main; main()", *args],
+                {"CLIO_KIT_CACHE_DIR": r"D:\CLIO\data\cache"},
+            )
+            if command == "clio-web-search-mcp"
+            else None
+        ),
     )
     transport = transport_from_spec(
         {

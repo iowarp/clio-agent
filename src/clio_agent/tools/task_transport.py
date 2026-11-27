@@ -5,12 +5,11 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import replace
-from typing import Any, ClassVar, TypeVar
+from typing import Any, TypeVar
 
 from fastmcp.client.transports.base import ClientTransport, TransportOptions
 from fastmcp.client.transports.config import MCPConfigTransport
 from fastmcp_tasks.client_models import (
-    CancelTaskRequest,
     ClientGetTaskResult,
     GetTaskRequest,
     UpdateTaskRequest,
@@ -23,24 +22,6 @@ TaskReplyObserver = Callable[[ClientSession, str, ClientGetTaskResult], Awaitabl
 #: Validates a ``tasks/update`` before it is sent. ``None`` sends it as built; a dict
 #: replaces its input responses (withdrawn inputs removed); an empty dict skips the send.
 TaskUpdateGuard = Callable[[ClientSession, str, dict[str, Any]], Awaitable[dict[str, Any] | None]]
-
-
-class NamedGetTaskRequest(GetTaskRequest):
-    """Request-local Mcp-Name routing, without patching the SDK's request class."""
-
-    name_param: ClassVar[str | None] = "taskId"
-
-
-class NamedUpdateTaskRequest(UpdateTaskRequest):
-    """Preserve SDK update semantics while carrying its native task identity."""
-
-    name_param: ClassVar[str | None] = "taskId"
-
-
-class NamedCancelTaskRequest(CancelTaskRequest):
-    """Preserve SDK cancellation semantics while carrying its native task identity."""
-
-    name_param: ClassVar[str | None] = "taskId"
 
 
 class ObservedTaskSession(ClientSession):
@@ -66,9 +47,9 @@ class ObservedTaskSession(ClientSession):
         progress_callback: Any = None,
     ) -> ReplyT:
         task_id: str | None = None
+        # fastmcp-tasks routes these requests by taskId itself (name_param, 4.2+).
         if isinstance(request, GetTaskRequest):
             task_id = request.params.task_id
-            request = NamedGetTaskRequest.model_validate(request.model_dump())
         elif isinstance(request, UpdateTaskRequest):
             task_id = request.params.task_id
             kept = await self._guard_task_update(self, task_id, request.params.input_responses)
@@ -84,9 +65,6 @@ class ObservedTaskSession(ClientSession):
                 request = request.model_copy(
                     update={"params": request.params.model_copy(update={"input_responses": kept})}
                 )
-            request = NamedUpdateTaskRequest.model_validate(request.model_dump())
-        elif isinstance(request, CancelTaskRequest):
-            request = NamedCancelTaskRequest.model_validate(request.model_dump())
         result = await super().send_request(
             request, result_type, request_read_timeout_seconds, metadata, progress_callback
         )
@@ -95,13 +73,25 @@ class ObservedTaskSession(ClientSession):
         return result
 
 
+#: The sessions task observation composes in front of: the plain SDK session and
+#: fastmcp's own default (``TransportOptions().session_class``; fastmcp 4.2 made it
+#: a ``ClientSession`` subclass that skips output-schema checks for version-pinned
+#: calls). Any other session class carries behaviour this adapter has not reviewed.
+_KNOWN_SESSION_BASES = frozenset({ClientSession, TransportOptions().session_class})
+
+
 def _observed_session_class(existing: type[ClientSession]) -> type[ClientSession]:
     """Compose CLIO's cooperative capability override; refuse unknown session behavior."""
     if existing is ClientSession:
         return ObservedTaskSession
+    if existing in _KNOWN_SESSION_BASES:
+        return type("ObservedSdkTaskSession", (ObservedTaskSession, existing), {})
     from clio_agent.tools.mcp_runtime import _DeclaredCapabilityOverride
 
-    if existing.__bases__ != (_DeclaredCapabilityOverride, ClientSession):
+    bases = existing.__bases__
+    if len(bases) != 2 or bases[0] is not _DeclaredCapabilityOverride:
+        raise ValueError("Task observation cannot compose with this SDK session class")
+    if bases[1] not in _KNOWN_SESSION_BASES:
         raise ValueError("Task observation cannot compose with this SDK session class")
     return type("ObservedDeclaredTaskSession", (ObservedTaskSession, existing), {})
 

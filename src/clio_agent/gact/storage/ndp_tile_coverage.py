@@ -165,9 +165,12 @@ def tiles_covering(
         raise ValueError("header_offset must be nonnegative")
     tiles = [item for item in dataset.resources if is_tile(item)]
     mosaics = [item for item in dataset.resources if is_mosaic(item)]
-    readable = lambda item: urlsplit(item.url).scheme in {"http", "https"} and not (  # noqa: E731
-        credential_target(dataset.endpoint, item.url)
-    )
+
+    def readable(item: NDPResource) -> bool:
+        return urlsplit(item.url).scheme in {"http", "https"} and not (
+            credential_target(dataset.endpoint, item.url)
+        )
+
     footprint: dict[str, Bounds] = {}
     undetermined: dict[str, str] = {}
     methods: list[str] = []

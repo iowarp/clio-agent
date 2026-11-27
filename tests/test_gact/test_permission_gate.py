@@ -356,8 +356,10 @@ def test_declared_mcp_mutation_blocks_before_transport_until_ui_resolution(
             hooks = original_hooks()
             return replace(
                 hooks,
-                cancellation_checker=lambda: stopping.is_set()
-                or bool(hooks.cancellation_checker and hooks.cancellation_checker()),
+                cancellation_checker=lambda: (
+                    stopping.is_set()
+                    or bool(hooks.cancellation_checker and hooks.cancellation_checker())
+                ),
             )
 
         monkeypatch.setattr(execution, "current_tool_runtime", cancellable_hooks)

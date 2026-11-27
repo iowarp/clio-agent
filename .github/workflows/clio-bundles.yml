@@ -322,7 +322,7 @@ jobs:
         # lay as before, and check_release_completeness reports the missing asset.
         run: |
           if ! uv run --no-project --python 3.14 --with zstandard==0.25.0 --with 'filelock>=3.19,<4' \
-              --with truststore==0.10.4 python scripts/build_office_tree.py \
+              --with truststore==0.10.5 python scripts/build_office_tree.py \
               --output "$RUNNER_TEMP/office-tree" \
               --release-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG"; then
             echo "::warning::could not build the prepared Office tree; the install plan keeps TDF's Office"
@@ -339,7 +339,7 @@ jobs:
         # and check_release_completeness reports the missing asset.
         run: |
           if ! uv run --no-project --python 3.14 --with zstandard==0.25.0 --with 'filelock>=3.19,<4' \
-              --with truststore==0.10.4 python scripts/build_office_tree.py \
+              --with truststore==0.10.5 python scripts/build_office_tree.py \
               --output "$RUNNER_TEMP/office-tree" \
               --release-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG"; then
             echo "::warning::could not build the prepared Office tree; the source install keeps TDF's MSI"

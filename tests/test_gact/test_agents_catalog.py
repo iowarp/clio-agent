@@ -93,9 +93,13 @@ def test_list_agents_includes_user_agents_as_parent_plus_delta(client: TestClien
     assert user["delta"] == {"add": [], "remove": ["shell"]}
 
 
-def test_list_agents_does_not_import_scientific_tool_servers(client: TestClient) -> None:
-    sys.modules.pop("clio_agent.tools.servers.hdf5_server", None)
-    sys.modules.pop("h5py", None)
+def test_list_agents_does_not_import_scientific_tool_servers(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Restored after the test: h5py registers process-wide HDF5 converters on import,
+    # so a second import of it in the same process fails (h5py >= 3.16 raises).
+    monkeypatch.delitem(sys.modules, "clio_agent.tools.servers.hdf5_server", raising=False)
+    monkeypatch.delitem(sys.modules, "h5py", raising=False)
     resp = client.get("/v1/agents")
     assert resp.status_code == 200
     assert "clio_agent.tools.servers.hdf5_server" not in sys.modules

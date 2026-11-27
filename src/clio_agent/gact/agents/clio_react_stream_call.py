@@ -46,7 +46,7 @@ def call_lm(lm: Any, request: Request) -> Response:
     note_lm_call_start()
 
     async def run() -> Response:
-        send, receive = anyio.create_memory_object_stream(math.inf)
+        send, receive = anyio.create_memory_object_stream[Any](math.inf)
         response: Response | None = None
         failure: Exception | None = None
         router = stream.StreamRouter()

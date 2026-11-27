@@ -33,10 +33,10 @@ def require_claude_agent_sdk() -> Any:
 
     The single SDK-transport import/selection seam: every ``sdk`` path gets a
     typed reason (``ClaudeCodeCLIUnavailableError``) rather than a raw
-    ``ImportError`` trace. The SDK installs via the ``claude-code`` extra; on
-    the mcp-2 core its protective ``mcp<2`` bound is neutralized by the
-    ``[tool.uv] override-dependencies`` entry (CLIO uses the SDK purely as an
-    LLM provider and never touches its SDK-MCP-server bridging surface).
+    ``ImportError`` trace. The SDK installs via the ``claude-code`` extra; from
+    0.2.187 (the floor) it accepts the mcp-2 core directly (CLIO uses the SDK
+    purely as an LLM provider and never touches its SDK-MCP-server bridging
+    surface).
     """
     try:
         import claude_agent_sdk  # noqa: PLC0415

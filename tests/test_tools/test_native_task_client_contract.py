@@ -19,7 +19,6 @@ from fastmcp_tasks.client_models import (
     ClientCreateTaskResult,
     ClientGetTaskResult,
     GetTaskRequest,
-    GetTaskRequestParams,
 )
 from mcp.client.session import ClientSession
 
@@ -41,7 +40,6 @@ from clio_agent.tools.task_receipt import (
     validate_terminal,
 )
 from clio_agent.tools.task_transport import (
-    NamedGetTaskRequest,
     TaskObservationTransport,
 )
 
@@ -62,10 +60,10 @@ def submission(
 
 def test_dependency_contract_is_pinned() -> None:
     """Any dependency upgrade must revisit the adapter's private and public contracts."""
-    assert version("fastmcp") == "4.1.2"
-    assert version("fastmcp-tasks") == "4.1.2"
-    assert version("mcp") == "2.2.0"
-    assert version("pydocket") == "0.26.2"
+    assert version("fastmcp") == "4.2.4"
+    assert version("fastmcp-tasks") == "4.2.4"
+    assert version("mcp") == "2.3.0"
+    assert version("pydocket") == "0.31.0"
 
 
 @pytest.mark.asyncio
@@ -244,13 +242,36 @@ def native_creation() -> ClientCreateTaskResult:
     )
 
 
-def test_task_routing_does_not_mutate_sdk_request_classes() -> None:
-    """Task name routing changes only the request passed to the native SDK."""
-    original = GetTaskRequest(params=GetTaskRequestParams(task_id="with-hyphens-123"))
-    routed = NamedGetTaskRequest.model_validate(original.model_dump())
-    assert original.name_param is None
-    assert routed.name_param == "taskId"
-    assert routed.model_dump(by_alias=True) == original.model_dump(by_alias=True)
+def test_sdk_task_requests_route_by_their_task_id() -> None:
+    """The SDK's own task requests carry Mcp-Name routing; CLIO adds no subclass."""
+    from fastmcp_tasks.client_models import CancelTaskRequest, UpdateTaskRequest
+
+    for request_class in (GetTaskRequest, UpdateTaskRequest, CancelTaskRequest):
+        assert request_class.name_param == "taskId"
+
+
+def test_task_observation_composes_over_the_sdk_default_session_only() -> None:
+    """Observation keeps fastmcp's default session behaviour and refuses unreviewed ones."""
+    from fastmcp.client.transports.base import TransportOptions
+
+    from clio_agent.tools.mcp_runtime import _capability_session_class
+    from clio_agent.tools.task_transport import ObservedTaskSession, _observed_session_class
+
+    default = TransportOptions().session_class
+    observed = _observed_session_class(default)
+    assert issubclass(observed, ObservedTaskSession) and issubclass(observed, default)
+    declared = _capability_session_class(MCPClientCapabilities(), default)
+    composed = _observed_session_class(declared)
+    assert issubclass(composed, ObservedTaskSession) and issubclass(composed, declared)
+    assert issubclass(composed, default)
+
+    class Unreviewed(ClientSession):
+        pass
+
+    with pytest.raises(ValueError, match="cannot compose"):
+        _observed_session_class(Unreviewed)
+    with pytest.raises(ValueError, match="cannot compose"):
+        _observed_session_class(_capability_session_class(MCPClientCapabilities(), Unreviewed))
 
 
 def test_native_roots_have_independent_queues_and_native_capacity(

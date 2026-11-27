@@ -385,7 +385,7 @@ def sync_deferred_catalog(program: Any) -> list[str]:
     servers = deferred_servers | frozenset(getattr(program, "_clio_owner_servers", ()) or ())
     known: frozenset[str] | None = getattr(program, "_clio_disclosed_tools", None)
     loaded = frozenset(getattr(program, "_clio_loaded_listed", frozenset()) or ())
-    code_only = getattr(program, "_clio_code_only", frozenset()) or frozenset()
+    code_only: frozenset[str] = getattr(program, "_clio_code_only", frozenset()) or frozenset()
     never, never_prefixes = never_defer()
     added = []
     for name, tool in tools.items():

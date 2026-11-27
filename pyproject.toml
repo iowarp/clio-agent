@@ -44,14 +44,14 @@ dependencies = [
     "jinja2>=3.1.6,<4",
     # Runtime preparation must also work for pip-installed Clio without a host uv.
     "uv>=0.13.4,<1",
-    "truststore==0.10.4",
+    "truststore==0.10.5",
     "zstandard==0.25.0",  # Pinned private LibreOffice ABI packages use data.tar.zst.
     # Intentional exact prereleases: registry-backed uv installs must declare DSPy,
     # FastMCP, and FastMCP Tasks as explicit roots because the top-level release is stable.
     "dspy==3.4.0",
     # DSPy permits a broad LiteLLM range. Pin the tested stable wheel so a global
     # prerelease policy can never select a LiteLLM dev sdist on Windows.
-    "litellm==1.102.2",
+    "litellm==1.110.2",
     # The Codex runtime. The Codex LM provider calls the Codex backend directly
     # over HTTP/WebSocket (providers/codex/) and runs no CLI, but it presents
     # this distribution's version as its model list's client_version, and the
@@ -61,7 +61,7 @@ dependencies = [
     # never an upper bound. The backend gates new models by client version, so
     # runtimes update this in place past the lock from the provider panel, and
     # the provider-sdk-bump workflow moves the floor + lock weekly.
-    "openai-codex-cli-bin>=0.167.0",
+    "openai-codex-cli-bin>=0.171.0",
     # The direct Codex provider's WebSocket transport (A.6); already present
     # transitively (litellm/fastmcp's own tree), declared explicitly now that
     # first-party code imports it directly.
@@ -71,14 +71,14 @@ dependencies = [
     "clio-kit==2.13.1",  # Source-locked scientific MCP components and launcher.
     # web_fetch turns HTML pages into Markdown (clio_agent.search.fetch).
     "trafilatura>=1.12",
-    "fastmcp==4.1.2",  # stable native Tasks integration; adapter contracts are acceptance gates
-    "fastmcp-tasks==4.1.2",
-    "mcp==2.2.0",  # reviewed native Tasks wire/client contract
-    "pydocket==0.26.2",  # fastmcp-tasks 4.1 requires >=0.26; native execution owner
+    "fastmcp==4.2.4",  # stable native Tasks integration; adapter contracts are acceptance gates
+    "fastmcp-tasks==4.2.4",
+    "mcp==2.3.0",  # reviewed native Tasks wire/client contract
+    "pydocket==0.31.0",  # fastmcp-tasks 4.2.3+ requires >=0.29.1; native execution owner
     # Develop builds clio-schemas from git (the tool.uv.sources entry below); a
     # release pins the published PyPI version instead (release-clio).
     "clio-schemas==0.8.0b5",
-    "pydantic>=2.12,<2.14",
+    "pydantic>=2.12,<2.15",
     # A2UI catalog validation: official catalog.json files are validated at runtime
     # with Draft 2020-12 (docs/design/a2ui-compat-campaign-2026-09.md, S2).
     "jsonschema>=4.23",
@@ -95,7 +95,7 @@ dependencies = [
     # The in-app browser (gact/browser/): imported only when the service starts. Its
     # Chromium build is downloaded on first use into CLIO's cache, never at install time.
     # Exact: the service relies on 1.64's screencast, show_actions(style=) and get_by_ref.
-    "playwright==1.64.1",
+    "playwright==1.65.2",
     "pyarrow>=14.0.0",
     # Artifact table-query LTTB downsampling (gact/artifacts/lttb.py). Already present
     # transitively (matplotlib/pyarrow); declared now that first-party code imports it.
@@ -214,18 +214,14 @@ claude-code = [
     # persistent in-process Claude Code session instead of one spawn per LM
     # call (#715). Auth is the user's Claude Code OAuth login.
     #
-    # mcp-2 note (#1107): the SDK declares a protective `mcp<2` bound for its
-    # SDK-MCP-server bridging feature. CLIO uses the SDK PURELY as an LLM
-    # provider (ClaudeSDKClient/ClaudeAgentOptions — owner decision: "to us he
-    # is a provider of llm, not a tool calling semantics") and never touches
-    # that bridging surface. The [tool.uv] override below neutralizes the
-    # bound; the full import surface is verified under mcp 2.0.0 by
-    # tests and the compat matrix doc. The live SDK-session smoke runs at the
-    # P0 phase gate.
+    # CLIO uses the SDK PURELY as an LLM provider (ClaudeSDKClient /
+    # ClaudeAgentOptions -- owner decision: "to us he is a provider of llm, not a
+    # tool calling semantics"). Since 0.2.187 (the floor) the SDK accepts mcp<3,
+    # so the mcp-2 core co-resolves without the old [tool.uv] override (#1107).
     # USER-UPDATABLE COMPONENT (providers/components/registry.py): a floor,
     # never an upper bound; updated in place from the provider panel and bumped
     # weekly by the provider-sdk-bump workflow.
-    "claude-agent-sdk>=0.2.159",
+    "claude-agent-sdk>=0.2.187",
 ]
 
 copilot = [
@@ -235,7 +231,7 @@ copilot = [
     # signed in through CLIO (the vault token), never the machine's Copilot login.
     # USER-UPDATABLE COMPONENT (providers/components/registry.py): a floor,
     # never an upper bound; updated in place from the provider panel.
-    "github-copilot-sdk>=1.0.29",
+    "github-copilot-sdk>=1.0.35",
 ]
 
 flowcept = [
@@ -275,7 +271,7 @@ install-bootstrap = [
     "pyyaml>=6.0.3,<7",
     # Injection text is a sandboxed Jinja template (clio_agent.injections.template).
     "jinja2>=3.1.6,<4",
-    "truststore==0.10.4",
+    "truststore==0.10.5",
     "zstandard==0.25.0",
 ]
 
@@ -362,6 +358,11 @@ timeout_method = "thread"
 line-length = 100
 target-version = "py312"
 
+[tool.ruff.format]
+# Ruff 0.17 also formats Python code blocks inside Markdown. Here Markdown is
+# prompt, skill and doc prose an agent reads, so keep the formatter on Python.
+exclude = ["*.md"]
+
 [tool.ruff.lint]
 select = [
     "E",   # pycodestyle errors
@@ -396,14 +397,6 @@ exclude = ['src/clio_agent/plugins/builtin/[^/]+/ai\.iowarp\.clio/']
 paths_to_mutate = ["src/clio_agent/arc/segments.py", "src/clio_agent/gact/events.py"]
 tests_dir = ["tests/mutmut_runner/"]
 also_copy = ["src/clio_agent/", "tests/"]
-
-[tool.uv]
-# #1107: claude-agent-sdk declares mcp<2 as a protective bound for its
-# SDK-MCP-server bridging feature, which CLIO never uses (LLM provider only).
-# Override it so the mcp-2 core and the claude-code extra co-resolve; the
-# combination's import surface is test-verified, the live session smoke runs
-# at the phase gate. Drop this override when upstream supports mcp 2.
-override-dependencies = ["mcp==2.2.0"]
 
 [tool.uv.sources]
 # Develop pins the merged sibling commits so their unreleased work runs without a

@@ -151,7 +151,9 @@ class ChatRenderer:
     def encode(self, text: str) -> Encoded:
         """Tokenize ``text`` without adding special tokens (vLLM's chat path)."""
         enc = self._tokenizer.encode(text, add_special_tokens=False)
-        return Encoded(text=text, ids=list(enc.ids), offsets=[tuple(o) for o in enc.offsets])
+        return Encoded(
+            text=text, ids=list(enc.ids), offsets=[(start, end) for start, end in enc.offsets]
+        )
 
     def render_encoded(
         self,
