@@ -110,11 +110,11 @@ def settle_published_outcomes(history: TaskHistory) -> dict[str, int]:
     return {"outcomes": checked, "open_tasks": len(history.index.open_records("t~"))}
 
 
-def _kept_refusals(history: TaskHistory, current: TaskSnapshot, episode: str) -> dict[str, str]:
-    """An attention's ``network_refused``: the egress CLIO's sandbox refused for the work,
-    kept with its record (external_task_records.keep_refusals), so the agent deciding
-    whether to retry after a lost runtime still reads it. ``{}`` when none."""
-    if not episode or current.kind != "MCP" or current.details is None:
+def kept_refusals(history: TaskHistory, current: TaskSnapshot) -> dict[str, str]:
+    """The ``network_refused`` kept with a task's record: the egress CLIO's sandbox refused
+    for the work (external_task_records.keep_refusals), so the agent deciding whether to
+    retry after a lost runtime still reads it. ``{}`` when none."""
+    if current.kind != "MCP" or current.details is None:
         return {}
     details = history.read_content(current.details)
     text = details.get("network_refused") if isinstance(details, dict) else None
@@ -229,7 +229,7 @@ def _publish_task_notice(
                     if episode
                     else "Task settled.",
                     **({"details": current.progress.message} if episode else {}),
-                    **_kept_refusals(history, current, episode),
+                    **(kept_refusals(history, current) if episode else {}),
                 },
             )
         for recipient, notice_id in recipients.items():

@@ -25,7 +25,11 @@ from clio_agent.gact.task_cursors import encode_cursor as _cursor
 from clio_agent.gact.task_forks import family_members
 from clio_agent.gact.task_history import TaskHistory
 from clio_agent.gact.task_observations import pattern_text, read_observations
-from clio_agent.gact.task_publication import publish_task_notice, task_owner_recipient
+from clio_agent.gact.task_publication import (
+    kept_refusals,
+    publish_task_notice,
+    task_owner_recipient,
+)
 from clio_agent.gact.task_queries import query_tasks
 from clio_agent.gact.task_result_content import committed_evidence, read_cursor, result_page
 from clio_agent.gact.task_result_spill import save_task_result
@@ -222,6 +226,9 @@ class TaskOperations:
         }
         if current.status in {"failed", "task_state_uncertain"}:
             result["reason"] = current.progress.message
+        if current.terminal_at is None or current.result is None:
+            # No result content carries the refusals yet (a settled reply embeds them).
+            result.update(kept_refusals(self.history, current))
         if current.terminal_at is None:
             if current.backend_observation is not None and current.raw_status in {
                 "completed",
