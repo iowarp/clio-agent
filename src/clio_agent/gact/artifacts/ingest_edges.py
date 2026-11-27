@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 from urllib.parse import urlsplit
 
 from clio_agent.gact.artifacts.transform_types import EdgeEvidence, EdgeRole, ProvEdge
+from clio_agent.runtime import net_refusals
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -229,6 +230,7 @@ def join_call_to_serving_child(
         child = session_net_child(app, session_id, namespace)
         if child:
             register_serving_child(app, call_id, child)
+            net_refusals.join(child)  # its refusals reach this call's result
     except Exception:  # noqa: BLE001 — a linkage note must never break the tool call
         logger.debug("serving-child join skipped reason=join_unavailable", exc_info=True)
 

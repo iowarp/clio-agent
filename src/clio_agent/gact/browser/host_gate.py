@@ -39,7 +39,7 @@ from urllib.parse import urlsplit
 
 from clio_agent.gact.browser import settings
 from clio_agent.gact.browser.settings import BrowserError
-from clio_agent.runtime import trace
+from clio_agent.runtime import net_refusals, trace
 
 if TYPE_CHECKING:
     from clio_agent.gact.browser.service import BrowserService, PageRecord
@@ -279,6 +279,10 @@ async def admit_call(
     answer was for that load, and later calls only use what it loaded. Its
     certificate must be one this conversation trusts (:func:`certificates.check_call`).
     """
+    profile = service.profiles.get(record.profile)
+    if record.inflight is not None and profile is not None and profile.egress_channel:
+        # The browser's refused egress (a fenced subresource host) reaches this call's result.
+        record.inflight.context.run(net_refusals.join, profile.egress_channel)
     parts = urlsplit(record.url())
     if parts.scheme.lower() not in _WEB_SCHEMES:
         return

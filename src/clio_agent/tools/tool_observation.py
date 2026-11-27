@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Optional
 
+from clio_agent.runtime import net_refusals
 from clio_agent.tools import recorded_results, view_only_results
 
 logger = logging.getLogger(__name__)
@@ -69,9 +70,21 @@ def call_identity_scope() -> Iterator[None]:
 
     token = _CALL_IDENTITY.set({"id": "", "taken": False})
     try:
-        yield
+        with net_refusals.watching():  # the egress the call's channels are refused
+            yield
     finally:
         _CALL_IDENTITY.reset(token)
+
+
+def noted(outcome: Any) -> Any:
+    """``outcome`` with the egress refused on its call's channels added to its ``value``.
+
+    For a seam that owns its result (a native tool); MCP results get it where the model's
+    observation is assembled (:func:`clio_agent.tools.tool_hooks.merge_egress_refusals`).
+    """
+
+    outcome.value = net_refusals.with_call_notice(outcome.value)
+    return outcome
 
 
 def peek_call_identity() -> str:

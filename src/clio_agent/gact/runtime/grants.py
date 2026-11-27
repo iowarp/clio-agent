@@ -37,6 +37,7 @@ from clio_agent.gact.runtime.egress_workspace import (
     NETWORK_WRITE_GATE_CONFIG_KEY,
     REASON_EGRESS_DECISION_ERROR,
     REASON_EGRESS_DENIED_THIS_TURN,
+    REASON_EGRESS_PERSON_DENIED,
     REASON_EGRESS_POLICY_DENY,
     REASON_EGRESS_PROMPT_CAP,
     REASON_EGRESS_PROMPT_UNWRITABLE,
@@ -46,7 +47,9 @@ from clio_agent.gact.runtime.egress_workspace import (
     REASON_EGRESS_WRITE_POLICY_DENY,
     WRITE_METHODS,
     _active_session_for_workspace,
+    _record_egress_denied,
     _workspace_id_for_root,
+    host_rule_for,
     workspace_deny_mode,
     workspace_write_gate,
 )
@@ -57,6 +60,7 @@ from clio_agent.gact.runtime.permission_policies import (
     _host_action_for,
 )
 from clio_agent.runtime.commitment_activity import track
+from clio_agent.runtime.net_refusals import EgressDenial
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -464,7 +468,6 @@ def _egress_gate_decision(app: "FastAPI", rec: "EgressRecord") -> str:
         try:
             write_decision = _write_gate_decision(app, rec)
         except Exception as exc:  # noqa: BLE001 — a write-gate wiring bug fails CLOSED (deny), typed
-            _record_egress_denied(app, "", (rec.host or ""), reason=REASON_EGRESS_WRITE_GATE_ERROR)
             logger.warning(
                 "egress write-gate decision failed reason=%s host=%s method=%s error=%r "
                 "— failing closed (write)",
@@ -473,7 +476,9 @@ def _egress_gate_decision(app: "FastAPI", rec: "EgressRecord") -> str:
                 rec.method,
                 exc,
             )
-            return "deny"
+            return _record_egress_denied(
+                app, "", (rec.host or ""), reason=REASON_EGRESS_WRITE_GATE_ERROR
+            )
         if write_decision is not None:
             return write_decision
         # write-gate OFF / not applicable → fall through to the existing read/deny-mode path.
@@ -483,14 +488,15 @@ def _egress_gate_decision(app: "FastAPI", rec: "EgressRecord") -> str:
         workspace_id = _workspace_id_for_root(app, rec.workspace_root)
         deny = workspace_deny_mode(app, workspace_id)
     except Exception as exc:  # noqa: BLE001 — cannot prove NOT-deny → fail closed, typed
-        _record_egress_denied(app, "", (rec.host or ""), reason=REASON_EGRESS_STORE_UNRESOLVED)
         logger.warning(
             "egress deny-mode unresolved reason=%s host=%s error=%r — failing closed",
             REASON_EGRESS_STORE_UNRESOLVED,
             rec.host,
             exc,
         )
-        return "deny"
+        return _record_egress_denied(
+            app, "", (rec.host or ""), reason=REASON_EGRESS_STORE_UNRESOLVED
+        )
     # Deny mode decides only what a host NO rule covers: ask in deny mode, else ALLOW + RECORD
     # (B4). A rule the person set ("Ask every time", "Deny") holds in every mode.
     return _policy_egress_decision(app, rec, workspace_id, unmatched="ask" if deny else "allow")
@@ -514,13 +520,14 @@ def _policy_egress_decision(
             resolved = _workspace_id_for_root(app, rec.workspace_root)
         action = _host_action_for(app, workspace_id=resolved, host=host, port=rec.port)
         if action == "deny":
-            _record_egress_denied(app, resolved, host, reason=REASON_EGRESS_POLICY_DENY)
-            return "deny"
+            rule = host_rule_for(app, workspace_id=resolved, host=host, port=rec.port)
+            return _record_egress_denied(
+                app, resolved, host, reason=REASON_EGRESS_POLICY_DENY, rule=rule
+            )
         if action in POLICY_ALLOWING or (not action and unmatched == "allow"):
             return "allow"
         return _prompt_egress(app, resolved, rec, rule=action == "ask")
     except Exception as exc:  # noqa: BLE001 — an egress decision error must fail closed, typed
-        _record_egress_denied(app, resolved, host, reason=REASON_EGRESS_DECISION_ERROR)
         logger.warning(
             "egress decision failed reason=%s host=%s network=%s error=%r — failing closed",
             REASON_EGRESS_DECISION_ERROR,
@@ -528,7 +535,7 @@ def _policy_egress_decision(
             rec.network,
             exc,
         )
-        return "deny"
+        return _record_egress_denied(app, resolved, host, reason=REASON_EGRESS_DECISION_ERROR)
 
 
 def _write_gate_decision(app: "FastAPI", rec: "EgressRecord") -> Optional[str]:
@@ -558,8 +565,10 @@ def _write_gate_decision(app: "FastAPI", rec: "EgressRecord") -> Optional[str]:
     if action in POLICY_ALLOWING:
         return "allow"  # already write-granted (sticky) — no prompt
     if action == "deny":
-        _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_WRITE_POLICY_DENY)
-        return "deny"
+        rule = host_rule_for(app, workspace_id=workspace_id, host=host, port=rec.port)
+        return _record_egress_denied(
+            app, workspace_id, host, reason=REASON_EGRESS_WRITE_POLICY_DENY, rule=rule
+        )
     return _prompt_egress(app, workspace_id, rec, write=True)
 
 
@@ -596,8 +605,7 @@ def _prompt_egress(
     key = (workspace_id, host)
     port = int(rec.port or 0)
     if egress_holds.denied_this_turn(app, workspace_id, host, write):
-        _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_DENIED_THIS_TURN)
-        return "deny"
+        return _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_DENIED_THIS_TURN)
     attributed = _active_session_for_workspace(app, workspace_id)
     if egress_holds.allowed_still(app, workspace_id, host, port, write, attributed):
         return "allow"
@@ -606,8 +614,9 @@ def _prompt_egress(
         is_creator = prompt is None
         if is_creator:
             if len(_PENDING_EGRESS) >= _MAX_CONCURRENT_EGRESS_PROMPTS:
-                _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_PROMPT_CAP)
-                return "deny"
+                return _record_egress_denied(
+                    app, workspace_id, host, reason=REASON_EGRESS_PROMPT_CAP
+                )
             pid = f"perm_{uuid.uuid4().hex[:12]}"
             if write:
                 summary = (
@@ -663,13 +672,14 @@ def _prompt_egress(
             app.state.permission_events.pop(row["id"], None)
             with _PENDING_EGRESS_LOCK:
                 _PENDING_EGRESS.pop(key, None)
-            _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_PROMPT_UNWRITABLE)
             logger.warning(
                 "egress prompt store failed reason=%s error=%r",
                 REASON_EGRESS_PROMPT_UNWRITABLE,
                 exc,
             )
-            return "deny"
+            return _record_egress_denied(
+                app, workspace_id, host, reason=REASON_EGRESS_PROMPT_UNWRITABLE
+            )
         _emit_egress_requested(app, str(row.get("session_id") or ""), row)
     with track(True, session_id=str(row.get("session_id") or "") or None):
         resolved = evt.wait(timeout=_EGRESS_GATE_TIMEOUT_S)
@@ -679,8 +689,7 @@ def _prompt_egress(
             _PENDING_EGRESS.pop(key, None)
     if not resolved:
         row["status"] = "timeout"
-        _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_TIMEOUT)
-        return "deny"
+        return _record_egress_denied(app, workspace_id, host, reason=REASON_EGRESS_TIMEOUT)
     action = str(row.get("action") or "deny")
     session_id = str(row.get("session_id") or "")
     if allows(action):
@@ -697,7 +706,7 @@ def _prompt_egress(
         return "allow"
     if is_creator:
         egress_holds.hold_denial(app, workspace_id, host, write, session_id)
-    return "deny"
+    return EgressDenial(REASON_EGRESS_PERSON_DENIED)  # the answer itself is already recorded
 
 
 def clear_egress_denials() -> None:
@@ -725,31 +734,6 @@ def _emit_egress_requested(app: "FastAPI", session_id: str, row: dict[str, Any])
     except Exception as exc:  # noqa: BLE001 - the emit must never wedge the gate
         logger.debug("egress permission.requested emit skipped error=%r", exc)
     publish_permission(app, "permission.requested", owner_session_id=session_id, payload=row)
-
-
-def _record_egress_denied(app: "FastAPI", workspace_id: str, host: str, *, reason: str) -> None:
-    """Emit a typed ``permission.resolved`` deny record for a blocked deny-mode egress."""
-    try:
-        from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
-
-        session_id = _active_session_for_workspace(app, workspace_id)
-        _emit_semantic_event(
-            app,
-            session_id,
-            "permission.resolved",
-            status="completed",
-            summary=f"network egress to {host} denied ({reason})",
-            actor={"role": "runtime", "component": "net-chokepoint"},
-            subject={"kind": NETWORK_EGRESS_REQUEST_KIND, "host": host},
-            payload={
-                "action": "deny",
-                "reason": reason,
-                "host": host,
-                "workspace_id": workspace_id,
-            },
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("egress deny record skipped error=%r", exc)
 
 
 def install_egress_gate(app: "FastAPI") -> Optional[Callable[["EgressRecord"], str]]:

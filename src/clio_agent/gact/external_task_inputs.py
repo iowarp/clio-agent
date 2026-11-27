@@ -21,6 +21,7 @@ from clio_agent.arc.task_types import (
 from clio_agent.gact import external_task_connections
 from clio_agent.gact.native_work import now
 from clio_agent.gact.task_publication import publish_task_notice
+from clio_agent.runtime import net_refusals
 from clio_agent.tools.task_client import (
     AcceptedNativeCall,
 )
@@ -152,8 +153,15 @@ def _record_reply(
         if reply.meta:  # the latest status/tasks-get _meta a server sent, kept as sent
             updates["metadata"] = reply.model_dump(mode="json", by_alias=True)["_meta"]
         if reply.status in {"completed", "failed", "cancelled"}:
-            result = self.history.write_content(
-                current.owner.session_id, reply.model_dump(mode="json")
+            sid, dumped = current.owner.session_id, reply.model_dump(mode="json")
+            observation = self.history.write_content(sid, dumped)
+            # The server's reply stays as sent; the agent's result also names the egress
+            # CLIO refused while the task ran, which the reply shows only as a reset.
+            notice = net_refusals.settled_notice(current.handle)
+            result = (
+                self.history.write_content(sid, {**dumped, "network_refused": notice})
+                if notice
+                else observation
             )
             status = "failed" if reply.result and reply.result.get("isError") else reply.status
             try:
@@ -167,7 +175,7 @@ def _record_reply(
                 terminal_at=now(),
                 settlement="external_acknowledged",
                 result=result,
-                backend_observation=result,
+                backend_observation=observation,
                 supported_actions=("get_result",),
             )
             # The server owns protocol settlement. This is not proof that every
@@ -180,6 +188,7 @@ def _record_reply(
         observed = current.model_copy(update=updates)
         self.history.record_snapshot(observed, observation_id=uuid4().hex)
         if observed.terminal_at is not None:
+            net_refusals.settled(observed.handle)
             finish_terminal(self, observed.handle)
     if observed.terminal_at is not None:
         self.flagged.settled(

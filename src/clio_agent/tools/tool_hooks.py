@@ -157,6 +157,20 @@ def merge_boundary_message(observation: Any) -> Any:
     return f"{observation}\n\n{diagnosis.message}"
 
 
+def merge_egress_refusals(observation: Any) -> Any:
+    """Append the egress CLIO's chokepoint refused on this call's channels to its result.
+
+    A refused client sees a bare 403 or a reset; the refusal's host, reason and rule are
+    the chokepoint's (:mod:`clio_agent.runtime.net_refusals`). Read once per call.
+    """
+
+    from clio_agent.runtime.net_refusals import with_call_notice  # noqa: PLC0415
+
+    if not isinstance(observation, (str, dict)):
+        return observation  # a shaped result keeps its shape
+    return with_call_notice(observation)
+
+
 def boundary_error_note(tool_name: str, args: Mapping[str, Any]) -> str:
     """The sandbox-boundary message for a call that RAISED, as a note on its error (#1905).
 
@@ -170,9 +184,11 @@ def boundary_error_note(tool_name: str, args: Mapping[str, Any]) -> str:
     """
 
     from clio_agent.gact.artifacts.violations import raised_call_boundary  # noqa: PLC0415
+    from clio_agent.runtime.net_refusals import call_notice  # noqa: PLC0415
 
     diagnosis = raised_call_boundary(tool_name, args)
-    return diagnosis.message if diagnosis is not None else ""
+    notes = (diagnosis.message if diagnosis is not None else "", call_notice())
+    return "\n\n".join(note for note in notes if note)
 
 
 def assemble_model_observation(
@@ -197,6 +213,7 @@ def assemble_model_observation(
 
     observation = merge_artifact_identity(name, observation)
     observation = merge_boundary_message(observation)
+    observation = merge_egress_refusals(observation)
     observation = merge_result_views(name, observation)
     return apply_post_tool_hook(
         post_tool, name, args, observation, is_error=is_error, synthetic=synthetic

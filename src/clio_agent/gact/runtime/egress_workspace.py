@@ -8,7 +8,10 @@ attributed to — plus the typed reasons a blocked egress is recorded with.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
+
+from clio_agent.runtime.net_refusals import EgressDenial
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -36,6 +39,61 @@ REASON_EGRESS_DENIED_THIS_TURN = "egress_denied_this_turn"
 #: matching ``deny`` host policy on a write is recorded distinctly from the deny-mode read deny.
 REASON_EGRESS_WRITE_GATE_ERROR = "egress_write_gate_error"
 REASON_EGRESS_WRITE_POLICY_DENY = "write_policy_deny"
+#: The person answered the connection's ask with Deny.
+REASON_EGRESS_PERSON_DENIED = "person_denied"
+
+logger = logging.getLogger(__name__)
+
+
+def _record_egress_denied(
+    app: "FastAPI", workspace_id: str, host: str, *, reason: str, rule: str = ""
+) -> EgressDenial:
+    """Emit a typed ``permission.resolved`` deny record for a blocked egress; the denial.
+
+    The denial carries ``reason`` and ``rule`` to the chokepoint, which keeps them for the
+    refused call's result (:mod:`clio_agent.runtime.net_refusals`).
+    """
+    try:
+        from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
+        from clio_agent.gact.runtime.permission_policies import (  # noqa: PLC0415
+            NETWORK_EGRESS_REQUEST_KIND,
+        )
+
+        session_id = _active_session_for_workspace(app, workspace_id)
+        _emit_semantic_event(
+            app,
+            session_id,
+            "permission.resolved",
+            status="completed",
+            summary=f"network egress to {host} denied ({reason})",
+            actor={"role": "runtime", "component": "net-chokepoint"},
+            subject={"kind": NETWORK_EGRESS_REQUEST_KIND, "host": host},
+            payload={
+                "action": "deny",
+                "reason": reason,
+                "rule": rule,
+                "host": host,
+                "workspace_id": workspace_id,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("egress deny record skipped error=%r", exc)
+    return EgressDenial(reason, rule)
+
+
+def host_rule_for(app: "FastAPI", *, workspace_id: str, host: str, port: int) -> str:
+    """A person's network rule that denies ``host``, as ``"<pattern> = deny"`` (``""``: none).
+
+    Each row is resolved alone through the one matcher, so the named row is one that
+    matches this host, port and workspace and denies it.
+    """
+    from clio_agent.gact.runtime.grant_resolver import KIND_DOMAIN, resolve  # noqa: PLC0415
+
+    for row in getattr(app.state, "permission_policies", None) or ():
+        one = [row]
+        if resolve(KIND_DOMAIN, host, policies=one, workspace_id=workspace_id, port=port) == "deny":
+            return f"{row.get('host_pattern') or host} = deny"
+    return ""
 
 
 def _active_session_for_workspace(app: "FastAPI", workspace_id: str) -> str:

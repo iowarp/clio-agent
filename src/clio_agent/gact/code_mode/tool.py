@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from clio_agent import conf
-from clio_agent.runtime import trace
+from clio_agent.runtime import net_refusals, trace
 from clio_agent.runtime.commitment_activity import note_progress
 from clio_agent.tools.tool_observation import RefusedCallError
 
@@ -358,6 +358,10 @@ def execute_script(
     )
     if outcome["status"] == "failed" and (boundary := _boundary(kernel, outcome)):
         outcome["boundary"] = boundary  # the fence refused a write: which folder, and how
+    # The egress refused on the kernel's channel while this script ran, which its output
+    # shows only as a reset or a 403 (a background script's result is recorded after its
+    # call returned, so it names them itself).
+    outcome |= net_refusals.channel_fields(getattr(kernel, "confinement", None), started)
     if kernel.replaced:  # the scope's earlier kernel, and its variables, are gone
         outcome["new_kernel"], kernel.replaced = kernel.replaced, ""
     if kernel.read_only:  # plan mode: a write elsewhere is refused by the fence
@@ -519,6 +523,8 @@ def model_text(outcome: Mapping[str, Any]) -> str:
         parts.append(f"Error:\n{str(outcome['error']).rstrip()}")
     if isinstance(boundary := outcome.get("boundary"), Mapping) and boundary.get("message"):
         parts.append(str(boundary["message"]))  # why the sandbox refused, and the next step
+    if outcome.get("network_refused"):
+        parts.append(str(outcome["network_refused"]))  # the egress CLIO refused, and why
     if outcome.get("value") is not None:
         parts.append(f"Value: {outcome['value']}")
     calls, failed = int(outcome.get("calls") or 0), int(outcome.get("failed_calls") or 0)

@@ -128,6 +128,11 @@ class TaskObservationTransport(ClientTransport):
         self.observer = observer
         self.update_guard = update_guard
         self.legacy_only = original.legacy_only
+        from clio_agent.tools.fleet_serving import net_child_of, stamp_net_child  # noqa: PLC0415
+
+        # The server's egress channel is the original's: what the chokepoint refuses on
+        # it reaches the call that uses this wrapper (net_refusals).
+        stamp_net_child(self, net_child_of(original))
 
     @asynccontextmanager
     async def connect_session(

@@ -19,6 +19,7 @@ from mcp.shared.exceptions import MCPError
 from clio_agent.arc.task_types import BackendReference
 from clio_agent.gact import view_call_cancel, view_call_ledger
 from clio_agent.gact.native_work import now
+from clio_agent.runtime import net_refusals
 from clio_agent.tools import fleet_close_listeners, namespace_instances, shared_direct_connections
 from clio_agent.tools.mcp_runtime import enter_connection
 from clio_agent.tools.task_client import AcceptedNativeCall, TaskAwareClient
@@ -170,6 +171,7 @@ async def connection(
                 if previous is not None and previous.submission.handle != call.submission.handle:
                     raise ValueError("Server reused an active task identity for another submission")
                 host.calls[call.task.task_id] = call  # retain custody before persistence
+                net_refusals.outlast(call.submission.handle)  # its result names its refusals
 
                 async def adopt() -> Any:
                     return await self.history.io.run(self._adopt, host, call)
@@ -264,14 +266,14 @@ def _usable(host: ExternalConnection) -> bool:
     )
 
 
-def lease_or_open(
+async def lease_or_open(
     self: ExternalTasks,
     server: str,
     configured: Client,
     auth_scope: str,
     owner: Any,
     token: object,
-) -> Awaitable[ExternalConnection]:
+) -> ExternalConnection:
     """The connection one call uses: the fleet's kept-alive one, shared, when ``owner``.
 
     Parallel calls through one fleet proxy reach the same server process, as they did
@@ -279,11 +281,17 @@ def lease_or_open(
     keeps its state across them. Without ``owner``, or for an in-process server, this is
     :func:`connection` as before. Each call's progress names its own token; an
     elicitation without a task belongs to the only call still waiting on a plain reply
-    (external_task_inputs).
+    (external_task_inputs). The connection's egress channel joins the calling tool call,
+    so what the chokepoint refused on it reaches that call's result (net_refusals).
     """
     if owner is None or not isinstance(configured.transport, (StdioTransport, SSETransport)):
-        return connection(self, server, configured, auth_scope)
-    return _lease(self, server, configured, auth_scope, owner, token)
+        host = await connection(self, server, configured, auth_scope)
+    else:
+        host = await _lease(self, server, configured, auth_scope, owner, token)
+    from clio_agent.tools.fleet_serving import net_child_of  # noqa: PLC0415
+
+    net_refusals.join(net_child_of(getattr(host.client, "transport", None)))
+    return host
 
 
 async def _pooled(

@@ -624,7 +624,7 @@ class _Loop:
             collected_observation,
         )
         from clio_agent.injections.tool_guidance import after_tool_result  # noqa: PLC0415
-        from clio_agent.tools.tool_observation import call_identity_scope  # noqa: PLC0415
+        from clio_agent.tools import tool_observation as calls  # noqa: PLC0415
 
         slot: dict[str, str] = {"model_call_id": str(call.id or "")}  # links started work
         carried: list[Any] = []
@@ -635,11 +635,11 @@ class _Loop:
         script_token = SCRIPT_MEDIA.set(None)  # this call is direct, whatever ran it
         try:
             with (
-                call_identity_scope(),
+                calls.call_identity_scope(),
                 injections.collect() as told,
                 native_gate(tool, call.name, call.input) as no,
             ):
-                outcome = _CallOutcome(no, True) if no else self._run_tool(call, tool)
+                outcome = _CallOutcome(no, True) if no else calls.noted(self._run_tool(call, tool))
         finally:
             SCRIPT_MEDIA.reset(script_token)
             CALL_MEDIA.reset(media_token)

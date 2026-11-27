@@ -61,6 +61,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
+from clio_agent.runtime import net_refusals as _refusals
 from clio_agent.runtime.net_child_hosts import (  # re-exported for callers
     _child_host_allowed,
     release_child_hosts,
@@ -78,6 +79,8 @@ from clio_agent.runtime.net_targets import (
     _resolve_target,
 )
 from clio_agent.runtime.net_upstream import _dial_tunnel, _upstream_proxy
+
+_refused = _refusals.refused
 
 logger = logging.getLogger(__name__)
 
@@ -339,6 +342,7 @@ class Chokepoint:
         """Close + drop a per-child channel (idempotent; called when the child is reaped)."""
         with self._channels_lock:
             channel = self._channels.pop(child_id, None)
+        _refusals.forget(child_id)
         if channel is not None:
             _close_listener(channel.listener)
             channel.thread.join(timeout=1.0)
@@ -403,6 +407,7 @@ class Chokepoint:
                         host,
                         port,
                     )
+                    _refusals.record(child_id, host, port, _refusals.TARGET_IS_CLIO)
                     client.sendall(b"HTTP/1.1 403 Forbidden\r\n\r\n")
                     return
                 upstream.settimeout(None)  # the dial is bounded; the tunnel waits on the peers
@@ -527,11 +532,11 @@ class Chokepoint:
             logger.info(
                 "net egress refused reason=child_host_not_allowed child=%s host=%s", child_id, host
             )
-            return False
+            return _refused(child_id, host, port, _refusals.CHILD_HOST_NOT_ALLOWED)
         gate = _GATE
         if gate is None:
             # Nobody can approve a private, link-local or loopback host, so it stays closed.
-            return not network
+            return not network or _refused(child_id, host, port, _refusals.PRIVATE_ADDRESS)
         mechanism, workspace_root = self._channel_attribution(child_id)
         try:
             decision = gate(
@@ -555,8 +560,11 @@ class Chokepoint:
                 network,
                 exc,
             )
-            return not network
-        return decision != "deny"
+            return not network or _refused(child_id, host, port, _refusals.PRIVATE_ADDRESS)
+        if decision != "deny":
+            return True
+        reason = str(getattr(decision, "reason", "") or _refusals.GATE_DENY)
+        return _refused(child_id, host, port, reason, str(getattr(decision, "rule", "")))
 
     def _channel_attribution(self, child_id: str) -> tuple[str, str]:
         """The ``(mechanism, workspace_root)`` recorded for ``child_id`` (``("","")`` if none)."""

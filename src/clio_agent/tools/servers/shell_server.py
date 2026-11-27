@@ -25,7 +25,7 @@ from pydantic import Field
 
 from clio_agent import conf
 from clio_agent.runtime import trace
-from clio_agent.runtime.sandbox_diagnosis import diagnose_confined
+from clio_agent.runtime.net_refusals import confined_fields
 from clio_agent.tools.builtin_annotations import (
     _BASH_ANNOTATIONS,
 )
@@ -753,14 +753,13 @@ async def execute_shell(
                     }
                     # #1905: why the fence refused, against the roots it was given.
                     err = captures[1]
-                    if boundary := diagnose_confined(
+                    base |= confined_fields(  # budgeted with the output below
                         confined.result,
                         exit_code=base["exit_code"],
                         stderr=err.full_text() + "\n" + err.tail_excerpt(8192),
                         command=command,
                         cwd=safe_cwd,
-                    ):
-                        base["boundary"] = boundary  # budgeted with the output below
+                    )
                     result = compose_output_fields(
                         base, captures, root=spill_root, budget=shell_result_room()
                     )
