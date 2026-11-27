@@ -308,6 +308,12 @@ def stops_begun(executor: Any, namespace: str) -> int:
     return int(getattr(inner, "__dict__", {}).get(_STOPS_BEGUN, {}).get(namespace, 0))
 
 
+def stop_begun_since(executor: Any, namespace: str) -> Callable[[], bool]:
+    """A check of whether a stop of ``namespace``'s server has begun since this call."""
+    born = stops_begun(executor, namespace)
+    return lambda: stops_begun(executor, namespace) != born
+
+
 def _bump(executor: Any, namespace: str, counter: str = "") -> None:
     generations = executor.__dict__.setdefault(counter or _GENERATIONS, {})
     generations[namespace] = generations.get(namespace, 0) + 1
@@ -742,6 +748,7 @@ __all__ = [
     "retire_superseded",
     "routers",
     "server_cwd",
+    "stop_begun_since",
     "stop_instance",
     "stop_pooled",
     "stops_begun",

@@ -110,9 +110,10 @@ def test_shell_bash_declares_open_world_destructive_annotations() -> None:
     assert annotations["openWorldHint"] is True
     # open-world effectful -> NEITHER read nor write.
     assert classification_tags(annotations) == frozenset()
-    tags = get_tool_entry("shell_bash").tags
-    assert "read" not in tags
-    assert "write" not in tags
+    entry = get_tool_entry("shell_bash")
+    assert entry is not None
+    assert "read" not in entry.tags
+    assert "write" not in entry.tags
 
 
 def test_shell_description_windows_warns_off_wsl():
@@ -225,15 +226,21 @@ async def test_shell_bash_runs_simple_command(
     assert data["stdout"].strip().splitlines() == ["CLIO_SHELL_OK", "1"]
     assert data["stderr"] == ""
     stages = [record for record in caplog.records if record.msg.startswith("shell_phase ")]
-    assert [record.args[1] for record in stages] == [
+    phases: list[tuple[object, ...]] = []
+    for record in stages:
+        assert isinstance(record.args, tuple)
+        phases.append(record.args)
+    assert [row[1] for row in phases] == [
         "environment",
         "confinement",
         "process_start",
         "child_lifetime",
         "output_drain",
     ]
-    assert len({record.args[0] for record in stages}) == 1
-    assert all(record.args[2] == "completed" and record.args[3] >= 0 for record in stages)
+    assert len({row[0] for row in phases}) == 1
+    assert all(
+        row[2] == "completed" and isinstance(row[3], (int, float)) and row[3] >= 0 for row in phases
+    )
     assert all(command not in record.getMessage() for record in stages)
 
 
@@ -380,10 +387,11 @@ async def test_shell_bash_streams_typed_terminal_chunks_before_completion(
     first_chunk = asyncio.Event()
 
     async def on_progress(
-        _progress: float,
-        _total: float | None,
+        progress: float,
+        total: float | None,
         message: str | None,
     ) -> None:
+        del progress, total
         if message is not None:
             progress_messages.append(message)
             first_chunk.set()
@@ -424,11 +432,11 @@ def test_resolve_cwd_falls_back_to_process_cwd_with_a_typed_reason_when_unbound(
     # attribute-access import path resolves to the instance, not the module.
     shell_server_mod = sys.modules["clio_agent.tools.servers.shell_server"]
     monkeypatch.chdir(tmp_path)
-    events: list[tuple[object, ...]] = []
+    events: list[tuple[str, str, tuple[object, ...]]] = []
     orig_event = shell_server_mod.trace.event
 
-    def _spy(tag, fmt, *args):
-        events.append((tag, fmt, *args))
+    def _spy(tag: str, fmt: str, *args: object) -> None:
+        events.append((tag, fmt, args))
         orig_event(tag, fmt, *args)
 
     monkeypatch.setattr(shell_server_mod.trace, "event", _spy)
@@ -436,7 +444,7 @@ def test_resolve_cwd_falls_back_to_process_cwd_with_a_typed_reason_when_unbound(
     resolved = _resolve_cwd(None)
 
     assert resolved == tmp_path.resolve()
-    assert any("reason=no_active_workspace_root" in fmt for _tag, fmt, *_rest in events), events
+    assert any("reason=no_active_workspace_root" in fmt for _tag, fmt, _args in events), events
 
 
 @pytest.mark.asyncio

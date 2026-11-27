@@ -261,6 +261,7 @@ def _with_held_note(result: Any, name: str, namespace: str, proxy: Any) -> Any:
     the new server behind "close the view", which the failure was not about."""
 
     import mcp_types  # noqa: PLC0415
+    import pydantic  # noqa: PLC0415
 
     from clio_agent.errors import MCP_NAMESPACE_INSTANCE_HELD, held_by_views_text  # noqa: PLC0415
 
@@ -282,10 +283,9 @@ def _with_held_note(result: Any, name: str, namespace: str, proxy: Any) -> Any:
     blocks = [*content, note]
     if dataclasses.is_dataclass(result) and not isinstance(result, type):
         return dataclasses.replace(result, content=blocks)  # FastMCP's client result
-    try:
-        return result.model_copy(update={"content": blocks})
-    except AttributeError:
-        return result
+    if isinstance(result, pydantic.BaseModel):
+        return result.model_copy(update={"content": blocks})  # an MCP CallToolResult
+    return result
 
 
 class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
@@ -512,13 +512,11 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                         if pool_owner is not None
                         else None
                     )
-                    stopped_under = None
-                    if pool_owner is not None:
-                        born = namespace_instances.stops_begun(self, namespace)
-
-                        def stopped_under() -> bool:
-                            return namespace_instances.stops_begun(self, namespace) != born
-
+                    stopped_under = (
+                        namespace_instances.stop_begun_since(self, namespace)
+                        if pool_owner is not None
+                        else None
+                    )
                     try:
                         result = await app.state.external_tasks.call(
                             server,

@@ -444,18 +444,22 @@ class TaskOperations:
             access = TaskAccess(self.history, caller)
             try:
                 current = access.require(handle, "observe")
-                if (
+                own_active = (
                     not caller.human_action
                     and current.kind in {"Session", "Subagent"}
                     and current.owner.session_id == caller.session_id
                     and current.terminal_at is None
-                ):
+                )
+                waiting = (
+                    waiting_for_input(self.app, current)
+                    if settle_awaiting_input and current.terminal_at is None and not own_active
+                    else ""
+                )
+                if own_active:
                     outcomes.append(
                         {"handle": current.handle, "error": "cannot_wait_for_own_active_assignment"}
                     )
-                elif current.terminal_at is None and (
-                    waiting := waiting_for_input(self.app, current) if settle_awaiting_input else ""
-                ) in {AWAITING_INPUT, STOPPED}:
+                elif waiting in {AWAITING_INPUT, STOPPED}:
                     outcomes.append(awaiting_input_outcome(self.app, current, waiting))
                 elif current.terminal_at is None:
                     if waiting == "retiring" and wake is not None:

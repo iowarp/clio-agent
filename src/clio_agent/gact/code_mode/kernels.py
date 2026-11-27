@@ -63,11 +63,13 @@ _SPAWNER = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_pref
 
 
 def _spawn(argv: list[str], **kwargs: Any) -> "subprocess.Popen[bytes]":
-    """``subprocess.Popen(argv, **kwargs)`` started from the long-lived spawner thread."""
-    started: "subprocess.Popen[bytes]" = _SPAWNER.submit(
-        lambda: subprocess.Popen(argv, **kwargs)  # noqa: S603 - the confined kernel argv
+    """``subprocess.Popen(argv, **kwargs)`` started from the long-lived spawner thread.
+
+    The kernel's pipes carry UTF-8 JSON lines its reader decodes: they are binary.
+    """
+    return _SPAWNER.submit(
+        lambda: subprocess.Popen[bytes](argv, text=False, **kwargs)  # noqa: S603 - kernel argv
     ).result()
-    return started
 
 
 def idle_minutes() -> float:
