@@ -95,10 +95,12 @@ def _place_tool_media(messages: list[Message], placement: str) -> list[Message]:
     return out
 
 
-def request_messages(
-    context: list[Message], max_images: int | None, placement: str
-) -> list[Message]:
-    """The context as a request carries it: wire tags stripped, images capped, media placed."""
+def request_messages(context: list[Message], lm: object, placement: str) -> list[Message]:
+    """The context as a request carries it: wire tags stripped, images capped, media placed.
+
+    The cap is the LM's ``_clio_max_request_images`` (set by the LM factory; ``None`` = no cap).
+    """
+    max_images = getattr(lm, "_clio_max_request_images", None)
     return _place_tool_media(
         _within_image_budget(without_wire_tags(context), max_images), placement
     )

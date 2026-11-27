@@ -309,7 +309,6 @@ class _Loop:
         self.tools = self._listed_tools()
         self.config = _with_cache_key(config_from_lm_kwargs(sendable_lm_kwargs(self.lm)), self.lm)
         self.tool_media = str(getattr(self.lm, "_clio_tool_result_media", "native"))
-        self.max_images = getattr(self.lm, "_clio_max_request_images", None)
         self.arc, self.session, self.scope = record.arc_scope()
         if self.arc is None:
             raise NoContextStoreError()
@@ -588,7 +587,7 @@ class _Loop:
         return Request(
             model=self.lm.model,
             system=self.system or None,  # a bare agent sends no system message
-            messages=tuple(request_messages(self._context(), self.max_images, self.tool_media)),
+            messages=tuple(request_messages(self._context(), self.lm, self.tool_media)),
             tools=self.tools,
             config=self.config,
         )

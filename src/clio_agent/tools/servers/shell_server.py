@@ -24,6 +24,8 @@ from fastmcp import Context, FastMCP
 from pydantic import Field
 
 from clio_agent import conf
+from clio_agent.arc.clio_core_indexer import environ_for_model
+from clio_agent.paths import workspace_state_dir
 from clio_agent.runtime import trace
 from clio_agent.tools.builtin_annotations import (
     _BASH_ANNOTATIONS,
@@ -607,9 +609,6 @@ async def execute_shell(
         run_argv = [confined.command, *confined.args]
         if os.name == "nt" and (launch_error := windows_launch_error(run_argv, command)):
             return launch_error
-        from clio_agent.arc.clio_core_indexer import environ_for_model  # noqa: PLC0415
-        from clio_agent.paths import workspace_state_dir  # noqa: PLC0415
-
         run_env = {**environ_for_model(), **prepared, "PYTHONUTF8": "1", **confined.env_overlay}
         # The model's shell is not the authenticated human control channel.
         for internal_credential in ("CLIO_AUTH_TOKEN", "CLIO_GACT_BEARER_TOKEN"):
