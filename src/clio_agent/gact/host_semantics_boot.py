@@ -18,11 +18,13 @@ def install(app: Any) -> None:
 
     from clio_agent.gact.routes.plugin_pages import register_plugin_page_routes  # noqa: PLC0415
     from clio_agent.gact.routes.plugin_tabs import register_plugin_tab_routes  # noqa: PLC0415
+    from clio_agent.gact.routes.relays import register_relay_routes  # noqa: PLC0415
     from clio_agent.gact.server_surfaces import install_server_surfaces  # noqa: PLC0415
 
     install_server_surfaces(app)
     register_plugin_tab_routes(app)
     register_plugin_page_routes(app)
+    register_relay_routes(app)
 
 
 def start(app: Any) -> asyncio.Task[None]:
