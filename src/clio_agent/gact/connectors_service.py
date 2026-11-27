@@ -290,7 +290,8 @@ async def _check(app: Any, found: Entry, choice: state.Choice, key: str) -> dict
         except (MCPError, OSError, RuntimeError, ValueError, LookupError) as exc:
             # The running server's own failure is the check's outcome. But a read whose
             # kept-alive connection was retired under it (the server's calls moved to its
-            # proxy route) is no answer at all, so it reads once more first.
+            # proxy route) is no answer at all: it reads once more, over the fleet's
+            # route to that server (``_fleet_tools``), or starts one when none runs.
             live, error = None, f"{type(exc).__name__}: {exc}"
             if attempt == 0:
                 trace.event("TOOLS", "connector_probe_live_retry connector=%s", found.id)
