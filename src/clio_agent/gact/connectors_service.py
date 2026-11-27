@@ -195,7 +195,9 @@ async def _live_tools(
     agent = getattr(app_state, "agent", None)
     if external is None or agent is None:
         return None
-    owners = live_owners(agent, found.id, declared)
+    # Off the loop: it takes the workspace-fleet lock, which a fleet being built
+    # holds while it waits for this same loop to start its servers.
+    owners = await asyncio.to_thread(live_owners, agent, found.id, declared)
     if not owners:
         return None
 

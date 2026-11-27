@@ -27,6 +27,7 @@ from clio_agent.gact.native_work import now
 from clio_agent.runtime import net_refusals
 from clio_agent.tools import fleet_close_listeners, namespace_instances, shared_direct_connections
 from clio_agent.tools.mcp_runtime import enter_connection
+from clio_agent.tools.server_exit import MCP_STDIO_SERVER_EXITED, relaunch, server_exited
 from clio_agent.tools.task_client import AcceptedNativeCall, TaskAwareClient
 from clio_agent.tools.task_transport import TaskObservationTransport
 
@@ -277,6 +278,16 @@ def _usable(host: ExternalConnection) -> bool:
     )
 
 
+def _revivable(host: ExternalConnection) -> bool:
+    """Usable, or a kept-alive connection whose stdio relaunch failed and is tried again
+    on this same connection (never a second process beside it)."""
+    return _usable(host) or (
+        host.client is not None
+        and host.relaunches > 0
+        and not (host.closing or host.superseded or host.broken)
+    )
+
+
 async def lease_or_open(
     self: ExternalTasks,
     server: str,
@@ -329,9 +340,11 @@ async def _pooled(
         logger.info("external_mcp_kept_alive_joined server=%s by=%s pool=%s", server, by, pool[2])
         with suppress(Exception):  # a failed start is replaced below; its error is logged
             await asyncio.shield(starting[0])
-    ready = [host for host in self.connections.values() if host.pool == pool and _usable(host)]
+    ready = [host for host in self.connections.values() if host.pool == pool and _revivable(host)]
     if ready:
-        return max(ready, key=lambda candidate: candidate.holders)
+        host = max(ready, key=lambda candidate: candidate.holders)
+        await revive(host, by=by)
+        return host
     logger.info("external_mcp_kept_alive_opened server=%s by=%s pool=%s", server, by, pool[2])
     return await connection(self, server, configured, auth_scope, pool_owner=owner)
 
@@ -372,11 +385,52 @@ async def live_client(self: ExternalTasks, server: str, owners: Iterable[Any]) -
         if host.pool is not None
         and host.pool[0] == server
         and host.pool[2] in tags
-        and _usable(host)
+        and _revivable(host)
     ]
     if not ready:
         return None
-    return max(ready, key=lambda candidate: candidate.holders).client
+    host = max(ready, key=lambda candidate: candidate.holders)
+    try:
+        await revive(host, by="reader")
+    except Exception as error:  # a reader only needs a server that answers now
+        logger.info("external_mcp_live_client_relaunch_failed server=%s error=%r", server, error)
+        return None
+    return host.client
+
+
+async def revive(host: ExternalConnection, *, by: str) -> bool:
+    """Start ``host``'s stdio server again in place when its process exited.
+
+    A kept-alive connection keeps one client for its fleet: holders, leases and the
+    drivers of its accepted tasks all use that object, so the server is relaunched on
+    it (:func:`~clio_agent.tools.server_exit.relaunch`) rather than beside it, and the
+    fleet never has two processes of one server. Returns whether it relaunched.
+    """
+    async with host.reconnect_lock:
+        return await revive_locked(host, by=by, force=True)
+
+
+async def revive_locked(host: ExternalConnection, *, by: str, force: bool = False) -> bool:
+    """:func:`revive` under ``host.reconnect_lock``; ``force`` also restarts a client
+    whose earlier relaunch failed (it is closed, not exited)."""
+    client = host.client
+    if client is None or host.closing or host.superseded:
+        return False
+    if not server_exited(client) and not (force and not client.is_connected()):
+        return False
+    host.relaunches += 1
+    logger.warning(
+        "%s server=%s by=%s attempt=%d",
+        MCP_STDIO_SERVER_EXITED,
+        host.backend.server,
+        by,
+        host.relaunches,
+    )
+    await relaunch(client)
+    host.tools = None  # the new process lists its own tools
+    host.broken = False
+    logger.info("%s_relaunched server=%s by=%s", MCP_STDIO_SERVER_EXITED, host.backend.server, by)
+    return True
 
 
 def release(host: ExternalConnection, token: object) -> None:
@@ -546,6 +600,20 @@ async def _retire_superseded(self: ExternalTasks, current: ExternalConnection) -
         await _retire_stale(self, host, EXTERNAL_MCP_CONNECTION_SUPERSEDED)
 
 
+def _working(host: ExternalConnection) -> bool:
+    """Whether ``host`` carries work: a call waiting on its reply or an accepted task."""
+    return bool(host.rpcs or host.calls or any(not d.done() for d in host.drivers.values()))
+
+
+def _owned(host: ExternalConnection, owners: set[str]) -> bool:
+    """Whether ``host`` belongs to one of ``owners``' fleets.
+
+    An in-process connection is keyed on its proxy; a pooled direct (stdio or SSE) one
+    has a key of its own and names the proxy that keeps it in its pool key.
+    """
+    return host.cache_key[2] in owners or (getattr(host, "pool", None) or ("", "", ""))[2] in owners
+
+
 async def _retire_stale(
     self: ExternalTasks, host: ExternalConnection, reason: str, **why: str
 ) -> None:
@@ -557,7 +625,7 @@ async def _retire_stale(
     remote (http) server is not ours to stop: its calls finish, and it retires after.
     """
 
-    idle = not (host.rpcs or host.calls or any(not d.done() for d in host.drivers.values()))
+    idle = not _working(host)
     detail = "".join(f" {key}={value}" for key, value in why.items())
     logger.warning("%s server=%s retired=%s%s", reason, host.cache_key[0], idle, detail)
     if idle:
@@ -599,6 +667,10 @@ def watch_fleets(self: ExternalTasks) -> None:
     a namespace to a new proxy, on whichever thread does it; the retirement runs on the
     application's loop. Registered once per application, removed by
     :func:`close_connections`.
+
+    The other way round, a fleet whose proxy still carries a retained connection's
+    accepted work is held: the reaper keeps it (and so the server process doing that
+    work) until the work ends, as it keeps a fleet with a call in flight.
     """
 
     try:
@@ -615,7 +687,23 @@ def watch_fleets(self: ExternalTasks) -> None:
         owners = {f"in-process:{id(proxy):x}" for proxy in proxies}
         asyncio.run_coroutine_threadsafe(retire_owned(tasks, owners, root, reason), loop)
 
-    self._unwatch_fleets = fleet_close_listeners.listen(dropped)
+    def held(proxies: tuple[Any, ...]) -> bool:  # on the reaper's thread: reads only
+        tasks = owner()
+        if tasks is None or tasks._closing:
+            return False
+        owners = {f"in-process:{id(proxy):x}" for proxy in proxies}
+        return any(
+            _owned(host, owners) and _working(host) for host in tuple(tasks.connections.values())
+        )
+
+    unlisten = fleet_close_listeners.listen(dropped)
+    unhold = fleet_close_listeners.hold(held)
+
+    def unwatch_fleet() -> None:
+        unlisten()
+        unhold()
+
+    self._unwatch_fleets = unwatch_fleet
 
     async def stop(proxies: tuple[Any, ...], reason: str) -> int:
         tasks = owner()
@@ -667,11 +755,7 @@ def share_direct_connections(self: ExternalTasks) -> None:
 async def retire_owned(self: ExternalTasks, owners: set[str], root: str, reason: str) -> int:
     """Retire every retained connection to one of ``owners``; return how many matched."""
 
-    matched = [
-        host
-        for host in tuple(self.connections.values())
-        if host.cache_key[2] in owners or (getattr(host, "pool", None) or ("", "", ""))[2] in owners
-    ]
+    matched = [host for host in tuple(self.connections.values()) if _owned(host, owners)]
     for host in matched:
         await _retire_stale(
             self, host, EXTERNAL_MCP_CONNECTION_FLEET_CLOSED, fleet=root or "-", because=reason

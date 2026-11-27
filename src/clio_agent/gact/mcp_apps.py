@@ -33,6 +33,7 @@ from clio_agent.gact.mcp_app_observer_reasons import (
     recorded_mcp_app_observer_skips as recorded_mcp_app_observer_skips,
 )
 from clio_agent.gact.mcp_app_reopen_declaration import split_reopen_declaration
+from clio_agent.gact.mcp_app_same_view import adopt, publish_shown, same_view
 from clio_agent.gact.mcp_app_sandbox import (
     _SANDBOX_DOCUMENT,
     _csp_header,
@@ -323,8 +324,13 @@ class MCPAppRegistry:
         tool_input: Mapping[str, Any],
         tool_result: Mapping[str, Any],
         display_mode: str = "inline",
+        on_same_view: Callable[[MCPAppRecord], None] | None = None,
     ) -> MCPAppRecord:
-        """Store one private result after enforcing size and count bounds."""
+        """Store one private result after enforcing size and count bounds.
+
+        With ``on_same_view``, a result of a view already open in a live app is that
+        app (:mod:`.mcp_app_same_view`): it is refreshed, returned and passed to it.
+        """
 
         namespace = source_namespace.strip() if isinstance(source_namespace, str) else ""
         tool_result, service = split_service_declaration(tool_result)
@@ -347,6 +353,12 @@ class MCPAppRegistry:
         )
         with self._lock:
             self._expire_locked()
+            same = same_view(self._records.values(), record) if on_same_view else None
+            if same is not None and on_same_view is not None:
+                adopt(same, record)
+                self._records.move_to_end(same.app_instance_id)
+                on_same_view(same)
+                return same
             rejection: str | None = None
             if not namespace:
                 rejection = "MCP App result has no exact originating server namespace"
@@ -578,6 +590,12 @@ def _make_mcp_app_observer(app: FastAPI):
                 source_namespace=source_namespace or "",
             )
             return
+        from clio_agent.gact.mcp_app_calls import (  # noqa: PLC0415
+            record_opening_call,
+            replaying,
+        )
+
+        shown: list[MCPAppRecord] = []
         try:
             record = _registry(app).register(
                 session_id=sid,
@@ -586,12 +604,15 @@ def _make_mcp_app_observer(app: FastAPI):
                 resource_uri=uri,
                 tool_input=args,
                 tool_result=result_wire,
+                on_same_view=None if replaying() else shown.append,
             )
         except MCPAppAdmissionError as exc:
             _schedule_rejected_cleanup(app, exc.record)
             raise
+        if shown:
+            publish_shown(app, record)  # the view is open already: no second card or tab
+            return
         mcp_app_fleet.admitted(app, record)  # which fleet's server draws it
-        from clio_agent.gact.mcp_app_calls import record_opening_call  # noqa: PLC0415
 
         if record_opening_call(app, sid, record, tool):
             return  # a person's reopen mounts its own part (MA19)

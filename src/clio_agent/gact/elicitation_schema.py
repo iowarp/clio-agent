@@ -206,10 +206,18 @@ def _array_field(name: str, spec: Mapping[str, Any], required: set[str]) -> dict
         "min_length": None,
         "max_length": None,
         "default": spec.get("default"),
-        "title": str(spec.get("title") or name),
+        "title": str(spec.get("title") or _label(name)),
         "description": str(spec.get("description") or ""),
         "required": str(name) in required,
     }
+
+
+def _label(name: str) -> str:
+    """A readable label for a field whose schema gives no title (``running_services``
+    reads "Running services"), so a person never sees a raw property key."""
+
+    words = " ".join(str(name).replace("_", " ").replace("-", " ").split())
+    return words[:1].upper() + words[1:] if words else str(name)
 
 
 def _scalar_enum_names(spec: Mapping[str, Any], enum: Any) -> list[str] | None:
@@ -262,7 +270,7 @@ def _scalar_field(name: str, spec: Mapping[str, Any], required: set[str]) -> dic
         "min_length": _bounded_int(spec.get("minLength")),
         "max_length": _bounded_int(spec.get("maxLength")),
         "default": spec.get("default"),
-        "title": str(spec.get("title") or name),
+        "title": str(spec.get("title") or _label(name)),
         "description": str(spec.get("description") or ""),
         "required": str(name) in required,
     }

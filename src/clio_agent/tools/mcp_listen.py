@@ -204,8 +204,9 @@ async def watch_resource(
     on a fresh ``connect()``, and once re-acknowledged one update is reported, so the
     reader refetches whatever changed while it was gone. ``catch_up`` reports one on
     the first acknowledgement too, for a watch that replaces an earlier connection's.
-    A closed connection ends the watch: the executor starts a new one on the namespace's
-    next connection.
+    A connection closed on purpose ends the watch: the executor starts a new one on the
+    namespace's next connection. A stdio server whose process exited is retried like a
+    lost stream: ``connect()`` starts it again (:mod:`clio_agent.tools.server_exit`).
 
     A server that cannot listen (a connection before 2026-07-28, or a server that
     answers ``-32601``) ends the watch quietly. On an older protocol such a server
@@ -226,6 +227,7 @@ async def watch_resource(
     from mcp_types.jsonrpc import CONNECTION_CLOSED, METHOD_NOT_FOUND
 
     from clio_agent.tools.mcp_resource_updates import resource_updated  # noqa: PLC0415
+    from clio_agent.tools.server_exit import server_exited  # noqa: PLC0415
 
     delay = retry_after
     resumed = catch_up
@@ -257,11 +259,17 @@ async def watch_resource(
                 trace.event("TOOLS", "mcp_listen_resource_push namespace=%s uri=%s", namespace, uri)
                 return
             if exc.code == CONNECTION_CLOSED:
+                if not server_exited(client):
+                    trace.event(
+                        "TOOLS", "mcp_listen_resource_closed namespace=%s uri=%s", namespace, uri
+                    )
+                    return
+                # Its stdio process exited: the next connect() starts it again.
                 trace.event(
-                    "TOOLS", "mcp_listen_resource_closed namespace=%s uri=%s", namespace, uri
+                    "TOOLS", "mcp_listen_resource_server_exited namespace=%s uri=%s", namespace, uri
                 )
-                return
-            raise
+            else:
+                raise
         except (SubscriptionLost, TimeoutError) as exc:
             trace.event(
                 "TOOLS",

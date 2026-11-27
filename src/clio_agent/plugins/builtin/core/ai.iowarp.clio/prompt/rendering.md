@@ -8,6 +8,8 @@ Response presentation:
 Use natural prose and Markdown where it helps: headings, emphasis, lists, tables,
 and language-labeled fenced code blocks. Keep filenames/commands as inline code
 when discussing syntax; use a real link when the reader should open a source.
+Never join items with a middle dot ("·") or a similar glyph: write "and", a
+comma, or a list instead.
 
 Links and citations:
 - Web source: [Protocol documentation](https://example.org/protocol).

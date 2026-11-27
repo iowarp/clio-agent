@@ -9,6 +9,12 @@ places that drop proxies call :func:`proxies_dropped`; the application listens w
 :func:`listen` and retires the connections to them (typed
 ``external_mcp_connection_fleet_closed``).
 
+The other way round, a retained connection can still carry work the server accepted
+(an MCP task it is running, or a call waiting on its reply) after every turn ended. The
+fleet is then in use even though no call runs through it, and closing it would kill the
+process doing that work. The application says so with :func:`hold`, and the reaper asks
+:func:`fleet_held` before it treats a fleet as idle.
+
 This module only carries the notice; it owns no connection.
 """
 
@@ -23,8 +29,48 @@ from clio_agent.runtime import trace
 #: ``listener(root, proxies, reason)``; called on the thread that dropped them.
 Listener = Callable[[str, tuple[Any, ...], str], None]
 
+#: ``holder(proxies)``: whether accepted work still runs on a connection to one of them.
+Holder = Callable[[tuple[Any, ...]], bool]
+
 _LOCK = threading.Lock()
 _LISTENERS: list[Listener] = []
+_HOLDERS: list[Holder] = []
+
+
+def hold(holder: Holder) -> Callable[[], None]:
+    """Register ``holder``; return the function that removes it."""
+
+    with _LOCK:
+        _HOLDERS.append(holder)
+
+    def remove() -> None:
+        with _LOCK:
+            if holder in _HOLDERS:
+                _HOLDERS.remove(holder)
+
+    return remove
+
+
+def fleet_held(executor: Any) -> bool:
+    """Whether accepted work still runs on one of a fleet's proxies.
+
+    Called on the reaper's thread. A holder that fails cannot prove the fleet idle, so
+    the fleet counts as held (typed).
+    """
+
+    proxies = fleet_proxies(executor)
+    if not proxies:
+        return False
+    with _LOCK:
+        holders = tuple(_HOLDERS)
+    for holder in holders:
+        try:
+            if holder(proxies):
+                return True
+        except Exception as exc:  # noqa: BLE001 - can't prove idle: keep the fleet
+            trace.event("TOOLS", "fleet_hold_probe_failed error=%s", type(exc).__name__)
+            return True
+    return False
 
 
 def listen(listener: Listener) -> Callable[[], None]:
