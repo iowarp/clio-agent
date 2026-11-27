@@ -230,7 +230,8 @@ def join_call_to_serving_child(
         child = session_net_child(app, session_id, namespace)
         if child:
             register_serving_child(app, call_id, child)
-            net_refusals.join(child)  # its refusals reach this call's result
+            # Its refusals reach this call's result, as the server's: calls share it.
+            net_refusals.join(child, label=f"the {namespace} server")
     except Exception:  # noqa: BLE001 — a linkage note must never break the tool call
         logger.debug("serving-child join skipped reason=join_unavailable", exc_info=True)
 

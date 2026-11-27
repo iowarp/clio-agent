@@ -282,7 +282,8 @@ async def admit_call(
     profile = service.profiles.get(record.profile)
     if record.inflight is not None and profile is not None and profile.egress_channel:
         # The browser's refused egress (a fenced subresource host) reaches this call's result.
-        record.inflight.context.run(net_refusals.join, profile.egress_channel)
+        # The profile's pages share it with other calls.
+        record.inflight.context.run(net_refusals.join, profile.egress_channel, label="the browser")
     parts = urlsplit(record.url())
     if parts.scheme.lower() not in _WEB_SCHEMES:
         return

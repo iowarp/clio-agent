@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from clio_agent import conf
-from clio_agent.runtime import net_refusals, trace
+from clio_agent.runtime import trace
 
 __all__ = [
     "KERNEL_SERVER_PYTHON",
@@ -361,7 +361,6 @@ def kernel_for(session_id: str, scope: str, workspace: Path, *, read_only: bool 
             _KERNELS[key] = kernel
             _start_reaper()
     kernel.ensure_started()
-    net_refusals.join(net_refusals.channel_of(kernel.confinement))  # this script's egress
     return kernel
 
 

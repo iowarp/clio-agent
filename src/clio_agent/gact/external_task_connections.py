@@ -17,7 +17,7 @@ from fastmcp_tasks.client_models import ClientGetTaskResult
 from mcp.shared.exceptions import MCPError
 
 from clio_agent.arc.task_types import BackendReference
-from clio_agent.gact import view_call_cancel, view_call_ledger
+from clio_agent.gact import external_task_records, view_call_cancel, view_call_ledger
 from clio_agent.gact.native_work import now
 from clio_agent.runtime import net_refusals
 from clio_agent.tools import fleet_close_listeners, namespace_instances, shared_direct_connections
@@ -171,7 +171,13 @@ async def connection(
                 if previous is not None and previous.submission.handle != call.submission.handle:
                     raise ValueError("Server reused an active task identity for another submission")
                 host.calls[call.task.task_id] = call  # retain custody before persistence
-                net_refusals.outlast(call.submission.handle)  # its result names its refusals
+                # Its result names its refusals; its record keeps them across a restart.
+                net_refusals.outlast(
+                    call.submission.handle,
+                    keep=external_task_records.refusal_keeper(
+                        self.history, asyncio.get_running_loop()
+                    ),
+                )
 
                 async def adopt() -> Any:
                     return await self.history.io.run(self._adopt, host, call)
@@ -290,7 +296,8 @@ async def lease_or_open(
         host = await _lease(self, server, configured, auth_scope, owner, token)
     from clio_agent.tools.fleet_serving import net_child_of  # noqa: PLC0415
 
-    net_refusals.join(net_child_of(getattr(host.client, "transport", None)))
+    channel = net_child_of(getattr(host.client, "transport", None))
+    net_refusals.join(channel, label=f"the {server} server")  # shared by its calls
     return host
 
 

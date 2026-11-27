@@ -156,8 +156,12 @@ def _record_reply(
             sid, dumped = current.owner.session_id, reply.model_dump(mode="json")
             observation = self.history.write_content(sid, dumped)
             # The server's reply stays as sent; the agent's result also names the egress
-            # CLIO refused while the task ran, which the reply shows only as a reset.
-            notice = net_refusals.settled_notice(current.handle)
+            # CLIO refused while the task ran, which the reply shows only as a reset. Its
+            # record kept them (external_task_records.keep_refusals): a restart since the
+            # call lost the live watch, not them.
+            notice = net_refusals.settled_notice(current.handle) or str(
+                details.get("network_refused") or ""
+            )
             result = (
                 self.history.write_content(sid, {**dumped, "network_refused": notice})
                 if notice

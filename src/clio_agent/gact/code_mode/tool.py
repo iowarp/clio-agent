@@ -303,7 +303,14 @@ def execute_script(
     poll = poll_s()
     all_bindings = {**dict(getattr(agent, "_clio_kernel_bindings", None) or {}), **(bindings or {})}
     try:
-        with kernel.lock:
+        # The kernel is this script's alone while it holds the lock: what the chokepoint
+        # refused on its channel then is this script's egress.
+        with (
+            kernel.lock,
+            net_refusals.own_channel(
+                net_refusals.channel_of(getattr(kernel, "confinement", None))
+            ) as egress,
+        ):
             kernel.bind(
                 stub_table(
                     agent.tools,
@@ -361,7 +368,7 @@ def execute_script(
     # The egress refused on the kernel's channel while this script ran, which its output
     # shows only as a reset or a 403 (a background script's result is recorded after its
     # call returned, so it names them itself).
-    outcome |= net_refusals.channel_fields(getattr(kernel, "confinement", None), started)
+    outcome |= egress()
     if kernel.replaced:  # the scope's earlier kernel, and its variables, are gone
         outcome["new_kernel"], kernel.replaced = kernel.replaced, ""
     if kernel.read_only:  # plan mode: a write elsewhere is refused by the fence
