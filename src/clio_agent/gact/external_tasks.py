@@ -66,13 +66,17 @@ logger = logging.getLogger(__name__)
 
 #: A call's server was stopped (replaced, or its fleet closed) before it answered.
 SERVER_STOPPED_UNDER_CALL = "mcp_server_stopped_under_call"
-#: A task's stdio server was relaunched and the new process has no record of the task.
-RELAUNCHED_SERVER_UNKNOWN = "mcp_relaunched_server_unknown_task"
-RELAUNCHED_SERVER_UNKNOWN_TEXT = (
-    f"{RELAUNCHED_SERVER_UNKNOWN}: the server was started again after its process exited, "
-    "and the new process has no record of this work. Nothing was resubmitted; inspect its "
-    "effects before deliberately retrying."
-)
+#: The server answered for a task and has no record of it (or serves no tasks): it ended.
+SERVER_DISOWNED_TASK = "mcp_server_disowned_task"
+
+
+def disowned_text(server: str, reply: str) -> str:
+    """Why a task ended cancelled: its server's own answer that it does not know it."""
+    return (
+        f"{SERVER_DISOWNED_TASK}: the {server} server has no record of this work. It "
+        f"answered: {reply}. Nothing was resubmitted; inspect its effects before "
+        "deliberately retrying."
+    )
 
 
 def relaunching_text(server: str, attempt: int) -> str:
@@ -84,16 +88,17 @@ def relaunching_text(server: str, attempt: int) -> str:
     )
 
 
-def _unknown_task(error: BaseException) -> bool:
-    """Whether ``error`` is the server's own answer that it does not know the task."""
+def _disowned(error: BaseException) -> str | None:
+    """The server's own answer, when ``error`` says it does not know the task (an
+    unknown task id) or serves no tasks at all; ``None`` for any other failure."""
     seen: set[int] = set()
     current: BaseException | None = error
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        if getattr(current, "code", None) == mcp_types.INVALID_PARAMS:
-            return True
+        if getattr(current, "code", None) in {mcp_types.INVALID_PARAMS, mcp_types.METHOD_NOT_FOUND}:
+            return (str(current) or type(current).__name__)[:300]
         current = current.__cause__ or current.__context__
-    return False
+    return None
 
 
 def _reply_text(reply: Any) -> str:
@@ -137,8 +142,6 @@ class ExternalConnection:
     broken: bool = False  # its transport failed under a call: never leased again
     #: How often its stdio server was started again after its process exited (server_exit).
     relaunches: int = 0
-    #: Accepted tasks rebound to a relaunched process, whose ``tasks/get`` decides them.
-    relaunched: set[str] = field(default_factory=set)
 
 
 class ExternalTasks:
@@ -224,83 +227,76 @@ class ExternalTasks:
                     ),
                 )
 
-            async def recover(
-                handle: str = handle,
-                submission: SubmissionContext = submission,
-                stdio: bool = stdio,
-            ) -> bool:
-                if self._closing:
-                    return True
-                task = await self.history.io.run(self.history.task_snapshot, handle)
-                if task is None or task.terminal_at is not None:
-                    return True
-                if self.app.state.agent is None:
-                    return False
-                try:
-                    configured = await self.history.io.run(self._recovery_client, task)
-                    host = await self.connection(
-                        task.backend.server,
-                        configured,
-                        task.backend.auth_scope,
-                        original=task.backend,
-                    )
-                    if stdio:  # the new process answers for itself: an unknown task is final
-                        host.relaunched.add(task.backend.task_id)
-                        logger.warning(
-                            "%s server=%s by=restore task=%s",
-                            MCP_STDIO_SERVER_EXITED,
-                            task.backend.server,
-                            task.backend.task_id,
-                        )
-                    existing = host.calls.get(task.backend.task_id)
-                    if existing is None:
-                        creation = ClientCreateTaskResult.model_validate(
-                            {
-                                "task_id": task.backend.task_id,
-                                "status": task.raw_status
-                                if task.raw_status in {"working", "input_required"}
-                                else "working",
-                                "created_at": task.created_at,
-                                "last_updated_at": task.updated_at,
-                                "result_type": "task",
-                            }
-                        )
-                        binding = TaskSubmission(
-                            handle,
-                            submission.tool,
-                            task.submission,
-                            submission.tool_version,
-                            submission.output_schema,
-                            submission.argument_digest,
-                        )
-                        assert host.client is not None
-                        existing = AcceptedNativeCall(
-                            binding,
-                            ToolTask(host.client, submission.tool, creation, raise_on_error=False),
-                            creation,
-                        )
-                        host.calls[task.backend.task_id] = existing
-                    elif existing.submission.handle != handle:
-                        raise ValueError(
-                            "Original external task identity collides with another handle"
-                        )
-                    self._drive(host, existing)
-                    return (
-                        True  # the SDK observer now owns visibility, including reconnect failures
-                    )
-                except Exception as error:
-                    logger.exception(
-                        "Task boundary reason=external_reconnection_failed error_type=%s",
-                        type(error).__name__,
-                    )
-                    reason = str(error)
-                    await self._record_or_defer(
-                        "external-recovery-attention:" + handle,
-                        lambda: self._attention(handle, reason),
-                    )
-                    return False
+            self.recovery.defer("external-recovery:" + handle, partial(self._reattach, handle))
 
-            self.recovery.defer("external-recovery:" + handle, recover)
+    async def _reattach(self, handle: str) -> bool:
+        """Bind a tracked task to a live client for its server and drive it from the
+        server's own ``tasks/get``: the one path after an agent restart and after a
+        connection stops under accepted work. Nothing is resubmitted. ``False`` while the
+        server cannot be reached, so recovery retries and the task stays uncertain."""
+        if self._closing:
+            return True
+        task = await self.history.io.run(self.history.task_snapshot, handle)
+        if task is None or task.terminal_at is not None or task.backend is None:
+            return True
+        if self.app.state.agent is None:
+            return False
+        try:
+            submission = SubmissionContext.model_validate(
+                await self.history.io.run(self.history.read_content, task.submission)
+            )
+            configured = await self.history.io.run(self._recovery_client, task)
+            host = await self.connection(
+                task.backend.server, configured, task.backend.auth_scope, original=task.backend
+            )
+            existing = host.calls.get(task.backend.task_id)
+            if existing is None:
+                creation = ClientCreateTaskResult.model_validate(
+                    {
+                        "task_id": task.backend.task_id,
+                        "status": task.raw_status
+                        if task.raw_status in {"working", "input_required"}
+                        else "working",
+                        "created_at": task.created_at,
+                        "last_updated_at": task.updated_at,
+                        "result_type": "task",
+                    }
+                )
+                binding = TaskSubmission(
+                    handle,
+                    submission.tool,
+                    task.submission,
+                    submission.tool_version,
+                    submission.output_schema,
+                    submission.argument_digest,
+                )
+                assert host.client is not None
+                existing = AcceptedNativeCall(
+                    binding,
+                    ToolTask(host.client, submission.tool, creation, raise_on_error=False),
+                    creation,
+                )
+                host.calls[task.backend.task_id] = existing
+            elif existing.submission.handle != handle:
+                raise ValueError("Original external task identity collides with another handle")
+            logger.info(
+                "external_task_reattached server=%s task=%s",
+                task.backend.server,
+                task.backend.task_id,
+            )
+            self._drive(host, existing)
+            return True  # the SDK observer now owns visibility, including reconnect failures
+        except Exception as error:
+            logger.exception(
+                "Task boundary reason=external_reconnection_failed error_type=%s",
+                type(error).__name__,
+            )
+            reason = str(error)
+            await self._record_or_defer(
+                "external-recovery-attention:" + handle,
+                lambda: self._attention(handle, reason),
+            )
+            return False
 
     def _recovery_client(self, task: TaskSnapshot) -> Client:
         """Resolve current trusted configuration and require its original auth scope."""
@@ -736,15 +732,17 @@ class ExternalTasks:
                     type(error).__name__,
                 )
                 handle = call.submission.handle
-                if call.task.task_id in host.relaunched and _unknown_task(error):
-                    # The relaunched server answered for itself: it has no record of
-                    # this work. Asking again cannot change that, so retries end here.
+                answer = _disowned(error)
+                if answer is not None:
+                    # The server answered for itself: it has no record of this work.
+                    # Asking again cannot change that, so the task ends here.
                     await self._record_or_defer(
-                        "external-attention:" + handle,
-                        lambda: self._attention(handle, RELAUNCHED_SERVER_UNKNOWN_TEXT),
+                        "external-disowned:" + handle,
+                        partial(self._disown, handle, disowned_text(host.backend.server, answer)),
+                        retire=lambda: self._release(host, call),
                     )
                     return
-                reason = str(error)
+                reason = external_task_connections.failure_reason(host, error)
                 await self._record_or_defer(
                     "external-attention:" + handle,
                     lambda: self._attention(handle, reason),
@@ -761,12 +759,14 @@ class ExternalTasks:
                     driver = host.drivers.get(call.task.task_id)
                     if driver is not None and not driver.done():
                         return False
+                    stdio = "stdio" in host.backend.transport.casefold()
+                    if stdio and (host.closing or host.superseded):
+                        # Stopped on purpose, not lost: its server may still hold the
+                        # task. Leave the stopped connection and reattach on a live one.
+                        await self._release(host, call)
+                        return await self._reattach(handle)
                     async with host.reconnect_lock:
                         assert host.client is not None
-                        stdio = "stdio" in host.backend.transport.casefold()
-                        if stdio and (host.closing or host.superseded):
-                            # Stopped on purpose; the attention record remains durable.
-                            return True
                         if stdio and (server_exited(host.client) or not host.client.is_connected()):
                             # Its process exited: start it again through its launch path,
                             # on this connection, and ask the new process for this task.
@@ -785,8 +785,6 @@ class ExternalTasks:
                             await enter_connection(host.client)
                         await host.client.check_health()
                         rebound = call.reconnected(host.client)
-                        if host.relaunches:
-                            host.relaunched.add(call.task.task_id)
                         host.calls[call.task.task_id] = rebound
                         self._drive(host, rebound)  # original identity/schema; never tools/call
                     return False  # only an actual persisted tasks/get reply clears lost visibility
@@ -796,6 +794,19 @@ class ExternalTasks:
         driver = asyncio.create_task(result())
         host.drivers[call.task.task_id] = driver
         driver.add_done_callback(lambda finished: self._schedule_retirement(host, call))
+
+    def _disown(self, handle: str, text: str) -> None:
+        """End a call its server has no record of, and publish that ending."""
+        external_task_records.disowned(self.history, handle, text)
+        self.flagged.settled(self.app, handle, failed=True)
+        external_task_inputs.finish_terminal(self, handle)
+
+    async def _release(self, host: ExternalConnection, call: AcceptedNativeCall) -> None:
+        """Detach ``call`` from ``host`` so a stopped connection can close behind it."""
+        if host.calls.get(call.task.task_id) is call:
+            host.calls.pop(call.task.task_id)
+            host.drivers.pop(call.task.task_id, None)
+        await self._retire_connection(host)
 
     def _recorded_behind(self, host: ExternalConnection) -> None:
         """A record written behind its reply landed; the connection may retire now."""

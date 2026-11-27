@@ -7,9 +7,11 @@ import hashlib
 from types import SimpleNamespace
 from typing import Any
 
+import mcp_types
 import pytest
 from fastmcp import Client, FastMCP
-from fastmcp_tasks.client_models import ClientGetTaskResult
+from fastmcp_tasks.client_models import ClientCreateTaskResult, ClientGetTaskResult
+from mcp.shared.exceptions import MCPError
 
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.task_types import (
@@ -22,10 +24,14 @@ from clio_agent.arc.task_types import (
     argument_digest,
 )
 from clio_agent.gact.core_recovery import CoreRecovery
-from clio_agent.gact.external_tasks import ExternalConnection, ExternalTasks
+from clio_agent.gact.external_tasks import (
+    SERVER_DISOWNED_TASK,
+    ExternalConnection,
+    ExternalTasks,
+)
 from clio_agent.gact.questions import QuestionCommands
 from clio_agent.gact.task_history import TaskHistory
-from clio_agent.tools.task_client import TaskSubmission, restore_native_call
+from clio_agent.tools.task_client import AcceptedNativeCall, TaskSubmission, restore_native_call
 
 STAMP = "2026-10-14T00:00:00Z"
 
@@ -429,3 +435,138 @@ async def test_invalid_external_terminal_is_failed_with_raw_evidence_and_one_own
     finally:
         await owner.close()
         await recovery.drain()
+
+
+def _running_task(
+    history: TaskHistory, transport: str
+) -> tuple[ExternalConnection, TaskSubmission]:
+    """One accepted, running external task and the connection that observes it."""
+    backend = BackendReference(
+        owner="external_mcp",
+        server="remote",
+        session="original",
+        task_id="native-task",
+        transport=transport,
+    )
+    submission = TaskSubmission(
+        "task_reattach",
+        "work",
+        history.write_content("owner", {"arguments": {}}),
+        None,
+        None,
+        argument_digest({}),
+    )
+    history.record_snapshot(
+        TaskSnapshot(
+            handle=submission.handle,
+            kind="MCP",
+            tool="work",
+            label="External work",
+            owner=TaskOwner(human_id="human", session_id="owner", assignment_id="assignment"),
+            invocation_id="reattach-call",
+            backend=backend,
+            submission=submission.context,
+            status="running",
+            created_at=STAMP,
+            updated_at=STAMP,
+        ),
+        observation_id="accepted",
+    )
+    return ExternalConnection(backend.model_copy(update={"task_id": ""})), submission
+
+
+def _observed(submission: TaskSubmission, error: BaseException) -> AcceptedNativeCall:
+    """An accepted call whose SDK observation fails with ``error``."""
+
+    async def result() -> None:
+        raise error
+
+    creation = ClientCreateTaskResult.model_validate(
+        {
+            "task_id": "native-task",
+            "status": "working",
+            "created_at": STAMP,
+            "last_updated_at": STAMP,
+            "result_type": "task",
+        }
+    )
+    task = SimpleNamespace(task_id="native-task", result=result)
+    return AcceptedNativeCall(submission, task, creation)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        MCPError(mcp_types.INVALID_PARAMS, "Unknown task id: native-task"),
+        MCPError(mcp_types.METHOD_NOT_FOUND, "Method not found: tasks/get"),
+    ],
+)
+async def test_a_server_that_disowns_its_task_ends_it_cancelled_with_its_answer(
+    arc: ARCMemory, error: MCPError
+) -> None:
+    """SABOTAGE: drop the ``_disowned`` check; the task stays uncertain and retries forever."""
+    history = TaskHistory(arc)
+    recovery = CoreRecovery(history)
+    app = SimpleNamespace(
+        state=SimpleNamespace(task_history=history, task_recovery=recovery, agent=None)
+    )
+    external = ExternalTasks(app)
+    try:
+        host, submission = await history.io.run(_running_task, history, "StdioTransport")
+        call = _observed(submission, error)
+        host.calls["native-task"] = call
+        external._drive(host, call)
+        await host.drivers["native-task"]
+        saved = history.task_snapshot(submission.handle)
+        assert saved is not None and saved.status == "cancelled" and saved.terminal_at
+        assert SERVER_DISOWNED_TASK in saved.progress.message
+        assert error.message in saved.progress.message  # the server's own answer
+        assert saved.result is not None
+        recorded = history.read_content(saved.result)
+        assert isinstance(recorded, dict) and error.message in str(recorded["error"])
+        assert "external-reconnect:" + submission.handle not in recovery.pending
+        assert host.calls == {}
+        notices = await history.io.run(history.pending_mail, "owner")
+        assert [item.kind for item in notices] == ["task_result"]
+    finally:
+        await recovery.drain()
+        await external.close()
+        await history.io.close()
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_stdio_connection_reattaches_its_task_instead_of_dropping_it(
+    arc: ARCMemory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SABOTAGE: return early for a superseded host; the task is never asked about again."""
+    history = TaskHistory(arc)
+    recovery = CoreRecovery(history)
+    app = SimpleNamespace(
+        state=SimpleNamespace(task_history=history, task_recovery=recovery, agent=None)
+    )
+    external = ExternalTasks(app)
+    reattached: list[str] = []
+
+    async def reattach(handle: str) -> bool:
+        reattached.append(handle)
+        return True
+
+    monkeypatch.setattr(external, "_reattach", reattach)
+    try:
+        host, submission = await history.io.run(_running_task, history, "StdioTransport")
+        host.superseded, host.stop_reason = True, "external_mcp_connection_fleet_closed"
+        call = _observed(submission, ConnectionError("Connection closed"))
+        host.calls["native-task"] = call
+        external._drive(host, call)
+        await host.drivers["native-task"]
+        await recovery.drain()
+        assert reattached == [submission.handle]
+        assert host.calls == {} and host.drivers == {}  # the stopped connection can close
+        saved = history.task_snapshot(submission.handle)
+        assert saved is not None and saved.status == "task_state_uncertain"
+        assert saved.progress.message.startswith("external_mcp_connection_fleet_closed")
+    finally:
+        await recovery.drain()
+        await external.close()
+        await history.io.close()

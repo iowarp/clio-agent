@@ -125,6 +125,36 @@ def record_progress(
         )
 
 
+def disowned(history: Any, handle: str, text: str) -> None:
+    """End an accepted call its server says it has no record of: cancelled, with that
+    answer as the reason. The server, not CLIO, decided; nothing ran again."""
+    with history.serialized():
+        current = history.task_snapshot(handle)
+        if current is None or current.terminal_at is not None:
+            return
+        result = history.write_content(current.owner.session_id, {"error": text})
+        stamp = now()
+        history.record_snapshot(
+            current.model_copy(
+                update={
+                    "status": "cancelled",
+                    "raw_status": "unknown_to_server",
+                    "activity": "",
+                    "settlement": "external_acknowledged",
+                    "connection_freshness": "fresh",
+                    "attention_episode": None,
+                    "terminal_at": stamp,
+                    "updated_at": stamp,
+                    "result": result,
+                    "progress": TaskProgress(message=text),
+                    "supported_actions": ("get_result",),
+                }
+            ),
+            observation_id=uuid4().hex,
+        )
+    net_refusals.settled(handle)
+
+
 def rejected(history: Any, handle: str, reason: str) -> None:
     """Settle a call the server refused before it started."""
     with history.serialized():

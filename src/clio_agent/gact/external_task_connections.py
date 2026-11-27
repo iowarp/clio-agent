@@ -116,8 +116,11 @@ async def connection(
         if isolated
         else _in_process_owner(configured),
     )
-    if key in self.connections:
-        return self.connections[key]
+    cached = self.connections.get(key)
+    if cached is not None and not (cached.superseded or cached.closing or cached.client is None):
+        return cached
+    if cached is not None:  # stopped: its last calls detach from it; open a live one
+        self.connections.pop(key)
     opening = self._opening.get(key)
     if opening is None:
 
