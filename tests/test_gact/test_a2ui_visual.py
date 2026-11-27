@@ -350,6 +350,25 @@ def test_unready_view_never_returns_previous_pixels() -> None:
     assert stopped.value.reason == "a2ui_capture_stopped"
 
 
+def test_a_failed_view_ends_the_wait_with_the_apps_own_failure_text() -> None:
+    """A loading view is waited for; once it reports ``failed`` the capture ends at once,
+    typed, carrying the app's text verbatim (it never waits for a Stop)."""
+    bridge = A2UIVisualFeedback()
+    loading = {"readiness": {"ready": False, "state": "loading", "detail": "Mounting."}}
+    bridge.report("sid", viewer(ready=False, state=loading))
+    text = "Chart failed: field 'temperature' is not in the data. " + "x" * 400
+    failed = {"readiness": {"ready": False, "state": "failed", "detail": text}}
+    with ThreadPoolExecutor(1) as pool:
+        future = pool.submit(bridge.capture, "sid", "surface", 1)
+        time.sleep(0.3)
+        assert not future.done()
+        bridge.report("sid", viewer(ready=False, view_revision=1, state=failed))
+        with pytest.raises(VisualFeedbackError) as ended:
+            future.result(timeout=CLAIM_WAIT_S)
+    assert ended.value.reason == "a2ui_render_failed"
+    assert str(ended.value).endswith(text)
+
+
 def test_a_slow_view_is_captured_however_long_it_takes() -> None:
     """Found live (KQ18): app views in a workbench took longer than the old 15 s budget, the
     capture failed and the view's late reply was refused (409). The capture now waits."""

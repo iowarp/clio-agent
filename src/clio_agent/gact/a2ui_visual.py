@@ -392,8 +392,9 @@ class A2UIVisualFeedback:
         """Wait for an eligible mounted renderer and its matching fresh PNG.
 
         There is no time limit: the wait ends when the viewer answers, when the viewer is
-        gone (its lease lapses or its view changes, a typed refusal), or when ``stopped``
-        says the call was stopped (``a2ui_capture_stopped``).
+        gone (its lease lapses or its view changes, a typed refusal), when a matched viewer
+        reports its view failed to render (``a2ui_render_failed`` with the app's own text),
+        or when ``stopped`` says the call was stopped (``a2ui_capture_stopped``).
 
         ``conversation_open`` says whether a CLIO window follows the session's events.
         While one does, a surface it has not mounted yet (one just created) gets up to
@@ -439,10 +440,14 @@ class A2UIVisualFeedback:
             ]
             # A producer update may reach the mounted browser on its next SSE/poll.
             # Wait only for an older definition; never substitute a newer revision
-            # or a different explicit human view epoch.
+            # or a different explicit human view epoch. A failed view is terminal.
             while view_revision is None and (
                 (not matched and any(row.report.revision < revision for row in eligible))
-                or (matched and not any(row.report.ready for row in matched))
+                or (
+                    matched
+                    and not any(row.report.ready for row in matched)
+                    and not _failed(matched)
+                )
             ):
                 _raise_if_stopped(stopped)
                 self._condition.wait(0.25)
@@ -458,6 +463,11 @@ class A2UIVisualFeedback:
                 ]
                 matched = [row for row in eligible if row.report.revision == revision]
             if matched and not any(row.report.ready for row in matched):
+                if failed := _failed(matched):
+                    raise VisualFeedbackError(
+                        "a2ui_render_failed",
+                        "The view failed to render" + _viewer_reasons(failed, bound=None),
+                    )
                 raise VisualFeedbackError(
                     "a2ui_render_not_ready",
                     "Required data or rendering is not ready" + _viewer_reasons(matched),
@@ -508,21 +518,29 @@ class A2UIVisualFeedback:
                 self._requests.pop(request_id, None)
 
 
-def _viewer_reasons(rows: list[_Viewer]) -> str:
+def _readiness(row: _Viewer) -> dict[str, Any]:
+    """The viewer's reported ``state.readiness`` (empty when an older build omits it)."""
+    readiness = row.report.state.get("readiness")
+    return readiness if isinstance(readiness, dict) else {}
+
+
+def _failed(rows: list[_Viewer]) -> list[_Viewer]:
+    """Viewers whose view failed to render as reported; ``loading`` or no state may recover."""
+    return [row for row in rows if _readiness(row).get("state") == "failed"]
+
+
+def _viewer_reasons(rows: list[_Viewer], *, bound: int | None = 300) -> str:
     """What the viewers say keeps the view from being ready (a chart's own error).
 
-    A view that failed to render stays not ready; its reason, not only the timeout,
-    tells the producer what to change (its data, a field name).
+    Its reason tells the producer what to change (its data, a field name). ``bound``
+    shortens each reason; ``None`` keeps a failure's text verbatim (the report is bounded).
     """
 
     reasons: list[str] = []
     for row in rows:
-        readiness = (
-            row.report.state.get("readiness") if isinstance(row.report.state, dict) else None
-        )
-        detail = str(readiness.get("detail") or "").strip() if isinstance(readiness, dict) else ""
+        detail = str(_readiness(row).get("detail") or "").strip()[:bound]
         if detail and detail not in reasons:
-            reasons.append(detail[:300])
+            reasons.append(detail)
     return f": {'; '.join(reasons)}" if reasons else "; inspect viewer state."
 
 

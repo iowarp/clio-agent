@@ -64,6 +64,11 @@ _DEFAULT_HINTS: dict[str, str] = {
         "with expected_view_revision=null to wait for readiness. Retry at most twice "
         "for this view before reporting a limitation."
     ),
+    "a2ui_render_failed": (
+        "the app reported this view's own failure (the detail). Waiting or capturing the "
+        "same view again will not help: change what it renders (its data, a field name, "
+        "a missing image) with an update, then capture the new revision."
+    ),
     "a2ui_session_unavailable": (
         "this tool call ran outside an active GACT session turn; it cannot "
         "succeed standalone, do not retry it here"
