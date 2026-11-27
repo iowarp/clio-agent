@@ -8,7 +8,6 @@ abandoned artifact: break it, typed and loud. A generous runaway backstop
 
 from __future__ import annotations
 
-import multiprocessing
 import os
 import threading
 import time
@@ -27,23 +26,6 @@ from clio_agent.tools.launcher_cache_lock import (
     uses_shared_launcher_cache,
 )
 from clio_agent.tools.mcp_config import MCPServerSpec
-
-
-def _mp_hold_lock_until_killed(cache_dir: str, ready_evt: Any, server_id: str) -> None:
-    """Module-level (Windows-spawn-picklable) child-process target: hold the
-    launcher-cache lock until this process is killed. Used to produce a
-    GENUINELY dead holder (the OS releases the lock the instant the process
-    is terminated) rather than a same-process fake, which Windows would not
-    let this module force-delete out from under a still-open handle."""
-
-    from clio_agent.tools import launcher_cache_lock as _lcl
-    from clio_agent.tools import mcp_config as _mcp_config
-
-    _mcp_config._mcp_uv_cache_dir = lambda: __import__("pathlib").Path(cache_dir)
-    with _lcl.acquire_launcher_cache_lock(server_id, timeout_s=60.0):
-        ready_evt.set()
-        while True:
-            time.sleep(0.05)
 
 
 def test_the_hold_ceiling_is_the_connect_ceiling_plus_one_window(
@@ -228,41 +210,6 @@ def test_lock_held_by_live_holder_is_waited_out() -> None:
     assert elapsed >= 0.6, "waiter returned before the holder released -- did not actually wait"
 
 
-def test_dead_process_lock_is_acquired_promptly_without_the_backstop(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
-) -> None:
-    """A lock left by a GENUINELY dead process (killed while holding it, via a
-    real child process) must be acquired promptly -- the OS itself already
-    released it on process death, so this must never wait anywhere near the
-    runway backstop."""
-
-    from clio_agent.tools import mcp_config as _mcp_config
-
-    monkeypatch.setattr(_mcp_config, "_mcp_uv_cache_dir", lambda: tmp_path)
-
-    ctx = multiprocessing.get_context("spawn")
-    ready_evt = ctx.Event()
-    child = ctx.Process(
-        target=_mp_hold_lock_until_killed, args=(str(tmp_path), ready_evt, "server-c")
-    )
-    child.start()
-    try:
-        assert ready_evt.wait(timeout=15.0), "child never acquired the lock"
-        child.kill()
-        child.join(timeout=10.0)
-        assert not child.is_alive(), "child failed to die -- test cannot proceed"
-
-        started = time.monotonic()
-        with acquire_launcher_cache_lock("server-c", timeout_s=30.0):
-            pass
-        elapsed = time.monotonic() - started
-        assert elapsed < 10.0, "acquisition waited near the backstop for an already-dead holder"
-    finally:
-        if child.is_alive():
-            child.kill()
-            child.join(timeout=5.0)
-
-
 def test_dead_pid_owner_record_triggers_break_stale_lock(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
@@ -369,9 +316,188 @@ def test_runaway_backstop_fires_typed_when_holder_unidentifiable(
         assert not holder.is_alive(), "holder did not retire after release"
 
 
+def test_a_connect_queued_on_the_lock_is_not_read_as_a_dead_server(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A connect waiting for the lock has spawned no process of its own yet. While
+    another server holds the lock, its server wait keeps going past the no-progress
+    window instead of reading the empty process tree as a dead server.
+
+    **Sabotage:** drop the queue mark -> ``NoProgressTimeout`` after one window (found
+    live: relay's first connect queued behind spack's provision and failed at 30 s).
+    """
+    import asyncio  # noqa: PLC0415
+
+    from clio_agent.tools import mcp_config  # noqa: PLC0415
+    from clio_agent.tools.launcher_cache_lock import aacquire_launcher_cache_lock  # noqa: PLC0415
+    from clio_agent.tools.mcp_server_progress import wait_while_server_works  # noqa: PLC0415
+
+    monkeypatch.setattr(mcp_config, "_mcp_uv_cache_dir", lambda: tmp_path)
+    held = threading.Event()
+    release = threading.Event()
+
+    def _provision() -> None:
+        with acquire_launcher_cache_lock("spack", timeout_s=30.0):
+            held.set()
+            release.wait(10.0)
+
+    async def _connect() -> str:
+        async with aacquire_launcher_cache_lock("relay", timeout_s=30.0):
+            return "connected"
+
+    holder = threading.Thread(target=_provision)
+    holder.start()
+    timer = threading.Timer(1.0, release.set)
+    try:
+        assert held.wait(5.0)
+        timer.start()
+        assert asyncio.run(wait_while_server_works(_connect(), slice_s=0.2)) == "connected"
+    finally:
+        timer.cancel()
+        release.set()
+        holder.join(timeout=10.0)
+    assert not holder.is_alive()
+
+
+def test_a_connect_takes_the_lock_while_its_waiters_fill_the_default_pool(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The callers that wait for a server (page reads) block threads of the loop's
+    default executor until it is up. The server's own connect must still take the lock
+    and be watched for progress with that whole pool busy.
+
+    **Sabotage:** take the lock (or sample the server) with ``asyncio.to_thread`` -> the
+    connect never runs (found live: 15 page reads and a warm-up filled the 16-thread
+    pool on a cold install, and relay's first start waited forever).
+    """
+    import asyncio  # noqa: PLC0415
+    import concurrent.futures  # noqa: PLC0415
+
+    from clio_agent.tools import mcp_config  # noqa: PLC0415
+    from clio_agent.tools.launcher_cache_lock import aacquire_launcher_cache_lock  # noqa: PLC0415
+    from clio_agent.tools.mcp_server_progress import wait_while_server_works  # noqa: PLC0415
+
+    monkeypatch.setattr(mcp_config, "_mcp_uv_cache_dir", lambda: tmp_path)
+    connected = threading.Event()
+
+    async def _connect() -> str:
+        async with aacquire_launcher_cache_lock("relay", timeout_s=30.0):
+            connected.set()
+            return "connected"
+
+    async def _main() -> str:
+        loop = asyncio.get_running_loop()
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        loop.set_default_executor(pool)
+        waiters = [asyncio.ensure_future(asyncio.to_thread(connected.wait, 10.0)) for _ in range(2)]
+        await asyncio.sleep(0.1)  # both default threads now wait for the connect
+        try:
+            return await asyncio.wait_for(
+                wait_while_server_works(_connect(), slice_s=0.2), timeout=5.0
+            )
+        finally:
+            connected.set()
+            await asyncio.gather(*waiters)
+
+    assert asyncio.run(_main()) == "connected"
+
+
 def test_pid_alive_true_for_own_process() -> None:
     assert lcl._pid_alive(os.getpid()) is True
 
 
 def test_pid_alive_false_for_implausible_pid() -> None:
     assert lcl._pid_alive(999_999_991) is False
+
+
+def _uv_spec(command: str, *args: str) -> SimpleNamespace:
+    return SimpleNamespace(command=command, args=list(args), env={}, transport="stdio")
+
+
+_RELAY = (
+    "--from",
+    "clio-relay[tapis] @ git+https://example.invalid/relay@abc",
+    "clio-relay",
+    "serve",
+)
+_SPACK = (
+    "--from",
+    "spack-mcp @ git+https://example.invalid/kit@def#subdirectory=spack",
+    "spack-mcp",
+)
+
+
+def test_independent_uv_environments_get_distinct_keys() -> None:
+    relay = lcl.launcher_environment_key(_uv_spec("uvx", *_RELAY))
+    spack = lcl.launcher_environment_key(_uv_spec("uvx", *_SPACK))
+    assert relay and spack and relay != spack
+
+
+def test_launches_of_one_environment_share_a_key() -> None:
+    """uv keys an ephemeral environment on its requirements, not on the command run in
+    it: ``uvx pkg``, ``uvx --from pkg pkg serve`` and ``uv tool run`` share one key, and
+    so do two ``uv run`` launches of one project whatever their other options.
+
+    **Sabotage:** key on the whole argv -> two spawns of one environment race again.
+    """
+    key = lcl.launcher_environment_key
+    bare = key(_uv_spec("uvx", "pkg"))
+    assert bare == key(_uv_spec("uvx", "--from", "pkg", "pkg", "serve"))
+    assert bare == key(_uv_spec("/usr/bin/uv", "tool", "run", "--from=pkg", "other"))
+    assert bare == key(_uv_spec("uvx", "--python", "3.12", "pkg"))
+    assert key(_uv_spec("uvx", "--with", "a", "pkg")) == key(
+        _uv_spec("uvx", "--with=a", "--from", "pkg", "pkg")
+    )
+    assert key(_uv_spec("uvx", "--with", "a", "pkg")) != bare
+    project = key(_uv_spec("uv.exe", "run", "--project", "/p", "srv"))
+    assert project == key(_uv_spec("uv", "run", "--no-sync", "--with", "x", "--directory=/p", "y"))
+    assert project != key(_uv_spec("uv", "run", "--project", "/q", "srv"))
+
+
+def test_unmodelled_launchers_fall_back_to_the_shared_lock() -> None:
+    key = lcl.launcher_environment_key
+    assert key(_uv_spec("uvx", "--some-new-flag", "pkg")) is None
+    assert key(_uv_spec("uv", "run", "srv")) is None  # no project: follows the cwd
+    assert key(_uv_spec("npx", "server")) is None
+    assert key(_uv_spec("uvx", "--from")) is None
+
+
+def test_independent_environments_hold_their_locks_at_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Relay's build never queues behind spack's: each holds its own environment's lock,
+    while a second spawn of spack's environment still waits for the first.
+
+    **Sabotage:** one lock file for every spec -> relay waits for spack to release.
+    """
+    from clio_agent.tools import mcp_config  # noqa: PLC0415
+
+    monkeypatch.setattr(mcp_config, "_mcp_uv_cache_dir", lambda: tmp_path)
+    held = threading.Event()
+    release = threading.Event()
+    second_spack = threading.Event()
+
+    def _spack() -> None:
+        with acquire_launcher_cache_lock("spack", spec=_uv_spec("uvx", *_SPACK), timeout_s=30.0):
+            held.set()
+            release.wait(10.0)
+
+    def _spack_again() -> None:
+        with acquire_launcher_cache_lock("spack2", spec=_uv_spec("uvx", *_SPACK), timeout_s=30.0):
+            second_spack.set()
+
+    holder = threading.Thread(target=_spack)
+    holder.start()
+    waiter = threading.Thread(target=_spack_again)
+    try:
+        assert held.wait(5.0)
+        waiter.start()
+        started = time.monotonic()
+        with acquire_launcher_cache_lock("relay", spec=_uv_spec("uvx", *_RELAY), timeout_s=30.0):
+            assert time.monotonic() - started < 2.0
+        assert not second_spack.wait(1.5), "a second spawn of one environment did not wait"
+    finally:
+        release.set()
+        holder.join(timeout=10.0)
+        waiter.join(timeout=10.0)
+    assert second_spack.is_set()

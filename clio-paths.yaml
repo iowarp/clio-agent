@@ -482,12 +482,6 @@ legacy:
     kind: secret
   - name: ALCF_INFERENCE_TOKEN
     kind: secret
-  - name: CLIO_RELAY_API_TOKEN
-    kind: secret
-  - name: CLIO_RELAY_FRP_TOKEN
-    kind: secret
-  - name: CLIO_RELAY_STCP_SECRET
-    kind: secret
   - name: CLIO_AUTH_TOKEN
     kind: secret
   - name: CLIO_GACT_BEARER_TOKEN

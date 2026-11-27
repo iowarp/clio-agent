@@ -15,12 +15,35 @@ from types import ModuleType
 import psutil
 import pytest
 
+from tests import _test_runtime_isolation
 from tests._test_runtime_isolation import (
     cleanup_test_runtime,
     create_test_runtime,
     resolve_test_runtime_parent,
     stale_test_runtimes,
+    start_bytecode_warmup,
+    stop_bytecode_warmup,
 )
+
+
+def test_bytecode_warmup_is_ended_and_reaped_before_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The run root is removed after the warm-up, so stopping it leaves no child behind."""
+    monkeypatch.setattr(_test_runtime_isolation, "_BYTECODE_WARMUP", None)
+    monkeypatch.setattr(
+        _test_runtime_isolation, "_BYTECODE_WARMUP_SOURCE", "import time; time.sleep(60)"
+    )
+    start_bytecode_warmup()
+    warmup = _test_runtime_isolation._BYTECODE_WARMUP
+    assert warmup is not None
+    start_bytecode_warmup()
+    assert _test_runtime_isolation._BYTECODE_WARMUP is warmup
+
+    stop_bytecode_warmup()
+
+    assert warmup.returncode is not None
+    assert _test_runtime_isolation._BYTECODE_WARMUP is None
 
 
 def test_default_runtime_stays_inside_checkout(tmp_path: Path) -> None:

@@ -1,0 +1,140 @@
+---
+title: SSH
+description: Reach a cluster or server with the ssh and keys already on your computer. Relay keeps no connection open, needs nothing installed on the machine, and serves all five tools.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+import Capture from '../../../../components/overview/Capture';
+import { captureImage } from '../../../../lib/captures';
+import sshAddAres from '../../../../assets/captures/relay/ssh-add-ares.png';
+import sshAddAresPhone from '../../../../assets/captures/relay/ssh-add-ares-phone.png';
+
+The **SSH** protocol reaches a machine with the `ssh` and `scp` already on your
+computer. Every call is one `ssh` or `scp` run, so your keys, your `~/.ssh/config`,
+your jump hosts and your ssh agent all apply. Nothing is installed on the machine and
+no port is opened there.
+
+It takes all five tools: `describe`, `run`, `exec`, `files` and `serve`.
+
+Use it when `ssh <host>` already works from a terminal without asking you anything.
+For a machine that asks for a code on every login, see
+[Machines that ask for a code](#machines-that-ask-for-a-code).
+
+## Add an SSH endpoint
+
+<Steps>
+1. Check that `ssh ares hostname` works in a terminal, with your own host name.
+2. On the [Compute page](/docs/compute/), choose **Add endpoint**. For Ares, pick
+   **Ares** under **From the catalog**. For another machine, fill in **Your own**,
+   choose the **SSH** tab, and set **ssh_profile** to the `Host` name from your
+   `~/.ssh/config`.
+3. Choose **Probe** from the row's menu. **Ready** means relay can log in and has
+   found the scheduler.
+</Steps>
+
+From a terminal:
+
+```sh
+clio-relay site add-from-catalog ares
+clio-relay site add my-cluster --adapter ssh --config '{"ssh_profile": "my-cluster"}' --policy open
+```
+
+In `sites.yaml` the entry reads:
+
+```yaml
+- id: ares
+  name: Ares
+  adapter: ssh
+  config:
+    ssh_profile: ares
+  policy: open
+  spend: {ask: never}
+```
+
+<Capture client:visible image={await captureImage(sshAddAres)}
+  alt="The output of clio-relay site add-from-catalog ares: an ssh endpoint at ares.cs.iit.edu with ssh_profile ares, policy open and queue compute"
+  caption="Adding Ares from the catalog. The endpoint uses the ares host from your SSH config."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(sshAddAresPhone)}
+  alt="The output of clio-relay site add-from-catalog ares: an ssh endpoint at ares.cs.iit.edu with ssh_profile ares, policy open and queue compute, on a phone-width terminal"
+  sizes="(min-width: 50rem) 24rem, 100vw" />
+
+## Settings
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `ssh_profile` | required | A `Host` from `~/.ssh/config`, or `user@host` |
+| `ssh_config` | `~/.ssh/config` | Another ssh config file |
+| `ssh_options` | none | Extra `Key=Value` options, passed with `-o` |
+| `remote_dir` | `.clio-relay` | Relay's folder on the machine, under your home unless absolute |
+| `scheduler` | `auto` | `auto`, `none`, `slurm`, `pbs`, `lsf` or `cobalt` |
+| `interactive_sign_in` | off | The machine asks for a code on every connection |
+| `askpass` | relay's own | The program that answers ssh's prompts |
+| `connect_timeout_s` | 30 | ssh's `ConnectTimeout` |
+| `command_timeout_s` | 300 | When a `describe`, status or cancel call counts as stalled. The next poll tries again. |
+| `transfer_retries` | 3 | Retries for a transfer the connection dropped |
+
+Jobs, transfers and `exec` have no time limit unless the call sets one. A job that
+runs for days is allowed to finish.
+
+## How a job runs
+
+1. Relay writes the batch script on your computer for the machine's scheduler, which
+   `describe` finds when `scheduler` is `auto`.
+2. It copies the job's inputs into `<remote_dir>/content/cas/` by their content. An
+   input already there is not sent again.
+3. One `ssh` call writes the script into `<remote_dir>/jobs/<operation id>/` and
+   submits it. That folder holds the script, `stdout`, `stderr` and the exit code.
+4. Relay checks the job through the scheduler, and reads the exit code from the job's
+   folder when it ends.
+
+Relay asks for no walltime of its own. A job's walltime is its `duration`, or the
+endpoint's default duration. With neither, the scheduler's default applies.
+
+Relay keeps no connection open between calls, so it can restart at any time and pick
+up the same job. A retried `run` never submits a second copy.
+
+`cancel` uses the scheduler's own command, such as `scancel` or `qdel`. Your command
+gets `SIGTERM` first, so a `trap` in it can clean up.
+
+On a machine with no scheduler, the job runs detached in its own session, keeps
+running after ssh disconnects, and `cancel` stops its whole process group.
+
+## Machines that ask for a code
+
+Some machines ask for a one-time code or a password on every connection. Relay never
+types into ssh itself.
+
+- Without `interactive_sign_in`, relay runs ssh in batch mode. A machine that asks is
+  refused with `interactive_auth_required`, and the refusal points to the
+  [Worker](/docs/relay/worker/) protocol.
+- With `interactive_sign_in: true`, the endpoint shows **Needs a sign-in**. Choose
+  **Connect** from its row and answer each prompt on relay's page. Relay keeps that
+  one connection open and reuses it for every later call, so you are asked once. When
+  relay stops, the connection closes, and the next call asks you to sign in again.
+
+`askpass` replaces the program that shows the prompts, for example with your own
+program that reads codes from a hardware token. Relay then signs in by itself and asks
+you only if that program fails. It needs OpenSSH 8.4 or later.
+
+## Serving a port
+
+`serve` forwards a port from the machine with `ssh -L`, going through the login node
+with `-J` when the service runs on a compute node. See
+[Serve a service](/docs/relay/serve/).
+
+## Refusals you may see
+
+| Refusal | What it means |
+| --- | --- |
+| `unreachable` | ssh could not connect or log in. Check the network, VPN, host name and key. The message carries ssh's own error. |
+| `timeout` | A `describe`, status or cancel call stalled. The next poll tries again. |
+| `interactive_auth_required` | The machine asks for a code. Turn on `interactive_sign_in`, or use Worker. |
+| `needs_sign_in` | The signed-in connection closed. Choose **Connect** again. |
+| `adapter_unavailable` | `ssh` or `scp` is not installed on this computer. |
+
+<Aside type="tip" title="Ares from off campus">
+Ares accepts ssh from the IIT network or the IIT VPN. Off campus, connect the VPN
+first, or **Probe** reports **Unreachable**.
+</Aside>

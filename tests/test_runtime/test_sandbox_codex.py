@@ -17,6 +17,7 @@ INJECTED fakes (faked ``which`` + ``version_reader``, an explicit ``platform`` s
 
 from __future__ import annotations
 
+import tomllib
 from importlib.machinery import ModuleSpec
 from pathlib import Path
 from typing import Any
@@ -310,7 +311,7 @@ def test_validate_profile_rejects_non_dict() -> None:
 
 def test_synthesize_profile_emits_network_table() -> None:
     """synth emits the REQUIRED Recipe-A network table (enabled/full/allow_upstream_proxy)."""
-    profile = sc.synthesize_codex_profile(["/ws"], platform="linux")
+    profile = sc.synthesize_codex_profile(["/ws"], platform="darwin")
     assert profile["network"] == {
         "enabled": True,
         "mode": "full",
@@ -318,6 +319,80 @@ def test_synthesize_profile_emits_network_table() -> None:
     }
     # The synthesized table round-trips clio's own validation.
     sc.validate_codex_profile(profile)
+
+
+def test_linux_profile_enables_the_managed_proxy_without_local_or_socks() -> None:
+    """Linux isolates the child behind Codex's proxy; nothing may bypass CLIO's upstream."""
+    profile = sc.synthesize_codex_profile(["/ws"], platform="linux")
+    assert profile["network"] == {
+        "enabled": True,
+        "mode": "full",
+        "allow_upstream_proxy": True,
+        "enable_socks5": False,
+        "enable_socks5_udp": False,
+        "allow_local_binding": False,
+        "dangerously_allow_all_unix_sockets": True,
+        "domains": {"*": "allow"},
+    }
+    sc.validate_codex_profile(profile)
+
+
+def test_linux_profile_masks_host_control_sockets(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unix sockets are local IPC, so the host's control sockets are denied by path."""
+    from clio_agent.runtime import sandbox_codex_profile as scp
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/4242")
+    monkeypatch.setattr(scp, "_present", lambda path: path)
+    profile = sc.synthesize_codex_profile(["/ws", "/tmp"], platform="linux")
+    filesystem = profile["filesystem"]
+    for mask in ("/run/user/4242", "/run/dbus", "/var/run/docker.sock", "/run/systemd"):
+        assert filesystem[mask] == "deny"
+    assert filesystem["/tmp/.X11-unix"] == "deny"
+    assert "/run/munge" not in filesystem
+    # A mask never hides the writable territory.
+    assert "/run/user/4242" not in scp.linux_control_socket_masks(["/run/user/4242/ws"])
+    assert (
+        "/run/user/4242"
+        not in sc.synthesize_codex_profile(["/ws"], platform="darwin")["filesystem"]
+    )
+
+
+def test_linux_masks_only_existing_paths_by_their_real_location(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """bubblewrap cannot mask a missing path, and a symlinked alias masks the same target."""
+    from clio_agent.runtime import sandbox_codex_profile as scp
+
+    real = {"/run/dbus": "/run/dbus", "/var/run/dbus": "/run/dbus"}
+    monkeypatch.setattr(scp, "_present", lambda path: real.get(path, ""))
+    assert scp.linux_control_socket_masks([]) == ["/run/dbus"]
+
+
+def test_linux_layer_renders_the_unix_socket_flag() -> None:
+    profile = sc.synthesize_codex_profile(["/ws"], platform="linux")
+    from clio_agent.runtime import sandbox_codex_profile as scp
+
+    body = scp._render_layer_toml("clio", profile, elevated=False)
+    assert "dangerously_allow_all_unix_sockets = true" in body
+
+
+@pytest.mark.parametrize(
+    ("key", "drift"),
+    [
+        ("allow_local_binding", True),
+        ("enable_socks5", True),
+        ("enable_socks5_udp", 0),
+        ("dangerously_allow_all_unix_sockets", 1),
+        ("domains", {"example.com": "allow"}),
+    ],
+)
+def test_validate_profile_rejects_drifted_linux_proxy(key: str, drift: Any) -> None:
+    """Local binding or SOCKS would let Codex dial around CLIO, so drift is a typed reject."""
+    profile = sc.synthesize_codex_profile(["/ws"], platform="linux")
+    profile["network"][key] = drift
+    with pytest.raises(sc.CodexProfileError) as exc:
+        sc.validate_codex_profile(profile)
+    assert "Linux requires" in str(exc.value)
 
 
 def _valid_profile_with_net(network: Any) -> dict[str, Any]:
@@ -584,6 +659,17 @@ def test_render_layer_toml_network_block_shape() -> None:
     assert "mitm" not in body
 
 
+def test_linux_layer_turns_on_the_managed_proxy() -> None:
+    """The Linux layer enables Codex's proxy feature with SOCKS and local binding off."""
+    profile = sc.synthesize_codex_profile(["/ws"], profile_name="clio", platform="linux")
+    body = sc._render_layer_toml("clio", profile, elevated=False)
+    parsed = tomllib.loads(body)
+    assert parsed["features"] == {"network_proxy": True}
+    assert parsed["permissions"]["clio"]["network"] == profile["network"]
+    darwin = sc.synthesize_codex_profile(["/ws"], profile_name="clio", platform="darwin")
+    assert "[features]" not in sc._render_layer_toml("clio", darwin, elevated=False)
+
+
 def test_write_layer_validates_before_writing(tmp_path: Path) -> None:
     """A drifted profile is rejected BEFORE anything reaches disk (typed, no partial write)."""
     with pytest.raises(sc.CodexProfileError):
@@ -607,6 +693,46 @@ def test_write_layer_prune_keeps_only_clio_layers(tmp_path: Path) -> None:
     # The user's files are untouched by the prune.
     assert (tmp_path / "config.toml").is_file()
     assert (tmp_path / "auth.json").is_file()
+
+
+def test_a_layer_leaves_the_codex_home_when_its_last_spawn_releases_it(tmp_path: Path) -> None:
+    """Released layers are removed; a layer another spawn still holds stays until it releases."""
+    profile = sc.synthesize_codex_profile(["/ws"], platform="linux")
+    first = sc.write_codex_layer(
+        "clio", profile, elevated=False, codex_home=tmp_path, platform="linux"
+    )
+    second = sc.write_codex_layer(
+        "clio", profile, elevated=False, codex_home=tmp_path, platform="linux"
+    )
+    assert first == second
+    path = tmp_path / f"{first}.config.toml"
+    sc.release_codex_layer(first, codex_home=tmp_path)
+    assert path.is_file()
+    sc.release_codex_layer(first, codex_home=tmp_path)
+    assert not path.exists()
+    (tmp_path / "config.toml").write_text("# user config\n", encoding="utf-8")
+    sc.release_codex_layer("config", codex_home=tmp_path)
+    assert (tmp_path / "config.toml").is_file()
+
+
+def test_a_layer_whose_writer_exited_is_removed_at_the_next_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A killed CLIO never releases its layers; the next write removes those of dead writers."""
+    import psutil
+
+    dead, alive = (
+        tmp_path / "clio-sb-12345678-4242.config.toml",
+        tmp_path / "clio-sb-ab-7.config.toml",
+    )
+    legacy = tmp_path / "clio-sb-87654321.config.toml"
+    for path in (dead, alive, legacy):
+        path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: pid != 4242)
+    profile = sc.synthesize_codex_profile(["/ws"], platform="linux")
+    sc.write_codex_layer("clio", profile, elevated=False, codex_home=tmp_path, platform="linux")
+    assert not dead.exists()
+    assert alive.is_file() and legacy.is_file()
 
 
 def test_write_layer_reuses_env_codex_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,0 +1,168 @@
+---
+title: Serve a service
+description: Start a long-running service on an endpoint, such as an MCP server, a Jupyter server, a dashboard or a ParaView server, and reach its ports from your computer. An MCP server's tools join the conversation.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+import Capture from '../../../../components/overview/Capture';
+import { captureImage } from '../../../../lib/captures';
+import serveRendezvous from '../../../../assets/captures/relay/serve-rendezvous.png';
+import serveRendezvousPhone from '../../../../assets/captures/relay/serve-rendezvous-phone.png';
+
+`serve` starts a service on an endpoint and forwards its ports to your computer. A
+service is a job with ports: it runs like a [`run`](/docs/relay/#the-five-tools) job,
+on a login or compute node, but stays up until it is stopped.
+
+`serve` works on [SSH](/docs/relay/ssh/), [Worker](/docs/relay/worker/) and
+[Local](/docs/relay/local/) endpoints.
+
+## What you can serve
+
+| Port protocol | Use it for | What you get |
+| --- | --- | --- |
+| `mcp` | An MCP server running on the cluster | Its tools join the conversation, named `<endpoint>_<name>_<tool>` |
+| `http` | A web app, a dashboard, Jupyter | A local address that opens in your browser |
+| `ws` | A WebSocket service | A local address |
+| `tcp` | Anything else, such as a ParaView `pvserver` | A local port on `127.0.0.1` |
+
+Every port is bound to `127.0.0.1` on your computer. Nothing is exposed publicly.
+
+### An MCP server on the cluster
+
+When a service has an `mcp` port, relay connects to it and adds its tools to its own,
+named `<endpoint>_<port name>_<tool>`. For a server named `counter` on Ares, the agent
+sees `ares_counter_increment`, `ares_counter_read` and so on. Relay keeps one
+connection to the server for the life of the service and tells the client its tools
+changed when the service starts and when it stops.
+
+If the server's tools come with an interactive view (MCP Apps), relay passes it
+through unchanged, so CLIO shows the view as it would for a server on your own
+computer.
+
+### A web app
+
+An `http` or `ws` port must say how it is protected, in its `protection` field, such
+as the token Jupyter asks for. Relay refuses a web port that says nothing. The
+address and any secret reach CLIO's interface only. They are not shown to the model.
+
+## Start a service
+
+Ask the agent, for example: *Start a Jupyter server on Ares and give me the link.*
+The agent calls `serve` with a job and its ports:
+
+```json
+{
+  "site": "ares",
+  "spec": {
+    "job": {
+      "executable": "jupyter",
+      "arguments": ["lab", "--no-browser", "--port", "${CLIO_RELAY_PORT_LAB}"],
+      "attributes": {"queue_name": "compute"}
+    },
+    "ports": [
+      {"name": "lab", "protocol": "http", "protection": "jupyter token"}
+    ]
+  }
+}
+```
+
+`${CLIO_RELAY_PORT_<NAME>}` in the arguments and environment becomes the port the
+service listens on, on the node. If that port is already in use there, the service
+stops with exit code 98 and names the port.
+
+In CLIO, `serve` is a task: its status names each port as `name: host:port` once the
+service is up. Without tasks, `serve` waits up to `wait_s` for the service to be ready,
+then returns its operation id.
+
+- `serve(service=<operation id>)` reports on a running service.
+- `serve(stop=<operation id>)` stops it. Relay sends the service `SIGTERM`, then
+  `SIGKILL` after `stop_grace_s` (30 seconds), and keeps its final files and logs.
+
+A service has no time limit. To end a service with a job, set
+`lifetime.bound_to` to the job's operation id. It survives relay restarting: the same
+local port comes back.
+
+## How the ports reach you
+
+Compute nodes rarely accept incoming connections, so relay uses one of two paths:
+
+- **ssh.** With no rendezvous set, relay holds an `ssh -L` forward for each service,
+  through the login node when the service is on a compute node. On Windows this
+  forward does not survive relay restarting, and `describe` says so.
+- **Rendezvous.** Both ends dial out to a meeting point you run, and frp joins them.
+  This survives your computer sleeping or changing networks.
+
+## The rendezvous
+
+The rendezvous is a small machine with a public address that both your computer and
+the cluster can reach. It runs the [frp](https://github.com/fatedier/frp) server,
+`frps`, version 0.69 or later. It only carries bytes; it keeps no jobs, records or
+secrets. The [Worker](/docs/relay/worker/) protocol uses the same server.
+
+<Steps>
+1. On that machine, write `frps.toml`:
+
+   ```toml
+   bindPort = 7000
+   auth.method = "token"
+   auth.token = "{{ .Envs.FRP_TOKEN }}"
+   ```
+
+2. Start it with a long random token:
+
+   ```sh
+   FRP_TOKEN="$(cat ~/.config/frp/token)" frps -c frps.toml
+   ```
+
+3. On your computer, tell relay where it is. The token stays in its file:
+
+   ```sh
+   clio-relay rendezvous set address=rendezvous.example.org port=7000 protocol=tcp token_file=~/.config/frp/token
+   clio-relay rendezvous show
+   ```
+</Steps>
+
+If the cluster only lets HTTPS out, put `frps` behind TLS and use `protocol=wss`.
+Relay always checks the server's certificate, with `ca_file` if you name one.
+`direct=true` tries a direct peer-to-peer path first and falls back to the rendezvous;
+the service's status says which path is in use.
+
+Each endpoint can also say how its services reach the rendezvous, in a `serve:` block
+in its entry:
+
+| Setting | What it does |
+| --- | --- |
+| `path` | `auto` uses the rendezvous when one is set, ssh otherwise. `frp` or `ssh` forces one. |
+| `hop` | `none`: compute nodes dial out themselves. `login`: relay runs a small proxy on the login node for the life of the service. `http_proxy`: use the cluster's HTTP proxy, named in `proxy_url`. |
+| `address`, `port` | The rendezvous as the cluster sees it, when that differs |
+| `frpc` | Where `frpc` is on the cluster |
+| `stop_grace_s` | Seconds a service gets to write its final files after a stop. 30 by default. |
+
+<Capture client:visible image={await captureImage(serveRendezvous)}
+  alt="The output of clio-relay rendezvous set with address relay.example.org, port 7000 and protocol tcp, and the defaults for direct, frpc and the STUN server"
+  caption="rendezvous set prints the settings it saved and the file they are in."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(serveRendezvousPhone)}
+  alt="The output of clio-relay rendezvous set with address relay.example.org, port 7000 and protocol tcp, and the defaults for direct, frpc and the STUN server, on a phone-width terminal"
+  sizes="(min-width: 50rem) 24rem, 100vw" />
+
+## Relay on another machine
+
+When relay runs on a lab server you reach over HTTP, the ports it reports are on that
+server. The serve result then carries a command to run on your own computer:
+
+```sh
+clio-relay connect <handle>
+```
+
+It binds the same ports on `127.0.0.1` through the rendezvous and binds them again
+after a drop. The handle does not carry the frp token; your computer's own rendezvous
+settings supply it.
+
+<Aside type="tip" title="When a port does not come up">
+On the cluster, the job's folder has `serve/launch.log` and `serve/frpc.log`, which
+say when the ports came up. On your computer, relay's state folder has
+`serve/forwards/<operation id>/forward.log`. See
+[Troubleshooting](/docs/relay/troubleshooting/).
+</Aside>

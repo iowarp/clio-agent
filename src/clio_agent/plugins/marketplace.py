@@ -269,15 +269,14 @@ def load_agent_specs(root: Path, marketplace: str) -> tuple[list[AgentSpec], lis
     return list(specs.values()), diagnostics
 
 
-def read_native_marketplace(
-    root: Path, *, trusted: bool, name_hint: str = ""
-) -> MarketplaceContents:
+def _native_index(root: Path, name_hint: str) -> MarketplaceContents:
+    """A native marketplace's identity and its pinned git plugins, from its index alone."""
+
     index: dict[str, Any] = {}
     if (root / NATIVE_INDEX).is_file():
         index = json.loads((root / NATIVE_INDEX).read_text(encoding="utf-8"))
-    name = str(name_hint or index.get("name") or root.name)
     contents = MarketplaceContents(
-        name=name,
+        name=str(name_hint or index.get("name") or root.name),
         format="agent-plugins",
         description=str(index.get("description") or ""),
     )
@@ -286,6 +285,27 @@ def read_native_marketplace(
     for entry in index.get("plugins") or []:
         if isinstance(entry, dict):
             _add_git_plugin(contents, entry)
+    return contents
+
+
+def probe_marketplace(root: Path, name_hint: str = "") -> MarketplaceContents:
+    """What an install needs before its snapshot: name, format, description and git pins.
+
+    A native marketplace answers from its index without loading any plugin (its plugins
+    load once, from the snapshot). Every other layout is read as :func:`read_marketplace`
+    reads it untrusted, so a source that does not load is refused the same way.
+    """
+
+    if detect_format(root) == "agent-plugins":
+        return _native_index(root, name_hint)
+    return read_marketplace(root, trusted=False, name_hint=name_hint)
+
+
+def read_native_marketplace(
+    root: Path, *, trusted: bool, name_hint: str = ""
+) -> MarketplaceContents:
+    contents = _native_index(root, name_hint)
+    name = contents.name
     plugins_dir = root / "plugins"
     for child in sorted(plugins_dir.iterdir()) if plugins_dir.is_dir() else []:
         kind = detect_format(child) if child.is_dir() else ""

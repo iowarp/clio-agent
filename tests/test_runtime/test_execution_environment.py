@@ -8,6 +8,13 @@ from pathlib import Path
 import pytest
 
 from clio_agent.runtime import execution_environment as execution
+from clio_agent.runtime import session_scratch
+
+
+@pytest.fixture(autouse=True)
+def _uv_cache_in_place(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep uv's cache where it is named; its short stand-in is tested on its own."""
+    monkeypatch.setattr(session_scratch, "short_uv_cache", lambda cache: cache)
 
 
 def _without_clio_tools(environment: dict[str, str]) -> dict[str, str]:
@@ -45,8 +52,9 @@ def test_prepared_shell_uses_uv_python_and_pnpm_without_host_tools(tmp_path: Pat
     scratch = workspace / ".tmp" / "clio-documents"
     assert Path(runtime["scratch_directory"]) == scratch
     assert scratch.is_dir()
-    for key in ("TEMP", "TMP", "TMPDIR", "CLIO_DOCUMENT_SCRATCH"):
-        assert Path(environment[key]) == scratch
+    for key in ("TEMP", "TMP", "TMPDIR"):
+        assert Path(environment[key]).resolve() == scratch.resolve()  # maybe a short alias
+    assert Path(environment["CLIO_DOCUMENT_SCRATCH"]) == scratch
     assert Path(environment["UV_CACHE_DIR"]) == scratch / "uv-cache"
     suffix = ".cmd" if os.name == "nt" else ""
     assert "--no-project" in (cache / "shell-bin" / f"python{suffix}").read_text()

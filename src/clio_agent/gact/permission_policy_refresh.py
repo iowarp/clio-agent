@@ -25,6 +25,7 @@ def settle_pending_tool_grants(app: Any, source: Mapping[str, Any]) -> None:
         EXTERNAL_MCP_CONTEXT_KIND,
     }:
         return
+    granted = [policy, *(p for p in source.get("consent_policies") or () if isinstance(p, dict))]
     for pid, row in list(app.state.permissions.items()):
         if row.get("status") != "pending" or row.get("kind", "") not in {
             "",
@@ -45,7 +46,7 @@ def settle_pending_tool_grants(app: Any, source: Mapping[str, Any]) -> None:
         covered = resolve(
             "tool",
             name,
-            policies=[policy],
+            policies=granted,
             session_id=sid,
             workspace_id=session.workspace_id,
             path=_permission_path_from_args(args),

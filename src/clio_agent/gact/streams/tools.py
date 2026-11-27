@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from clio_agent.gact.streams.store import WINDOW_MAX, StreamError, stream_store
+from clio_agent.tools.result_errors import ToolFailure
 
 STREAM_TOOLS = ("open_stream", "read_stream", "stop_stream")
 _READ_ENTRIES = 50
@@ -28,8 +29,8 @@ def _session() -> tuple[Any, str, str]:
     return app, session_id, str(_session_workspace_id(app, session_id) or "")
 
 
-def _refusal(exc: StreamError) -> dict[str, Any]:
-    return {"ok": False, "reason": exc.code, "detail": str(exc)}
+def _refusal(exc: StreamError) -> ToolFailure:
+    return ToolFailure({"ok": False, "reason": exc.code, "detail": str(exc)})
 
 
 def open_stream(name: str, window: int = 1, media_type: str = "") -> dict[str, Any]:
@@ -76,7 +77,9 @@ def read_stream(name: str = "", limit: int = _READ_ENTRIES) -> dict[str, Any]:
             return {"ok": True, "streams": [s.describe() for s in store.streams(workspace_id)]}
         stream = store.by_name(workspace_id, name)
         if stream is None:
-            return {"ok": False, "reason": "stream_not_found", "detail": f"No stream {name!r}."}
+            return ToolFailure(
+                {"ok": False, "reason": "stream_not_found", "detail": f"No stream {name!r}."}
+            )
         entries = store.read(stream, max(1, min(int(limit), WINDOW_MAX)))
         fresh = store.get(stream.id, workspace_id) or stream
     except StreamError as exc:
@@ -98,7 +101,9 @@ def stop_stream(name: str) -> dict[str, Any]:
     try:
         stream = store.by_name(workspace_id, name)
         if stream is None:
-            return {"ok": False, "reason": "stream_not_found", "detail": f"No stream {name!r}."}
+            return ToolFailure(
+                {"ok": False, "reason": "stream_not_found", "detail": f"No stream {name!r}."}
+            )
         stopped = store.stop(stream.id, session_id=session_id)
     except StreamError as exc:
         return _refusal(exc)
@@ -120,7 +125,15 @@ def _native(func: Any, fields: str, *, title: str, args: dict[str, Any], read_on
     )
 
 
-_NAME = {"type": "string", "description": "The stream's name (its artifact's name)."}
+_NAME = {
+    "type": "string",
+    "minLength": 1,
+    "description": (
+        "The stream's name (its artifact's name), up to 80 characters. A human name such "
+        "as 'Pressure probe 2' is kept as the stream's title and keyed by its slug "
+        "(letters, digits, '-', '_', '.': 'Pressure-probe-2'); either finds the stream."
+    ),
+}
 
 
 def build_open_stream_tool() -> Any:
@@ -147,7 +160,12 @@ def build_read_stream_tool() -> Any:
         "name,state,latest,entries,held,writes,updated_at,closed_at,reason,detail",
         title="Read stream",
         args={
-            "name": {**_NAME, "default": "", "description": "The stream; none lists them."},
+            "name": {
+                **_NAME,
+                "minLength": 0,
+                "default": "",
+                "description": "The stream; none lists them.",
+            },
             "limit": {"type": "integer", "minimum": 1, "default": _READ_ENTRIES},
         },
         read_only=True,

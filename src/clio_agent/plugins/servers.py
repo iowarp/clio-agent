@@ -19,6 +19,10 @@ left in place so the generic ``${VAR}`` expansion reports it as unset.
 ``${CLIO_SOURCE_RANGE_ORIGIN}`` is the loopback URL prefix under which CLIO serves
 byte ranges of linked-source files (``connected_data_open`` with ``range``), so a
 server accepts those URLs and no other remote address.
+``${CLIO_SAVED_SSH_CONFIG}`` is an OpenSSH config file of the SSH hosts saved in this
+CLIO (:mod:`clio_agent.gact.infrastructure.saved_ssh_config`): one ``Host`` block
+each, with ``HostName``, ``User`` and ``Port``, and no secrets. Write it as
+``${CLIO_SAVED_SSH_CONFIG:-}`` so a host without the file expands it to empty.
 
 A saved connector connection (a ``clio-connection`` row whose connection has a
 ``connector``) is filled per conversation: ``connector_values`` is that
@@ -41,7 +45,8 @@ from typing import Any
 
 PROVENANCE_CONFIG_VAR = "CLIO_PROVENANCE_CONFIG"
 RANGE_ORIGIN_VAR = "CLIO_SOURCE_RANGE_ORIGIN"
-CLIO_SUPPLIED_VARIABLES = (PROVENANCE_CONFIG_VAR, RANGE_ORIGIN_VAR)
+SAVED_SSH_CONFIG_VAR = "CLIO_SAVED_SSH_CONFIG"
+CLIO_SUPPLIED_VARIABLES = (PROVENANCE_CONFIG_VAR, RANGE_ORIGIN_VAR, SAVED_SSH_CONFIG_VAR)
 _SUPPLIED = re.compile(r"\$\{(" + "|".join(CLIO_SUPPLIED_VARIABLES) + r")(?::-[^}]*)?\}")
 
 _LOCK = threading.Lock()
@@ -90,10 +95,36 @@ def references_variable(value: Any, name: str) -> bool:
 _PLUGIN_PATHS = re.compile(r"\$\{(PLUGIN_ROOT|PLUGIN_DATA)(?::-[^}]*)?\}")
 
 
-def _expand(value: str, root: str, data: str, supplied: Mapping[str, str]) -> str:
+def _expand(
+    value: str,
+    root: str,
+    data: str,
+    supplied: Mapping[str, str],
+    accounts: Mapping[str, str] | None = None,
+) -> str:
     paths = {"PLUGIN_ROOT": root, "PLUGIN_DATA": data}
     value = _PLUGIN_PATHS.sub(lambda match: paths[match.group(1)], value)
+    if accounts:
+        value = _ACCOUNT_FILES.sub(
+            lambda match: accounts.get(match.group(1), match.group(0)), value
+        )
     return _SUPPLIED.sub(lambda match: supplied.get(match.group(1), match.group(0)), value)
+
+
+#: ``${CLIO_ACCOUNT_<PROVIDER>_FILE}``: the grant file of an account the plugin declares (HS4).
+_ACCOUNT_FILES = re.compile(r"\$\{(CLIO_ACCOUNT_[A-Z0-9_]+_FILE)(?::-[^}]*)?\}")
+
+
+def _account_files(plugin: str, host: Mapping[str, Any]) -> dict[str, str]:
+    """``CLIO_ACCOUNT_<PROVIDER>_FILE -> path`` for each account ``host`` declares."""
+
+    from clio_agent.plugins.account_grants import grant_path  # noqa: PLC0415
+    from clio_agent.plugins.host_semantics import account_variable  # noqa: PLC0415
+
+    return {
+        account_variable(str(row["provider"])): str(grant_path(plugin, str(row["provider"])))
+        for row in host.get("accounts") or []
+    }
 
 
 def server_declarations(
@@ -127,11 +158,13 @@ def server_declarations(
         root = str(row["root"])
         data = str(plugin_data_dir(str(row["plugin"])))
         if spec.get("type") == "stdio" or spec.get("command"):
+            accounts = _account_files(str(row["plugin"]), row.get("host") or {})
             env = {
-                key: _expand(str(value), root, data, values)
+                key: _expand(str(value), root, data, values, accounts)
                 for key, value in (spec.get("env") or {}).items()
             }
             env.update({"PLUGIN_ROOT": root, "PLUGIN_DATA": data})
+            env.update(accounts)
             env.update(
                 {key: value for key, value in values.items() if references_variable(spec, key)}
             )
@@ -139,7 +172,10 @@ def server_declarations(
                 "command": str(spec["command"]).replace("./", root.rstrip("/") + "/", 1)
                 if str(spec["command"]).startswith("./")
                 else str(spec["command"]),
-                "args": [_expand(str(arg), root, data, values) for arg in spec.get("args") or []],
+                "args": [
+                    _expand(str(arg), root, data, values, accounts)
+                    for arg in spec.get("args") or []
+                ],
                 "env": env,
                 **({"connector": spec["connector"]} if spec.get("connector") else {}),
             }
@@ -167,6 +203,9 @@ def register_server_set(
 
     if not mcp_servers:
         return ""
+    from clio_agent.plugins.host_semantics import remember  # noqa: PLC0415
+
+    remember(mcp_servers)
     declarations = server_declarations(
         mcp_servers, supplied, connections=connections, connector_values=connector_values
     )

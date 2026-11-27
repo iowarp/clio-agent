@@ -42,6 +42,8 @@ def main() -> None:
     from tests._test_runtime_isolation import (  # noqa: PLC0415
         bootstrap_test_runtime,
         cleanup_test_runtime,
+        start_bytecode_warmup,
+        stop_bytecode_warmup,
     )
 
     runtime = bootstrap_test_runtime(checkout)
@@ -51,9 +53,11 @@ def main() -> None:
     # writes in the same disposable run even when an inherited option names a
     # different cache directory.
     sys.argv.extend(["-o", f"cache_dir={runtime.cache_dir / 'pytest'}"])
+    start_bytecode_warmup()
     try:
         runpy.run_module("pytest", run_name="__main__", alter_sys=True)
     finally:
+        stop_bytecode_warmup()
         # Help/configuration failures may never enter the suite's session-finish hook.
         # Do not delete any remaining state while child custody is unresolved.
         if runtime.root.exists():

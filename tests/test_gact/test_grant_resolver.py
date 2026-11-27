@@ -281,6 +281,41 @@ def test_domain_kind_preserves_session_scope_leak_guard() -> None:
     assert resolve("domain", "ok.test", policies=policies, workspace_id="ws_b") == ""
 
 
+def test_domain_rule_port_and_every_workspace_scope() -> None:
+    """A ``host:port`` rule matches that port only; ``scope_id "*"`` names every workspace."""
+    policies = [
+        {"scope": "workspace", "scope_id": "*", "action": "allow", "host_pattern": "git.test:22"},
+        {"scope": "workspace", "scope_id": "*", "action": "deny", "host_pattern": "[::1]:8080"},
+    ]
+
+    def at(host: str, port: int, ws: str = "ws_a") -> str:
+        return resolve("domain", host, policies=policies, workspace_id=ws, port=port)
+
+    assert at("git.test", 22) == "allow" and at("git.test", 22, "ws_b") == "allow"
+    assert at("git.test", 443) == "" and at("git.test", 0) == ""  # unknown port fails closed
+    assert at("::1", 8080) == "deny" and at("::1", 80) == ""
+    assert resolve("domain", "git.test", policies=policies, workspace_id="", port=22) == ""
+
+
+def test_policy_validation_rejects_a_bad_port_and_session_every_workspace() -> None:
+    from clio_agent.gact.runtime.permission_policies import _validate_permission_policies
+
+    rows = [
+        {"scope": "workspace", "scope_id": "*", "action": "allow", "host_pattern": "a.test:99999"},
+        {"scope": "workspace", "scope_id": "w", "action": "allow", "host_pattern": "a.test:ssh"},
+        {"scope": "session", "scope_id": "*", "action": "allow", "host_pattern": "a.test"},
+        {"scope": "workspace", "scope_id": "*", "action": "allow", "host_pattern": "a.test:22"},
+        {"scope": "workspace", "scope_id": "w", "action": "allow", "host_pattern": "::1"},
+    ]
+    clean, errors = _validate_permission_policies(rows)
+    assert [(e["index"], e["field"]) for e in errors] == [
+        (0, "host_pattern"),
+        (1, "host_pattern"),
+        (2, "scope_id"),
+    ]
+    assert [row["host_pattern"] for row in clean] == ["a.test:22", "::1"]
+
+
 def test_tool_kind_treats_empty_scope_id_as_wildcard() -> None:
     """Per-kind divergence: unlike domain, a tool policy's empty scope_id IS a scope wildcard."""
     policies = [{"scope": "session", "scope_id": "", "tool_name_pattern": "*", "action": "deny"}]

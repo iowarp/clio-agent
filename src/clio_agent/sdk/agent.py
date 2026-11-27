@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
@@ -122,13 +123,14 @@ class AgentSpec:
 
 
 def _flow_selection(value: Any) -> dict[str, Any]:
-    # A Flow is a dspy.Module: imported here so reading specs never loads the engine.
-    from clio_agent.sdk.flow import Flow  # noqa: PLC0415
-
-    if isinstance(value, Flow):
-        return value.reference()
-    if isinstance(value, type) and issubclass(value, Flow):
-        return {"id": value.id, "options": {}}
+    # A Flow is a dspy.Module. A Flow value exists only once its module is loaded,
+    # so a flow named by id is read without ever loading the engine.
+    flow_class = getattr(sys.modules.get("clio_agent.sdk.flow"), "Flow", None)
+    if flow_class is not None:
+        if isinstance(value, flow_class):
+            return value.reference()
+        if isinstance(value, type) and issubclass(value, flow_class):
+            return {"id": value.id, "options": {}}
     text = str(value or "").strip()
     if not text:
         raise AgentDefinitionError("agent flow must name a flow id")

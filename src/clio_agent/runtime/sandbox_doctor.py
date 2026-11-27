@@ -149,6 +149,13 @@ def probe_sandbox(*, state: sb.SandboxResult | None = None) -> IntegrationStatus
     elif resolved.reason == sc.REASON_CODEX_WINDOWS_UNPROVISIONED:
         # Codex win32 backend: the dedicated sandbox accounts are not provisioned yet (#1026).
         next_action = "Run `clio sandbox setup` to provision the Codex Windows fence."
+    elif resolved.reason == sc.REASON_CODEX_SETUP_STALE_VERSION:
+        current = (resolved.details.get("codex") or {}).get("version") or "unknown"
+        next_action = (
+            f"Protected execution was verified for Codex {sc.codex_receipt_version()}, and this "
+            f"CLIO now uses Codex {current}. CLIO re-verifies it at startup without "
+            "administrator approval; restart CLIO or run `clio sandbox setup`."
+        )
     elif resolved.reason == sc.REASON_CODEX_ENFORCEMENT_UNVERIFIED:
         # Codex win32 backend: accounts exist but the write fence could not be verified (#1026).
         next_action = (

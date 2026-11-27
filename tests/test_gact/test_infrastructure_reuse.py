@@ -97,8 +97,8 @@ def test_a_reuse_line_round_trips_and_reads_for_people() -> None:
     )
     assert reuse.parse("noise\n" + reuse.line(found) + "\nmore") == [found]
     assert found.message() == "Reusing container image (sha256:0123456789ab); skipped 8.1 GB/~7m"
-    assert reuse.Reuse("package", "Relay", "clio-relay==1").message() == (
-        "Reusing Relay (clio-relay==1)"
+    assert reuse.Reuse("package", "Example tool", "example-tool==1").message() == (
+        "Reusing Example tool (example-tool==1)"
     )
 
 
@@ -243,27 +243,3 @@ def test_an_installed_clio_of_this_version_is_reused(tmp_path: Path) -> None:
     [found] = reuse.parse(done.stdout)
     assert found.kind == "clio_agent" and found.identity == "clio-agent==0.9.4.18"
     assert install_command(str(root), "0.9.4.18", fresh=True).args[-2] == "1"
-
-
-def test_relay_reports_uvs_own_already_installed_verdict() -> None:
-    from clio_agent.gact.infrastructure.drivers import RELAY_VERSION, _relay_plan
-    from clio_agent.gact.infrastructure.models import InfrastructureTarget, SshRoute
-
-    target = InfrastructureTarget(
-        id="hpc", label="HPC", kind="ssh", ssh=SshRoute(host="login.example", user="alice")
-    )
-    configuration = {
-        "cluster_name": "hpc",
-        "agent_bin": "/opt/agent",
-        "relay_artifact_sha256": "a" * 64,
-    }
-    plan = _relay_plan("install", configuration, target)
-    check = plan.reuse_checks[0]
-    assert check.skip == ()
-    already = f"`clio-relay=={RELAY_VERSION}` is already installed"
-    verdict = CommandResult(exit_code=0, stderr=already)
-    found = check.report(verdict)
-    assert found is not None and found.identity == f"clio-relay=={RELAY_VERSION}"
-    assert check.report(CommandResult(exit_code=0, stdout="Installed 1 executable")) is None
-    fresh = _relay_plan("install", {**configuration, reuse.FROM_SCRATCH_KEY: "1"}, target)
-    assert "--reinstall" in fresh.commands[0].args and "--reinstall" not in plan.commands[0].args

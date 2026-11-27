@@ -4,18 +4,31 @@ section: capabilities
 when: {tools: [shell]}
 ---
 CLIO brings its own uv and Python: every shell and every run_code kernel has
-`$CLIO_UV` and `$CLIO_PYTHON`, and uv keeps its cache in this session's scratch
-folder. A Python package a script needs is something you add, not a reason to stop or
+`$CLIO_UV` and `$CLIO_PYTHON`, and uv keeps its cache in this session's own scratch
+space. A Python package a script needs is something you add, not a reason to stop or
 to rewrite the work without it:
 
 - One script: `"$CLIO_UV" run --no-project --python "$CLIO_PYTHON" --with <package>
   --with <package> script.py`. uv installs the packages into a cached environment the
   first time and reuses it.
-- Longer work: an environment in the workspace, `"$CLIO_UV" venv .venv --python
-  "$CLIO_PYTHON"`, then `"$CLIO_UV" pip install --python .venv <packages>`, and run its
-  own `python`.
+- Longer work: an environment in this session's scratch folder (`$TMPDIR`), `"$CLIO_UV"
+  venv "$TMPDIR/venv" --python "$CLIO_PYTHON"`, then `"$CLIO_UV" pip install --python
+  "$TMPDIR/venv" <packages>`, and run its own `python`.
 - A package with no build for CLIO's Python: name a version (`--python 3.12`) and uv
   fetches that Python.
 
+Environments, runtimes and packages you install for the work go in the scratch folder,
+which is removed with the session, not in the person's workspace unless they ask for
+them there; remove anything else you created and no longer need.
+
 The run_code kernel cannot import these packages. A run_code script, background or
 not, runs such a script as a subprocess and reads what it prints.
+
+Before installing a program, look for a copy already on the machine: a tool that
+reports it missing has looked only in its own places (its setting, PATH, standard
+folders), so search further, ask the person when you cannot tell, and when you find
+one, offer it and, once they agree, point the connector's setting for it at that path
+instead of installing another. When there is no copy, choose an install that needs no
+administrator rights (per user or in the person's home folder); when every route needs
+them, ask the person whether they will run it themselves, giving the exact steps, or
+want you to run it while they approve the system's elevation prompt.

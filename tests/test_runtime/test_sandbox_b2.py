@@ -448,7 +448,7 @@ def test_a_confined_mcp_servers_declared_write_outside_is_diagnosed_and_reaches_
     assert out[0].kind == v.VIOLATION_PREVENTED
     assert published is not None and published.confidence == POSSIBLE
     assert published.paths == (str(denied),)
-    assert published.request_roots == (str(tmp_path),)
+    assert published.request_roots == (str(tmp_path.resolve()),)
     assert "may have been caused by CLIO's sandbox" in published.message
 
 

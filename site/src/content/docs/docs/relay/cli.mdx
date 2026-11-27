@@ -1,0 +1,177 @@
+---
+title: CLI reference
+description: Every clio-relay command, what it does and its options, as printed by clio-relay --help.
+---
+
+import Capture from '../../../../components/overview/Capture';
+import { captureImage } from '../../../../lib/captures';
+import cliHelp from '../../../../assets/captures/relay/cli-help.png';
+import cliHelpPhone from '../../../../assets/captures/relay/cli-help-phone.png';
+import cliAdapters from '../../../../assets/captures/relay/cli-adapters.png';
+import cliAdaptersPhone from '../../../../assets/captures/relay/cli-adapters-phone.png';
+
+`clio-relay` serves relay to an MCP client and manages its endpoints, sign-ins and
+rendezvous from a terminal. The CLI and the [Compute page](/docs/compute/) edit the
+same files, so a change in one shows in the other.
+
+The CLI calls endpoints *sites*. Run any command with `--help` for its options.
+
+```text
+Usage: clio-relay [OPTIONS] COMMAND [ARGS]...
+
+Relay: run work on the sites you use.
+
+Commands:
+  serve       Serve relay as an MCP server.
+  connect     Forward a running service's ports to this machine and hold them open.
+  adapters    List installed adapters and their verbs.
+  site        Add, edit and remove sites.
+  rendezvous  Where services meet relay's forwards.
+  asks        See and answer what relay is asking, and sign in.
+  worker      Set up and run the worker adapter: clusters, endpoint, session,
+              queue, scheduler.
+```
+
+<Capture client:visible image={await captureImage(cliHelp)}
+  alt="The output of clio-relay --help, listing the serve, connect, adapters, site, rendezvous, asks and worker commands"
+  caption="clio-relay --help lists its seven commands."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(cliHelpPhone)}
+  alt="The output of clio-relay --help, listing the serve, connect, adapters, site, rendezvous, asks and worker commands, on a phone-width terminal"
+  sizes="(min-width: 50rem) 24rem, 100vw" />
+
+## Where it keeps its files
+
+| | Linux and macOS | Windows | Override |
+| --- | --- | --- | --- |
+| Config: your endpoints, `guard.yaml`, `credentials.json` | `~/.config/clio-relay` | `%APPDATA%\clio-relay` | `CLIO_RELAY_CONFIG_DIR` |
+| State: operations, reviews, rendezvous, tokens | `~/.local/state/clio-relay` | `%LOCALAPPDATA%\clio-relay\state` | `CLIO_RELAY_STATE_DIR` |
+
+`XDG_CONFIG_HOME` and `XDG_STATE_HOME` are honored. The CLIO plugin uses its own
+folders; see [Install relay](/docs/relay/install/).
+
+## serve
+
+Serve relay as an MCP server. Over stdio unless `--http` is given.
+
+| Option | Default | |
+| --- | --- | --- |
+| `--http` / `--no-http` | `--no-http` | Serve Streamable HTTP instead of stdio |
+| `--host` | `127.0.0.1` | |
+| `--port` | `8766` | |
+| `--path` | `/mcp` | |
+| `--token-file` | | File holding the HTTP bearer token |
+| `--grant-file PROVIDER=PATH` | | A grant file the host keeps current. Repeatable. See [Asks and sign-in](/docs/relay/asks/#sign-ins-from-the-host). |
+| `--tls-cert`, `--tls-key` | | Certificate and key, for HTTPS |
+
+## connect
+
+```sh
+clio-relay connect <handle>
+```
+
+Forward a running service's ports to this machine and hold them open. The handle is
+in the serve result's `connect_command`. See
+[Serve a service](/docs/relay/serve/#relay-on-another-machine).
+
+## adapters
+
+List the installed protocols and the tools each one takes, as JSON. An adapter is the
+code behind a protocol; the CLI uses its short name, such as `ssh` or `sky`.
+
+| Adapter | Tools |
+| --- | --- |
+| `local`, `ssh`, `worker` | describe, exec, files, run, serve |
+| `globus`, `iri`, `tapis` | describe, files, run |
+| `sky` | describe, run |
+| `fixture` | describe, exec, files, run. A test adapter, not for real work. |
+
+<Capture client:visible image={await captureImage(cliAdapters)}
+  alt="The output of clio-relay adapters: each installed adapter and the tools it implements, as JSON"
+  caption="clio-relay adapters prints each installed adapter and its tools."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(cliAdaptersPhone)}
+  alt="The output of clio-relay adapters: each installed adapter and the tools it implements, as JSON, on a phone-width terminal"
+  sizes="(min-width: 50rem) 24rem, 100vw" />
+
+## site
+
+| Command | Does |
+| --- | --- |
+| `site list` | List your endpoints |
+| `site show <site>` | Show one endpoint and which protocol serves each tool |
+| `site catalog` | List the endpoints relay ships |
+| `site add-from-catalog <catalog id> [--site-id <id>]` | Copy a catalog endpoint into your endpoints, under another id if you give one |
+| `site add <site> --adapter <name>` | Add an endpoint of your own |
+| `site edit <site> <changes>` | Change an endpoint's top-level fields, given as JSON or YAML |
+| `site switch <site> <adapter>` | Make one of the endpoint's other protocols the one in use |
+| `site remove <site>` | Remove an endpoint. Its operations stay on record. |
+
+Each command prints the endpoints it touched as JSON.
+
+`site add` options:
+
+| Option | Default | |
+| --- | --- | --- |
+| `--adapter` | required | The protocol in use |
+| `--config` | `{}` | The protocol's settings, as JSON or YAML |
+| `--name` | | A display name |
+| `--policy` | `guarded` | `open` or `guarded`. See [Guardrails](/docs/relay/guardrails/). |
+| `--spend` | `always` | `always`, `never`, or a node-hour threshold |
+| `--skill` | | A skill name, or the path of your own Markdown skill |
+
+For example:
+
+```sh
+clio-relay site add-from-catalog ares
+clio-relay site add mylab --adapter ssh --config '{ssh_profile: mylab}' --policy open --spend never
+clio-relay site edit mylab '{name: My lab cluster}'
+clio-relay site switch polaris iri
+clio-relay site edit polaris '{config: {base_url: "https://api.alcf.anl.gov", resource_id: <id>}}'
+```
+
+After a switch, `config` holds the new protocol's settings, and the previous protocol
+becomes an alternative with its settings kept. Check the result with `site show`: a
+protocol whose settings are incomplete is listed under `skipped`, and another one
+takes its tools.
+
+## rendezvous
+
+| Command | Does |
+| --- | --- |
+| `rendezvous show` | Show the rendezvous settings and the file they are in |
+| `rendezvous set KEY=VALUE...` | Change them, for example `address=`, `port=`, `protocol=`, `token_file=`, `direct=` |
+
+See [The rendezvous](/docs/relay/serve/#the-rendezvous).
+
+## asks
+
+| Command | Does |
+| --- | --- |
+| `asks list [--all]` | List what relay is waiting on you for. `--all` includes answered asks. |
+| `asks show <ask>` | Show one ask, with what an approval approves |
+| `asks answer <ask> [--value <choice>]` | Approve, choose, or say a sign-in is finished |
+| `asks decline <ask>` | Say no. The operation waiting on it is cancelled. |
+| `asks page <ask>` | Print a fresh address of relay's page for one ask |
+| `asks identities` | Show each sign-in relay knows, and where its token comes from |
+| `asks sign-in <provider>` | Sign in from this terminal: `globus`, `github` or `tacc` |
+| `asks sign-out <provider>` | Forget relay's own sign-in. A host's grant file stays the host's. |
+| `asks probe <provider>` | Try every endpoint a sign-in unlocks, and say which work |
+
+See [Asks and sign-in](/docs/relay/asks/).
+
+## worker
+
+Set up and run the [Worker](/docs/relay/worker/) protocol. Most of these run on the
+cluster, where the worker lives.
+
+| Command | Does |
+| --- | --- |
+| `worker status` | Show registered worker capacity and leases |
+| `worker init` | Create the local queue, spool and cluster registry files |
+| `worker install-frp` | Download and install frp on this computer |
+| `worker installation-info` | Print the installed package and the cluster's install receipt |
+| `worker installation-write-receipt` | Write an install receipt for this installation |
+| `worker endpoint`, `relay-host`, `cluster`, `api`, `session`, `queue`, `scheduler` | Groups for the worker's own parts. `worker api start` runs the worker on a cluster. |

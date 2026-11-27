@@ -55,8 +55,8 @@ MCP_TASK_RECORD_NOT_DURABLE = "mcp_task_record_not_durable"
 #: #1231: a backend's registered ``on_poll`` observer factory
 #: (``tools/task_observers.py``) raised while being resolved for one task drive.
 #: The factory is downgraded to absent (as if nothing were registered) rather than
-#: breaking the drive it was about to observe -- mirrors relay_console's own
-#: never-break-the-wait discipline one layer up, for the generic registry seam.
+#: breaking the drive it was about to observe: the generic registry seam never
+#: breaks the wait.
 MCP_TASK_OBSERVER_FACTORY_FAILED = "mcp_task_observer_factory_failed"
 #: #1201: an execution-path client resolved ``tools.mcp.connect_mode=auto`` but
 #: negotiated the LEGACY era anyway (the #1186 race: a slow first response burns
@@ -70,6 +70,10 @@ MCP_PROTOCOL_DOWNGRADED_TO_LEGACY = "mcp_protocol_downgraded_to_legacy"
 #: treating "malformed" the same as "no servers declared". A MISSING file is
 #: still normal and returns ``{}`` without this reason.
 MCP_YAML_DECLARATION_UNREADABLE = "mcp_yaml_declaration_unreadable"
+#: A person's ``mcp.yaml`` server has the name of a server the session's plugin
+#: declares. The plugin keeps its own server; the person's entry is left out of
+#: that fleet (configure a plugin's server through its connection instead).
+MCP_SERVER_NAME_TAKEN_BY_PLUGIN = "mcp_server_name_taken_by_plugin"
 #: #1232 pt 2: a declared MCP namespace did not answer its bounded discovery
 #: attempt (connect + list_tools) before the per-namespace deadline. NEVER
 #: blocks "agent ready" -- the namespace's tools are simply absent from the
@@ -366,6 +370,50 @@ class MCPInputRequiredRoundsExceededError(ToolError):
                 "reason": MCP_INPUT_REQUIRED_ROUNDS_EXCEEDED,
                 "max_rounds": max_rounds,
                 "tool": tool,
+            },
+        )
+
+
+#: A connector's new server failed while its superseded server still runs for open views.
+MCP_NAMESPACE_INSTANCE_HELD = "mcp_namespace_instance_held"
+
+
+def held_by_views_text(namespace: str, views: list[str]) -> str:
+    """The person-facing sentence naming the open views a retained server runs for."""
+
+    named = "; ".join(views)
+    return (
+        f"The previous {namespace} server is still running because these views are open: "
+        f"{named}. Only if this failure is about a resource in use (a lock or a port) may "
+        "that server hold it: closing the view releases it. Otherwise the failure is the "
+        "new server's own. CLIO does not stop an open view."
+    )
+
+
+class MCPNamespaceInstanceHeldError(ToolError):
+    """A call to a connector's new server failed while its superseded one is retained.
+
+    The old server stays alive while App views it drew are open (setting a connector
+    value must not close them), so it may still hold an exclusive resource. The error
+    names those views instead of the call waiting or the view being stopped.
+
+    The new server's own failure leads: most failures beside a retained server are its
+    own (a script error, a bad argument), and a shown failure is cut at a few hundred
+    characters, so a note first hid the cause behind a claim nothing showed.
+    """
+
+    def __init__(self, tool: str, namespace: str, views: list[str], cause: str) -> None:
+        self.reason = MCP_NAMESPACE_INSTANCE_HELD
+        self.namespace = namespace
+        self.views = list(views)
+        super().__init__(
+            f"{tool} failed on the new {namespace} server: {cause}. "
+            f"({MCP_NAMESPACE_INSTANCE_HELD}) {held_by_views_text(namespace, self.views)}",
+            details={
+                "reason": MCP_NAMESPACE_INSTANCE_HELD,
+                "namespace": namespace,
+                "tool": tool,
+                "views": self.views,
             },
         )
 

@@ -41,6 +41,8 @@ class LiveToolScope:
 
     executor: Any = None
     namespaces: set[str] = field(default_factory=set)
+    #: The person's own servers among them, as plugin-server rows (``person_servers``).
+    person_servers: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def refresh_executor_tools(executor: Any) -> None:
@@ -114,7 +116,7 @@ class LiveToolRefresher:
 
     def _apply_moved(self, tools: MutableMapping[str, Any]) -> bool:
         changed = False
-        for prefix, slot in self._moved.items():
+        for prefix, slot in list(self._moved.items()):  # another turn's move may land
             executor, applied = slot
             refresh_executor_tools(executor)
             revision = int(getattr(executor, "tools_revision", 0))

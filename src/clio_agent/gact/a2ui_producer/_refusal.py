@@ -30,6 +30,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import context as _ctx
+from clio_agent.tools.result_errors import ToolFailure
 
 if TYPE_CHECKING:
     from clio_agent.gact.a2ui_capability_selection import CatalogSelection
@@ -78,6 +79,13 @@ _DEFAULT_HINTS: dict[str, str] = {
     "a2ui_surface_not_found": (
         "reuse a live id from a prior result's session_surface_ids, or call "
         "create_a2ui_surface to make a new surface"
+    ),
+    "a2ui_surface_not_owned": (
+        "an MCP server owns this surface and only it can change it; create "
+        "your own surface with a new surface_id instead"
+    ),
+    "a2ui_surface_owner_conflict": (
+        "an MCP server already owns a live surface with this id; pick a different surface_id"
     ),
     "a2ui_catalog_unknown": (
         "call create_a2ui_surface with an empty catalog_id to auto-select "
@@ -261,7 +269,7 @@ KNOWN_REFUSAL_REASONS: frozenset[str] = frozenset(
 )
 
 
-def refusal(reason: str, *, detail: str, hint: str = "") -> dict[str, Any]:
+def refusal(reason: str, *, detail: str, hint: str = "") -> ToolFailure:
     """Build a typed producer-tool refusal dict (never raised as an exception).
 
     ``hint`` defaults to :data:`_DEFAULT_HINTS`'s entry for ``reason`` when
@@ -274,7 +282,7 @@ def refusal(reason: str, *, detail: str, hint: str = "") -> dict[str, Any]:
 
     resolved_hint = hint or _DEFAULT_HINTS.get(reason, "")
     _record_repeat_within_turn(reason)
-    return {"ok": False, "reason": reason, "detail": detail, "hint": resolved_hint}
+    return ToolFailure({"ok": False, "reason": reason, "detail": detail, "hint": resolved_hint})
 
 
 def _record_repeat_within_turn(reason: str) -> None:

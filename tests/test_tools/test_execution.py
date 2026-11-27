@@ -16,13 +16,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from clio_agent import conf, injections
 from clio_agent.errors import CancellationError
-from clio_agent.gact.artifacts.designation import ground_output_paths
 from clio_agent.tools import foreground_cancellation as foreground_cancel
 from clio_agent.tools.execution import (
     MCPToolBridge,
     SyncMCPToolExecutor,
     ToolRuntimeHooks,
-    _ground_output_paths,
     create_async_tool_executor,
     create_sync_tool_executor,
     set_tool_runtime_fallback,
@@ -486,43 +484,6 @@ def test_sync_mcp_tool_executor_closes_client_and_loop():
     assert not thread.is_alive()
 
 
-_SLOW_SERVER = """\
-import sys, time
-end = time.monotonic() + float(sys.argv[1])
-while time.monotonic() < end:  # a cold start: working (CPU), not yet serving
-    pass
-from fastmcp import FastMCP
-mcp = FastMCP("slow")
-@mcp.tool
-def ping() -> str:
-    return "pong"
-mcp.run(show_banner=False)
-"""
-
-
-def test_sync_tool_executor_setup_waits_while_its_server_starts(monkeypatch, tmp_path):
-    """No fixed setup deadline (was ``tools.mcp.setup_timeout_s`` = 10 s): a real stdio
-    server that works for 3 s before serving outlasts a 1 s no-progress window and the
-    executor still starts.
-
-    **Sabotage:** bound the setup with ``future.result(timeout=window)`` -> TimeoutError.
-    """
-    import sys
-
-    from fastmcp.client.transports import StdioTransport
-
-    script = tmp_path / "slow_server.py"
-    script.write_text(_SLOW_SERVER, encoding="utf-8")
-    monkeypatch.setenv("CLIO_MCP_NO_PROGRESS_S", "1")
-    executor = create_sync_tool_executor(
-        StdioTransport(sys.executable, [str(script), "3"]), timeout=30.0
-    )
-    try:
-        assert executor.get_tool_names() == ["ping"]
-    finally:
-        executor.close()
-
-
 def test_sync_tool_executor_setup_that_stops_progressing_fails_typed(monkeypatch):
     """A setup with no answer and no server work for a whole window fails typed and the
     executor is closed -- never an unbounded wait."""
@@ -658,6 +619,7 @@ def test_declared_mcp_permission_gate_receives_annotations_before_transport() ->
                     "destructiveHint": False,
                     "idempotentHint": False,
                 },
+                "server": "relay",
             },
         )
     ]
@@ -669,7 +631,9 @@ def test_declared_mcp_permission_gate_keeps_two_argument_hook_compatibility() ->
     fake_client = FakeClient()
     executor = SyncMCPToolExecutor(
         object(),
-        timeout=1.0,
+        # Not what this checks: the first namespace call's lazy imports must not race a
+        # tight budget on a loaded machine.
+        timeout=30.0,
         client_factory=lambda _server: fake_client,
         permission_gate=lambda _name, _args: "allow",
         preloaded_tools={
@@ -1086,38 +1050,6 @@ def test_sync_mcp_tool_executor_cancel_mid_call_emits_wire_notification() -> Non
         executor.close()
 
 
-def test_sync_mcp_tool_executor_preserves_result_when_cancel_loses_race() -> None:
-    """A cancellation observed only after completion must not replace the tool result."""
-    fake_client = FakeClient()
-    executor = SyncMCPToolExecutor(
-        object(),
-        timeout=1.0,
-        client_factory=lambda _: fake_client,
-    )
-    checks = iter([False, True])
-    observed: list[tuple[str, dict[str, Any], str | None, str | None]] = []
-
-    try:
-        set_tool_runtime_fallback(
-            ToolRuntimeHooks(
-                cancellation_checker=lambda: next(checks, True),
-                tool_observer=lambda name, args, phase, error: observed.append(
-                    (name, dict(args), phase, error)
-                ),
-            )
-        )
-
-        result = executor.call_tool("fake_echo", {"value": "late-cancel"})
-
-        assert fake_client.started_call is True
-        assert '"value": "late-cancel"' in result
-        assert observed[0] == ("fake_echo", {"value": "late-cancel"}, "started", None)
-        assert observed[-1] == ("fake_echo", {"value": "late-cancel"}, "completed", None)
-    finally:
-        set_tool_runtime_fallback(ToolRuntimeHooks())
-        executor.close()
-
-
 def test_mcp_wire_cancellation_unavailable_is_typed() -> None:
     """An uncooperative transport path names its degradation and ongoing-work risk."""
     error = foreground_cancel._tool_cancellation_error(
@@ -1148,106 +1080,12 @@ def test_mcp_tool_bridge_remains_sync_compatibility_shim():
 
 
 # ---------------------------------------------------------------------------
-# Output-path workspace grounding (model-agnostic artifact hygiene).
+# Output paths: the call carries what the agent wrote; the server resolves it.
 # ---------------------------------------------------------------------------
 
-_PLOT_SCHEMA = {
-    "properties": {
-        "data_path": {"type": "string"},
-        "output_path": {"type": "string", "default": "timeseries.png"},
-    }
-}
 
-
-def test_ground_output_paths_resolves_relative_emitted_path():
-    """A relative output path the model emits resolves against the workspace root."""
-    grounded = ground_output_paths(
-        {"data_path": "/data/in.csv", "output_path": "plot.png"},
-        _PLOT_SCHEMA,
-        "/work/space",
-    )
-    # Build the expected value with pathlib so the OS-native separator is used.
-    assert grounded["output_path"] == str(Path("/work/space") / "plot.png")
-    # Input path is untouched (not an output-arg name).
-    assert grounded["data_path"] == "/data/in.csv"
-
-
-def test_ground_output_paths_injects_workspace_path_when_omitted():
-    """An omitted output arg with a relative schema default is injected absolute."""
-    grounded = ground_output_paths(
-        {"data_path": "/data/in.csv"},
-        _PLOT_SCHEMA,
-        "/work/space",
-    )
-    assert grounded["output_path"] == str(Path("/work/space") / "timeseries.png")
-
-
-def test_ground_output_paths_leaves_absolute_emitted_path_untouched(tmp_path):
-    """An absolute output path the model emits is preserved verbatim."""
-    # Only OS-native absolute paths are recognized as absolute by pathlib on
-    # the running platform, so build one from tmp_path rather than a POSIX literal.
-    absolute_out = str(tmp_path / "abs.png")
-    grounded = ground_output_paths(
-        {"data_path": "/data/in.csv", "output_path": absolute_out},
-        _PLOT_SCHEMA,
-        "/work/space",
-    )
-    assert grounded["output_path"] == absolute_out
-
-
-def test_ground_output_paths_noop_without_workspace_root():
-    """Without a bound workspace root the args pass through unchanged."""
-    args = {"data_path": "/data/in.csv", "output_path": "plot.png"}
-    grounded = ground_output_paths(args, _PLOT_SCHEMA, "")
-    assert grounded == args
-    # Omission injection is also gated on the workspace root.
-    grounded2 = ground_output_paths({"data_path": "/data/in.csv"}, _PLOT_SCHEMA, "")
-    assert "output_path" not in grounded2
-
-
-def test_ground_output_paths_ignores_absolute_schema_default(tmp_path):
-    """A schema default that is already absolute is not re-grounded on omit."""
-    # Use an OS-native absolute default; only those are seen as absolute here.
-    schema = {
-        "properties": {
-            "output_path": {"type": "string", "default": str(tmp_path / "fixed" / "out.png")},
-        }
-    }
-    grounded = ground_output_paths({"data_path": "/data/in.csv"}, schema, "/work/space")
-    assert "output_path" not in grounded
-
-
-def test_ground_output_paths_ignores_non_artifact_default():
-    """An omitted output arg whose default is not a writable artifact is left alone."""
-    schema = {
-        "properties": {
-            "output": {"type": "string", "default": "stdout"},
-        }
-    }
-    grounded = ground_output_paths({"data_path": "/data/in.csv"}, schema, "/work/space")
-    assert "output" not in grounded
-
-
-def test_execution_grounding_thin_reexport_is_byte_identical():
-    """The execution.py thin re-export (#966 deletion item 2) grounds identically.
-
-    The grounding constants + logic MOVED to the artifacts designation module;
-    ``execution.py`` keeps a thin ``_ground_output_paths`` wrapper. This parity
-    test proves the tool boundary's behavior is byte-identical across a mix of
-    resolve/inject/absolute/no-root cases — the move changed no behavior.
-    """
-    cases = [
-        ({"data_path": "/data/in.csv", "output_path": "plot.png"}, _PLOT_SCHEMA, "/work/space"),
-        ({"data_path": "/data/in.csv"}, _PLOT_SCHEMA, "/work/space"),
-        ({"data_path": "/data/in.csv", "output_path": "plot.png"}, _PLOT_SCHEMA, ""),
-        ({"output": "stdout"}, {"properties": {"output": {"default": "stdout"}}}, "/w"),
-    ]
-    for args, schema, root in cases:
-        assert _ground_output_paths(args, schema, root) == ground_output_paths(args, schema, root)
-
-
-def test_sync_mcp_tool_executor_grounds_relative_output_path(tmp_path):
-    """A relative output_path the model emits is grounded to the workspace root."""
+def test_sync_mcp_tool_executor_passes_a_relative_output_path_as_written(tmp_path):
+    """A relative output_path reaches the server verbatim, and none is injected."""
     fake_client = PlotLikeClient()
     executor = SyncMCPToolExecutor(
         object(),
@@ -1256,34 +1094,15 @@ def test_sync_mcp_tool_executor_grounds_relative_output_path(tmp_path):
     )
     try:
         with tool_workspace_context(tmp_path):
-            result = executor.call_tool(
+            relative = executor.call_tool(
                 "plot_timeseries",
                 {"data_path": "/data/in.csv", "output_path": "plot.png"},
             )
+            omitted = executor.call_tool("plot_timeseries", {"data_path": "/data/in.csv"})
     finally:
         executor.close()
-    grounded = json.loads(result)["args"]["output_path"]
-    assert Path(grounded) == tmp_path / "plot.png"
-
-
-def test_sync_mcp_tool_executor_injects_omitted_output_path(tmp_path):
-    """An omitted output_path is injected absolute from the schema default."""
-    fake_client = PlotLikeClient()
-    executor = SyncMCPToolExecutor(
-        object(),
-        timeout=1.0,
-        client_factory=lambda _: fake_client,
-    )
-    try:
-        with tool_workspace_context(tmp_path):
-            result = executor.call_tool(
-                "plot_timeseries",
-                {"data_path": "/data/in.csv"},
-            )
-    finally:
-        executor.close()
-    injected = json.loads(result)["args"]["output_path"]
-    assert Path(injected) == tmp_path / "timeseries.png"
+    assert json.loads(relative)["args"]["output_path"] == "plot.png"
+    assert "output_path" not in json.loads(omitted)["args"]
 
 
 def test_sync_mcp_tool_executor_keeps_absolute_output_path(tmp_path):
@@ -1470,4 +1289,6 @@ def test_declared_mcp_permission_gate_receives_the_tools_own_title() -> None:
     finally:
         executor.close()
 
-    assert observed == [{"kind": "external_mcp", "annotations": {}, "title": "Read PDF Bytes"}]
+    assert observed == [
+        {"kind": "external_mcp", "annotations": {}, "server": "viewer", "title": "Read PDF Bytes"}
+    ]

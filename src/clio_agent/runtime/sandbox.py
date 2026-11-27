@@ -19,9 +19,10 @@ out-of-territory write as ``EROFS`` / ``EACCES`` / ``WinError 5``; the floor let
 
 from __future__ import annotations
 
+import json
 import logging
 import os
-import shutil
+import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -29,6 +30,10 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 from clio_agent import paths
+from clio_agent.runtime.fence_loopback_agent import MXC_LOOPBACK_DETAILS
+from clio_agent.runtime.fence_powershell import execution_policy_env
+from clio_agent.runtime.fenced_removal import remove_tree
+from clio_agent.runtime.sandbox_codex_layers import LayerHold, layer_hold
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +59,8 @@ REASON_NOT_INSTALLED = "sandbox_not_installed"  # wrap_confined ran before insta
 REASON_FENCE_ACTIVE = "fence_active"
 
 # Network-enforcement labels (owner decision #974.3/#974.7 — honest per tier).
-#: On a proxy-forcing tier the OS fence FORCES children through the clio proxy → real enforcement.
-#: (No current backend forces this; kept as the honest positive label for :mod:`sandbox_net`.)
+#: On a proxy-forcing tier the OS fence FORCES children through the clio proxy → real enforcement
+#: (Linux Codex once its probe proves the child's network namespace routes only to the proxy).
 NET_ENFORCEMENT_PROXY = "proxy"
 #: On the Codex/Landlock/floor tier egress is proxy-ENV cooperation only (raw sockets bypass) —
 #: the record says so, per-edge (never claim proxy enforcement off a forcing tier).
@@ -125,6 +130,7 @@ class ConfinedSpawn:
     result: SandboxResult
     #: Private directories created for this spawn alone, removed by :meth:`release`.
     cleanup_dirs: tuple[str, ...] = ()
+    codex_layer: LayerHold | None = None  # the spawn's Codex ``-p`` layer, dropped on release
 
     def release(self) -> None:
         """Close this spawn's per-child egress channel once its child has exited (idempotent).
@@ -132,10 +138,12 @@ class ConfinedSpawn:
         Each active spawn opens a loopback listener and an accept thread. A one-shot child (a
         shell command, a document helper) releases them when it exits, or they pile up to the
         channel cap and every later child's egress loses its attribution. Any
-        :attr:`cleanup_dirs` are removed too.
+        :attr:`cleanup_dirs` and the spawn's layer in the person's Codex home go too.
         """
         for directory in self.cleanup_dirs:
-            shutil.rmtree(directory, ignore_errors=True)
+            remove_tree(directory, why="confined_spawn_release")
+        if self.codex_layer is not None:
+            self.codex_layer.release()
         child = str(self.result.details.get("net_child_id") or "")
         if child:
             from clio_agent.runtime.net_chokepoint import close_child_channel  # noqa: PLC0415
@@ -247,6 +255,8 @@ def _resolve_backend(
             )
         verdict = fence_probe(cdet.binary_path) if fence_probe is not None else (True, "")
         if verdict[0]:
+            if hasattr(verdict, "net_isolated"):  # the real Linux probe also judges the network
+                base_details["codex_net"] = {"isolated": verdict.net_isolated, "reason": verdict[1]}
             return _activate_codex(cdet, base_details)
         codex_probe_failure = {"reason": verdict[1], "detail": getattr(verdict, "detail", "")}
         base_details["codex_probe"] = codex_probe_failure
@@ -301,12 +311,15 @@ def _activate_codex(det: Any, base_details: dict[str, Any]) -> SandboxResult:
     The macOS layer does not enable codex's managed proxy, so a child reaches CLIO's
     chokepoint only through the proxy environment variables; a client that ignores them
     connects directly, unrecorded and outside deny mode. That tier is therefore reported
-    ``env-cooperative``, never ``proxy``.
+    ``env-cooperative``, never ``proxy``. Linux claims ``proxy`` only when the probe proved
+    the child's network namespace has no route but the managed proxy.
     """
     mxc = base_details.get("codex", {}).get("implementation") == "mxc"
     if mxc:
         net_enforcement = "proxy-external"
-    elif base_details.get("platform") == "darwin":
+    elif base_details.get("platform") == "darwin" or not base_details.get("codex_net", {}).get(
+        "isolated", True
+    ):
         net_enforcement = NET_ENFORCEMENT_ENV_COOPERATIVE
     else:
         net_enforcement = NET_ENFORCEMENT_PROXY
@@ -319,7 +332,7 @@ def _activate_codex(det: Any, base_details: dict[str, Any]) -> SandboxResult:
             "codex_binary": det.binary_path,
             "codex_version": det.version,
             "net_enforcement": net_enforcement,
-            **({"host_loopback": "direct", "detached_children": "terminated"} if mxc else {}),
+            **(MXC_LOOPBACK_DETAILS if mxc else {}),
         },
     )
 
@@ -409,24 +422,112 @@ def _child_cache_env(
         return {}
     target = str(cache_dir)
     redirected = CHILD_CACHE_DIR_ENV_KEYS
-    if (
-        state.mechanism == MECHANISM_CODEX
-        and state.details.get("codex", {}).get("implementation") == "mxc"
-    ):
+    if _is_mxc(state):
         # MXC creates its own package profile and private TEMP. Repointing
         # LOCALAPPDATA before that bootstrap leaves Packages/.../AC/Temp absent,
-        # breaking nested uv workers with Windows errors 3 and 267.
+        # breaking nested uv workers with Windows errors 3 and 267. They are set
+        # inside the container instead (_mxc_container_env).
         redirected = tuple(
             key for key in redirected if key not in {"LOCALAPPDATA", "APPDATA", "TEMP", "TMP"}
         )
     overlay: dict[str, str] = dict.fromkeys(redirected, target)
     overlay["FASTMCP_CHECK_FOR_UPDATES"] = "off"
+    # A deep cache dir leaves no room for a unix socket under TEMP/TMP (ssh ControlMaster,
+    # munge, multiprocessing); a short /tmp alias leads to the same folder.
+    from clio_agent.runtime.session_scratch import socket_safe_temp  # noqa: PLC0415
+
+    overlay.update(socket_safe_temp(overlay))
     # LibreOffice keeps its user profile under ~/.config (XDG_CONFIG_HOME alone is not
     # enough), which the fence makes read-only: a confined `soffice --convert-to` then
     # aborts with an uncaught DeploymentException. Its UserInstallation bootstrap
     # variable, read from the environment, puts the profile in this cache directory.
     overlay["UserInstallation"] = (cache_dir / "libreoffice").as_uri()
     return overlay
+
+
+#: The variables Codex's MXC container replaces with its per-launch ``AC`` profile, which the
+#: fence does not grant and which is discarded on the next launch. ``APPDATA`` is not among
+#: them: MXC keeps the real roaming folder (uv's tools, Pythons and credentials, npm, pip and
+#: gh settings), which a confined child reads but does not write, as ``~/.config`` elsewhere.
+MXC_CONTAINER_ENV_KEYS: tuple[str, ...] = ("LOCALAPPDATA", "TEMP", "TMP")
+_CONTAINER_ENV_SHIM = Path(__file__).with_name("fence_container_env.py")
+
+
+def _is_mxc(state: SandboxResult) -> bool:
+    return (
+        state.mechanism == MECHANISM_CODEX
+        and state.details.get("codex", {}).get("implementation") == "mxc"
+    )
+
+
+def _mxc_container_env(
+    write_roots: Sequence[Path] | Sequence[str],
+    *,
+    state: SandboxResult,
+    chosen: Optional[Mapping[str, str]] = None,
+) -> dict[str, str]:
+    """``LOCALAPPDATA``/``TEMP``/``TMP`` and the person's PowerShell policy
+    (:mod:`fence_powershell`) for inside the MXC container, else empty.
+
+    They point at the child's cache folder (``paths.workspace_cache_dir`` of its first root):
+    granted, under ``CLIO_AGENT_HOME`` and the same on every launch. ``chosen`` carries values
+    the caller picked in granted territory (the shell's session scratch ``TEMP``), which win.
+    Empty when the cache folder is not in the child's write territory (MXC's profile stays).
+    """
+
+    if not write_roots or not _is_mxc(state):
+        return {}
+    cache_dir = paths.workspace_cache_dir(str(write_roots[0]))
+
+    def _key(path: Path | str) -> str:
+        return os.path.normcase(os.path.abspath(str(path)))
+
+    target = _key(cache_dir)
+    granted = any(
+        target == root or target.startswith(root.rstrip("\\/") + os.sep)
+        for root in (_key(item) for item in write_roots)
+    )
+    if not granted:
+        logger.warning(
+            "sandbox container env skipped reason=cache_dir_not_granted dir=%s", cache_dir
+        )
+        return {}
+    temp = cache_dir / "Temp"
+    try:
+        temp.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning(
+            "sandbox container env skipped reason=child_cache_dir_create_failed "
+            "dir=%s error=%s: %s",
+            temp,
+            type(exc).__name__,
+            exc,
+        )
+        return {}
+    environment = {"LOCALAPPDATA": str(cache_dir), "TEMP": str(temp), "TMP": str(temp)}
+    environment.update(
+        {key: value for key, value in (chosen or {}).items() if key in MXC_CONTAINER_ENV_KEYS}
+    )
+    return environment | execution_policy_env()
+
+
+def _with_container_env(
+    command: str, args: Sequence[str], environment: Mapping[str, str]
+) -> tuple[str, list[str]]:
+    """``(command, args)`` run through :mod:`fence_container_env` with ``environment`` set.
+
+    The child gets the command line ``subprocess`` would give it unfenced.
+    """
+
+    line = subprocess.list2cmdline([command, *args])
+    return sys.executable, [
+        "-I",
+        "-S",
+        "-B",
+        str(_CONTAINER_ENV_SHIM),
+        json.dumps(dict(environment), separators=(",", ":")),
+        line,
+    ]
 
 
 class SandboxCompositionError(RuntimeError):
@@ -499,6 +600,8 @@ def wrap_confined(
     state: Optional[SandboxResult] = None,
     cwd: Path | str | None = None,
     office: bool = False,
+    egress_root: Path | str | None = None,
+    container_env: Optional[Mapping[str, str]] = None,
 ) -> ConfinedSpawn:
     """Compose the confined spawn plan for a resolved ``(command, args)`` (#975/#976).
 
@@ -513,6 +616,11 @@ def wrap_confined(
     ``office`` marks CLIO's own LibreOffice worker; on macOS it runs under
     :mod:`sandbox_office_seatbelt` instead of Codex (same territory, two mach services, and a
     private short directory for LibreOffice's single-instance pipe that :meth:`release` removes).
+    ``egress_root`` is the workspace the child's network egress belongs to (deny mode and
+    approvals are per workspace); without it the first write root is used.
+    ``container_env`` names ``TEMP``/``TMP``/``LOCALAPPDATA`` values the caller chose in
+    granted territory; on Windows' MXC fence they are set inside the container, where MXC
+    would otherwise replace them (:func:`_mxc_container_env`). Elsewhere it is unused.
     """
     resolved_state = state or current_state()
     if resolved_state is None:
@@ -549,6 +657,7 @@ def wrap_confined(
         and sys.platform == "darwin"
     )
     office_pipe_dir: str | None = None
+    codex_layer: LayerHold | None = None
 
     # Active backend: fence prefix INNER (pdeathsig outermost below). Every active backend opens a
     # per-child egress channel. For codex this is Recipe A: the proxy overlay lands on the spawned
@@ -559,7 +668,7 @@ def wrap_confined(
         from clio_agent.runtime import sandbox_net  # noqa: PLC0415 - B4 egress-wiring sibling
 
         net_child_id, proxy_port, net_env = sandbox_net.open_child_egress(
-            resolved_state, write_roots
+            resolved_state, write_roots, workspace_root=egress_root
         )
         env_overlay.update(net_env)
         # Redirect the confined child's profile-cache / temp writes into its granted write
@@ -583,6 +692,15 @@ def wrap_confined(
                 ) from exc
             # A helper that launches soffice passes this on; soffice itself also gets argv.
             env_overlay[sandbox_office_seatbelt.OSL_SOCKET_PATH] = office_pipe_dir
+        from clio_agent.runtime.fence_forward import wrap_forwarding  # noqa: PLC0415
+
+        # Linux proxy fence only: declared raw TCP endpoints (a Slurm controller) are forwarded
+        # from inside the sandbox through the relay, so the chokepoint records and asks.
+        cmd, arg_list, forward_env = wrap_forwarding(cmd, arg_list, net_env)
+        env_overlay.update(forward_env)
+        container_env = _mxc_container_env(write_roots, state=resolved_state, chosen=container_env)
+        if container_env:
+            cmd, arg_list = _with_container_env(cmd, arg_list, container_env)
         try:
             cmd, arg_list = _compose_fence_prefix(
                 resolved_state,
@@ -597,8 +715,10 @@ def wrap_confined(
             )
         except BaseException:
             if office_pipe_dir is not None:
-                shutil.rmtree(office_pipe_dir, ignore_errors=True)
+                remove_tree(office_pipe_dir, why="confined_spawn_release")
             raise
+        if resolved_state.mechanism == MECHANISM_CODEX and not office_seatbelt:
+            codex_layer = layer_hold(arg_list)
 
     # pdeathsig OUTERMOST (#974.5): the argv-prefix helper folds in last (passthrough sans setpriv).
     if pdeathsig:
@@ -626,6 +746,7 @@ def wrap_confined(
         popen_kwargs=popen_kwargs,
         result=per_call,
         cleanup_dirs=(office_pipe_dir,) if office_pipe_dir is not None else (),
+        codex_layer=codex_layer,
     )
 
 

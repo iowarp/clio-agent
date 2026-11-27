@@ -486,6 +486,10 @@ def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
             compaction = await _compact_for_change(app, sid)
         # The new agent may bring plugin servers: prepare them before its next turn.
         session_warmup.start_session_warmup(app, sid, trigger="agent_changed")
+        # An open plugin tab watches its server as mounted now (a re-add is a new process).
+        from clio_agent.gact.plugin_tabs import session_agent_changed  # noqa: PLC0415
+
+        session_agent_changed(app, sid)
         sess = app.state.sessions.get(sid)
         metadata = sess.metadata if sess is not None and isinstance(sess.metadata, Mapping) else {}
         return {

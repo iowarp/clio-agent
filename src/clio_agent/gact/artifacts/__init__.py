@@ -31,7 +31,6 @@ from clio_agent.gact.artifacts.cas_gc import (
 from clio_agent.gact.artifacts.designation import (
     ARTIFACT_SUFFIXES,
     OUTPUT_PATH_ARG_NAMES,
-    ground_output_paths,
     kind_for_path,
 )
 from clio_agent.gact.artifacts.environment import (
@@ -193,7 +192,6 @@ __all__ = [
     "compile_reproduce",
     "get_registry",
     "ground_answer_artifacts",
-    "ground_output_paths",
     "hash_max_file_bytes",
     "register_export_gc_roots",
     "registered_deliverable_paths_by_ext",

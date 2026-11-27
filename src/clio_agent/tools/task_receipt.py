@@ -23,6 +23,19 @@ class TaskResultValidationError(ValueError):
     """A settled backend result violated the original declared output contract."""
 
 
+#: What a caller does with an accepted handle, carried in the receipt itself so a model
+#: that skims the tool description still follows the task instead of redoing its work.
+FOLLOW_HANDLE = (
+    "The work continues as a task. Keep this handle: call wait_tasks with it to block until "
+    "it settles, then get_task_result for its result (or query_tasks to check status). The "
+    "result also arrives at your next iteration. Do not redo the work another way."
+)
+UNCERTAIN_HANDLE = (
+    "Acceptance is unconfirmed and a retry may duplicate the work. Call query_tasks with "
+    "this handle to learn its state before doing anything else."
+)
+
+
 def accepted_result(receipt: dict[str, Any]) -> AcceptedTaskResult:
     """Validate the application receipt before returning it through the SDK."""
     if (
@@ -38,6 +51,9 @@ def accepted_result(receipt: dict[str, Any]) -> AcceptedTaskResult:
         or not str(receipt.get("handle", "")).startswith("task_")
     ):
         raise ValueError("Invalid CLIO task acceptance receipt")
+    if "next" not in receipt:
+        followed = receipt.get("accepted") is True and receipt.get("retry_safe") is not False
+        receipt = {**receipt, "next": FOLLOW_HANDLE if followed else UNCERTAIN_HANDLE}
     return AcceptedTaskResult(
         content=[mcp_types.TextContent(type="text", text=json.dumps(receipt))],
         structured_content=receipt,

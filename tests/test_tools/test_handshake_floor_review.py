@@ -64,9 +64,9 @@ mcp.run()
 
 
 def _reap(needle: str) -> None:
-    for proc in psutil.process_iter(["cmdline"]):
+    for proc in psutil.Process().children(recursive=True):
         try:
-            if needle in " ".join(proc.info["cmdline"] or []):
+            if any(needle in arg for arg in proc.cmdline()):
                 proc.kill()
         except psutil.Error:
             continue
@@ -197,6 +197,8 @@ async def test_capability_envelope_always_declares_the_tasks_extension() -> None
     from clio_agent.tools.mcp_extension_registry import (
         AGENT_ELICITATION_EXTENSION_ID,
         MCP_APP_MIME_TYPE,
+        RELAY_ASK_EXTENSION_ID,
+        RELAY_CHOICE_EXTENSION_ID,
         UI_EXTENSION_ID,
     )
 
@@ -205,6 +207,8 @@ async def test_capability_envelope_always_declares_the_tasks_extension() -> None
         "io.modelcontextprotocol/tasks": {},
         UI_EXTENSION_ID: {"mimeTypes": [MCP_APP_MIME_TYPE]},
         AGENT_ELICITATION_EXTENSION_ID: {},
+        RELAY_ASK_EXTENSION_ID: {},
+        RELAY_CHOICE_EXTENSION_ID: {},
     }
 
 

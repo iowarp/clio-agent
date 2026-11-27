@@ -8,6 +8,10 @@ TUI/HTTP surface aren't tracked here.
 
 ### Added
 
+- A plugin's page and tabs can name their title in other languages: an optional
+  `titles` map of language tags (`{"es": "Cómputo", "pt-BR": "..."}`) beside `title`.
+  CLIO lists each page and tab in the language of the request's `X-Clio-Locale`
+  (`pt-BR` falls back to `pt`), and uses `title` for any other language.
 - Run CLIO agents and flows from Python: `pip install clio-agent` ships the `clio`
   module (`ClioClient`, `AsyncClioClient`, `ClioOptions`, `RunResult`). Opening a
   client attaches to the CLIO server at `options.url` or starts one on this machine
@@ -36,6 +40,14 @@ TUI/HTTP surface aren't tracked here.
 
 ### Changed
 
+- A conversation's connector values are kept for its whole tree: a parent and all
+  its subagents read and write the same values, so they launch each connector the
+  same way and share one server of it, and through it one desktop app (one KiCad
+  server, one pcbnew). A value set in one session also moves the tree's other
+  running turns to the new server. Before, a parent's values (such as
+  `kicad.kicad_cli`) did not reach its subagents, so each launched its own server and
+  stopped the other's back and forth. Nothing limits spawns: the shared server starts
+  on first use and is reaped once the tree's last turn ends.
 - `connected_data_write` follows the session's approval mode, as an MCP tool does:
   plan mode refuses it, `ask` and `auto-edits` ask, `bypass` runs it. A
   `write_through` save changes the original (a GitHub save is a commit), and it had
@@ -71,6 +83,10 @@ TUI/HTTP surface aren't tracked here.
 - `routing_mode` in the Python client, and the `"main"` default of a session
   request's `agent.id`.
 
+- Pin `clio-kit==2.13.1` (802172ea, clio-kit#448): paraview 3.3.0, which joins a
+  running pvserver, keeps its last picture when its server stops and says
+  "stopped" plainly, with 2.13.0's ocean, weather, grids and copernicus servers.
+
 - Pin `clio-kit==2.12.7`. Every MCP server picks up opentelemetry-api 1.45.2
   (CVE-2026-126360). The adios and paraview servers install ADIOS2 from wheels
   on macOS, the hdf5 server keeps its metrics under its granted cache directory
@@ -80,6 +96,112 @@ TUI/HTTP surface aren't tracked here.
   Windows (no Windows wheels exist); its ADIOS2 tools report `Adios2Unavailable`
   there instead. This cuts the first ADIOS prepare on a new Windows install from
   minutes to seconds. `install.sh` keeps its own pin.
+
+### Fixed
+
+- `prepare_document` now accepts files CLIO's own tools saved for the workspace, such
+  as a PDF that `web_fetch` downloaded into the workspace's `tool-output/` state. It
+  used to refuse them as "not inside the active workspace", so the agent had to copy
+  them into the project first. Other workspace state stays refused.
+- The KiCad connector (kicad-mcp-pro cdc8b592) reports a failed tool call as an
+  error (`isError`) carrying KiCad's own text, exit code and output. It used to return
+  many failures as ordinary text and decide which were errors, and their codes and
+  hints, from keywords in the wording; a DRC failure could say "Install KiCad". Codes
+  and hints now come from the raised error's type, every kicad-cli attempt's output is
+  kept, and an unknown argument is refused with the accepted ones named. IPC failures
+  are no longer classified from their message, and error messages no longer state a
+  "likely" cause the check never found. `kicad_fp_get_info`, which called a kicad-cli
+  verb KiCad 10 does not have, is removed. A library that is not found names the
+  tables searched, and the 3D extra installs on a Python its dependencies support.
+- When one part of a task fails, the agent keeps finishing the parts that do not
+  depend on it, then reports what is done, what failed and why. It used to stop
+  with the rest unfinished.
+- `set_connector_value` no longer cuts off the connector's running calls. Its new
+  server replaces the old one, which used to stop under a call still in flight (the
+  call ended as `mcp_server_stopped_under_call`). New calls now go to the new server
+  at once, and the old server answers the calls it is running and stops after the
+  last one ends.
+- An output path a tool call names is passed to the server as the agent wrote it.
+  CLIO used to rewrite a relative path, and fill in an omitted one, against the
+  workspace or a workflow node's folder. A relative path now lands where the server
+  itself resolves it, in its working directory.
+- On Windows, a shell command whose program the sandbox cannot start at all
+  (`ERROR_CANT_ACCESS_FILE`, 1920, which is what a packaged app such as winget
+  gives inside the fence) now has a `launch_blocked` boundary. It tells the agent to
+  run the command again outside the sandbox with the person's allow. Before, the
+  failure had no diagnosis, so the agent asked for folders or turned to a manual
+  installer instead.
+- An offer the turn does not wait for now tells the agent what the plugin is for
+  (its description and the opening of the instructions its servers last sent), and
+  that while the offer waits it must not do that plugin's work some other way, by
+  shell, script or another tool. Before, "go on with what you can do without it"
+  let the agent probe a compute site over ssh while the offer of the plugin that
+  reaches it was still on screen. Other work goes on as before.
+- CLIO launches `clio-kit`, and every other launcher its own environment ships,
+  from that environment (or a scoped install's own `uv-tools`), never from PATH.
+  Before, a `clio-kit` the person had installed themselves (a global uv tool, an
+  older checkout) ran instead of CLIO's pinned one, with other servers and a much
+  slower first ParaView start. Spawns, provisioning, the listing cache, the doctor
+  and fleet paths share the one resolver on every OS.
+- The same holds for `uv` and `uvx`, which CLIO's environment installs from the
+  `uv` wheel as plain scripts rather than entry points. Before, a connector
+  declared as `uvx ...` (KiCad's, for one) and the server-runtime Python install
+  ran the person's own `uv`/`uvx` from PATH.
+- Connectors and plugins the person adds in answer to offers made together in one
+  step all reach that turn. Before, when the turn had taken no server's tools
+  whole, each join made its own tool refresher and only the last one's tools
+  reached the agent; the others joined the fleet but stayed out of its tool list.
+- A choice question from any MCP elicitation keeps what each option means and
+  which one is recommended. A titled option's `description` reaches the
+  question's option, and the recommended option is the field's `default`, or
+  the one a server's `io.iowarp.clio-relay/choice` `_meta` names. Options gain
+  `recommended`; form fields carry `enum_descriptions` and `recommended`.
+- An MCP elicitation with a choice field reaches the person again. The stored
+  question's options now keep `recommended`; before, every such elicitation
+  failed validation and its task sat in `input_required` with no card.
+- Enabling a connector no longer fails as unreachable when its server's calls
+  move to the proxy route while the check reads its tools: a live read whose
+  connection was retired under it reads once more before the check decides.
+- A structured MCP result without text now reads as what the call found, not a
+  key-path outline ("Site › address: null"). Records read by name and version,
+  envelope and integrity fields (`schema`, `op`, `sha256`, `_*`, cursors) and
+  empty values drop, and long lists are bounded. The exact value stays in
+  Technical details.
+- A session in a workspace without a root folder now mounts its MCP servers. The
+  default executor declares the user-scope `mcp.yaml` servers, so `always_load`
+  services attach there as they do in a rooted workspace, and the session's
+  plugin servers merge into it instead of failing as `mcp_server_not_declared`.
+- An MCP app whose text wraps past its declared height is no longer cut off. The
+  sandbox watches the view's content and, when it overflows the frame, sends the
+  host `clio/notifications/view-content-height` so the card grows to fit.
+- A missing temporary folder no longer crashes clio-core with a ZeroMQ "Bad file
+  descriptor". CLIO creates the daemon's IPC folder (`<TEMP>\clio_<user>` or
+  `CLIO_MEMFD_DIR`) before it starts. When the folder can't be created, ARC reports
+  `clio_core_ipc_dir_unavailable`, naming the folder and the OS error.
+- A live MCP configuration change (`PUT /v1/mcp/configuration`) can no longer leave a
+  workspace's tools waiting forever on the server it replaces. Stopping or resetting
+  that server waits at most 20 seconds (`mcp_namespace_retire_timed_out`), and a stop
+  routed to a retired executor's idle event loop returns at once. A tool call or step
+  that is still not started after 15 seconds traces where it waits
+  (`call_stage_stalled`, with the thread's stack).
+
+## [0.9.7.1] - 2026-11-13
+
+No GACT-contract change. Fixes for 0.9.7:
+
+### Fixed
+
+- On macOS, document conversions and renders inside the agent's sandbox no
+  longer fail with "Operation not permitted", and stopping such a job no longer
+  leaves LibreOffice running (#2302).
+- The default marketplace is pinned at the v0.8.0 commit, the same as the
+  submodule, so the PDF save-location fix is active (#2291).
+- A scoped installation's clio-kit is on the agent's PATH at start-up, so
+  plugin MCP servers (ADIOS, HDF5, Parquet) start in CLIO Desktop (#2295).
+- Without git, a GitHub marketplace is installed from GitHub's archive, so the
+  default agents install on Macs without the Command Line Tools (#2297).
+- The macOS prebuilt install writes every runtime entry point, including
+  `clio-agent-gact` (#2288).
 
 ## [0.9.7] - 2026-11-13
 

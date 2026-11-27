@@ -43,12 +43,10 @@ from clio_agent.gact.infrastructure.model_runtimes import (
     service_port,
 )
 from clio_agent.gact.infrastructure.models import (
-    CommandResult,
     CommandSpec,
     InfrastructureTarget,
     ManagedServiceDefinition,
     OwnedResource,
-    ServiceConfigurationField,
     ServiceVariant,
     TargetFacts,
 )
@@ -58,10 +56,9 @@ from clio_agent.gact.infrastructure.monitoring_services import (
     monitoring_plan,
     monitoring_port,
 )
-from clio_agent.gact.infrastructure.native_service_platform import clio_tool
 from clio_agent.gact.infrastructure.plan import DriverPlan
 from clio_agent.gact.infrastructure.remote_lifecycle import RemoteLaunch, start_owned_command
-from clio_agent.gact.infrastructure.reuse import Reuse, ReuseCheck, from_scratch
+from clio_agent.gact.infrastructure.reuse import from_scratch
 from clio_agent.gact.infrastructure.server_parameters import EngineId
 
 __all__ = [
@@ -75,7 +72,6 @@ __all__ = [
     "service_definitions",
 ]
 
-RELAY_VERSION = "1.6.8"
 CLIO_AGENT_PORT = 17_800
 # Services whose server listens on the target's loopback only: nothing can
 # reach them at the host's address, so they are always reached through an SSH
@@ -140,23 +136,6 @@ def service_connection_port(
     return None
 
 
-def _field(
-    field_id: str,
-    label: str,
-    placeholder: str,
-    *,
-    required: bool = False,
-    options: list[str] | None = None,
-) -> ServiceConfigurationField:
-    return ServiceConfigurationField(
-        id=field_id,
-        label=label,
-        placeholder=placeholder,
-        required=required,
-        options=options or [],
-    )
-
-
 def service_definitions(
     facts: TargetFacts, instances: Iterable[str] = ()
 ) -> list[ManagedServiceDefinition]:
@@ -166,32 +145,6 @@ def service_definitions(
     list beside their engine's default deployment.
     """
 
-    relay = ManagedServiceDefinition(
-        id="relay",
-        category="remote_access",
-        label="CLIO Relay",
-        description="Deploy and inspect persistent work on an SSH cluster.",
-        recommended_variant="uv-tool",
-        variants=[
-            ServiceVariant(
-                id="uv-tool",
-                label="Released uv tool",
-                version=RELAY_VERSION,
-                install_type="uv_tool",
-                artifact=f"clio-relay=={RELAY_VERSION}",
-                compatible=facts.uv_available,
-                reason="Requires uv on the managing CLIO host.",
-            )
-        ],
-        configuration_fields=[
-            _field("cluster_name", "Cluster name", "my-cluster", required=True),
-            _field("agent_bin", "Remote agent executable", "agent", required=True),
-            _field(
-                "relay_artifact_sha256", "Relay wheel SHA-256", "Published SHA-256", required=True
-            ),
-        ],
-        supports_stop=False,
-    )
     clio_agent = ManagedServiceDefinition(
         id="clio_agent",
         category="remote_access",
@@ -235,18 +188,8 @@ def service_definitions(
         model_runtime_definition("ollama", facts),
         *named.get("ollama", []),
         *monitoring_definitions(facts),
-        relay,
         clio_agent,
     ]
-
-
-def _required(configuration: dict[str, str], key: str) -> str:
-    value = configuration.get(key, "").strip()
-    if not value:
-        raise ValueError(f"{key} is required")
-    if "\0" in value or "\r" in value or "\n" in value:
-        raise ValueError(f"{key} contains invalid control characters")
-    return value
 
 
 def build_driver_plan(
@@ -337,8 +280,6 @@ def build_driver_plan(
     if action in {"install", "reinstall"} and not variant.compatible:
         raise ValueError(variant.reason or "This service is unavailable on the selected target")
 
-    if service_id == "relay":
-        return _relay_plan(action, configuration, target)
     if service_id == "clio_agent":
         return _clio_agent_plan(
             action,
@@ -349,114 +290,6 @@ def build_driver_plan(
         )
 
     raise ValueError(f"Unknown managed service {service_id!r}")
-
-
-def _relay_plan(
-    action: str,
-    configuration: dict[str, str],
-    target: InfrastructureTarget | None,
-) -> DriverPlan:
-    cluster = _required(configuration, "cluster_name")
-    if action in {"status", "logs"}:
-        return DriverPlan(
-            (
-                CommandSpec(
-                    program="clio-relay",
-                    args=["cluster", "endpoint-service-status", "--cluster", cluster],
-                    scope="controller",
-                ),
-            )
-        )
-    if action == "stop":
-        raise ValueError("Relay workers are persistent; use Relay teardown for destructive cleanup")
-    if action == "uninstall":
-        return DriverPlan(
-            (
-                CommandSpec(
-                    program=clio_tool("uv") or "uv",
-                    args=["tool", "uninstall", "clio-relay"],
-                    scope="controller",
-                    allowed_exit_codes=[0, 1],
-                ),
-            )
-        )
-    agent = _required(configuration, "agent_bin")
-    sha = _required(configuration, "relay_artifact_sha256")
-    if len(sha) != 64 or any(character not in "0123456789abcdefABCDEF" for character in sha):
-        raise ValueError("relay_artifact_sha256 must contain exactly 64 hexadecimal characters")
-    commands = [
-        CommandSpec(
-            program=clio_tool("uv") or "uv",
-            args=[
-                "tool",
-                "install",
-                "--python",
-                "3.13",
-                "--no-config",
-                *(["--reinstall"] if from_scratch(configuration) else []),
-                f"clio-relay=={RELAY_VERSION}",
-            ],
-            scope="controller",
-            timeout_seconds=900,
-        ),
-        CommandSpec(
-            program="clio-relay",
-            args=[
-                "cluster",
-                "add",
-                "--name",
-                cluster,
-                "--ssh-host",
-                _ssh_destination(target),
-                "--scheduler-provider",
-                "slurm",
-                "--agent-adapter",
-                "exec",
-                "--agent-bin",
-                agent,
-            ],
-            scope="controller",
-        ),
-        CommandSpec(
-            program="clio-relay",
-            args=["cluster", "bootstrap", "--cluster", cluster, "--relay-artifact-sha256", sha],
-            scope="controller",
-            timeout_seconds=900,
-        ),
-        CommandSpec(
-            program="clio-relay",
-            args=[
-                "cluster",
-                "install-endpoint-service",
-                "--cluster",
-                cluster,
-                "--start",
-                "--enable",
-            ],
-            scope="controller",
-            timeout_seconds=900,
-        ),
-    ]
-    return DriverPlan(tuple(commands), reuse_checks={0: ReuseCheck((), _relay_reused)})
-
-
-def _relay_reused(result: CommandResult) -> Reuse | None:
-    """uv's own verdict that this exact Relay version is already installed."""
-
-    if "is already installed" not in result.stdout + result.stderr:
-        return None
-    return Reuse(kind="package", thing="Relay", identity=f"clio-relay=={RELAY_VERSION}")
-
-
-def _ssh_destination(target: InfrastructureTarget | None) -> str:
-    if target is None or target.kind != "ssh" or target.ssh is None:
-        raise ValueError("Relay installation requires an SSH infrastructure target")
-    if target.ssh.profile.strip():
-        return target.ssh.profile.strip()
-    host = target.ssh.host.strip()
-    if not host:
-        raise ValueError("Relay target requires an SSH host")
-    return f"{target.ssh.user.strip()}@{host}" if target.ssh.user.strip() else host
 
 
 def _clio_agent_plan(

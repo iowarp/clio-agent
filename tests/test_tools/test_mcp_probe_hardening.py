@@ -232,3 +232,26 @@ async def test_even_a_working_server_stops_at_the_ceiling(monkeypatch: pytest.Mo
     with pytest.raises(MCPError) as exc_info:
         await hardened_negotiate_auto(session)
     assert exc_info.value.code == REQUEST_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_a_silent_live_server_in_a_measured_wait_is_waited_on_not_abandoned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cold import from a network filesystem can look flat; inside a measured wait whose
+    server is alive the probe keeps its one session instead of spending the budget into a
+    failed connect and a respawn (dry 14: three paraview starts in one conversation).
+
+    SABOTAGE: drop the ``waits_on_live_server`` branch -> the budget of 3 is spent on the
+    fourth timeout and the connect fails.
+    """
+    from clio_agent.tools import mcp_server_progress
+
+    monkeypatch.setattr(mcp_server_progress, "server_work", lambda: 5.0)  # flat
+    monkeypatch.setattr(mcp_server_progress, "waits_on_live_server", lambda: True)
+    session = _FakeSession([_timeout()] * 8 + [_good_discover()])
+
+    await hardened_negotiate_auto(session)
+
+    assert session.adopted is not None
+    assert session.discover_calls == [LATEST_MODERN_VERSION] * 9

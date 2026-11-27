@@ -21,6 +21,10 @@ class _Executor:
         self._clio_namespace_specs = {"geo": SimpleNamespace(name="geo")}
         self.resets: list[str] = []
 
+    def stop_namespace_instance(self, namespace: str, reason: str) -> int:
+        self.resets.append(f"stop:{namespace}:{reason}")
+        return 2
+
     def reset_namespace(self, namespace: str) -> None:
         self.resets.append(namespace)
 
@@ -56,7 +60,9 @@ def test_reconnect_stops_the_server_clears_a_failure_and_prepares_again(
 
     answer = mcp_prepare_routes.reconnect_session_server(_app(executor), "s1", "geo")
 
-    assert executor.resets == ["geo"]
+    # The server process itself stops (every route), then the connection resets.
+    assert executor.resets == ["stop:geo:mcp_reconnect_requested", "geo"]
+    assert answer["stopped"] == 2
     assert started == [(executor, "geo")]
     assert answer["state"] == mcp_prepare.PREPARING
     assert answer["preparation"]["state"] == mcp_prepare.PREPARING

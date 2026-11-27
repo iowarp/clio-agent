@@ -232,7 +232,7 @@ def test_the_reaper_tells_listeners_which_fleet_it_closed() -> None:
     try:
         registry: dict[str, Any] = {"/ws": Fleet()}
         reaper = WorkspaceExecutorReaper(
-            registry, threading.Lock(), ttl_s=1.0, channel_closer=lambda _r: 0
+            registry, threading.Lock(), ttl_s=1.0, channel_closer=lambda _key, _executor: 0
         )
         assert reaper.reap_once() == ["/ws"]
     finally:
@@ -249,7 +249,12 @@ def test_a_closed_fleets_retained_connection_is_retired() -> None:
     def host(owner: object, *, busy: bool = False) -> Any:
         key = ("pv", "scope", f"in-process:{id(owner):x}")
         return SimpleNamespace(
-            cache_key=key, rpcs={1} if busy else set(), calls={}, drivers={}, superseded=False
+            cache_key=key,
+            rpcs={1} if busy else set(),
+            calls={},
+            drivers={},
+            superseded=False,
+            client=None,
         )
 
     idle, busy, kept = host(proxy), host(proxy, busy=True), host(other)

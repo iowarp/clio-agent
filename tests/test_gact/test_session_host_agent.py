@@ -253,3 +253,41 @@ def test_with_a_host_a_codex_ref_with_a_variant_is_a_typed_400(
         "choose the model again from the model picker."
     )
     assert built[0].calls == ["hi"]
+
+
+def _bound_call(client: TestClient, sid: str) -> Any:
+    """Run one out-of-turn executor operation, as a plugin tab or MCP App does."""
+
+    from clio_agent.gact.mcp_apps import _run_bound
+
+    app = cast(FastAPI, client.app)
+    return client.portal.call(_run_bound, app, sid, lambda executor: executor)
+
+
+def test_a_tab_or_app_call_before_any_turn_builds_the_host_from_the_session_model(
+    client: TestClient, built: list[_HostAgent]
+) -> None:
+    sid = _session(client, _CODEX)
+    executor = object()
+    _HostAgent.tool_executor = executor
+    try:
+        result = _bound_call(client, sid)
+    finally:
+        del _HostAgent.tool_executor
+
+    assert result is executor
+    assert len(built) == 1
+    cfg = built[0]._provider_config
+    assert (cfg.provider_id, cfg.model) == ("codex", "gpt-5.5")
+    assert built[0].calls == []
+    assert cast(FastAPI, client.app).state.agent is built[0]
+
+
+def test_a_call_before_any_turn_for_a_session_without_a_model_builds_nothing(
+    client: TestClient, built: list[_HostAgent]
+) -> None:
+    sid = _session(client)
+
+    with pytest.raises(RuntimeError, match="agent is not available"):
+        _bound_call(client, sid)
+    assert built == []

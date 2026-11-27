@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ensure_host_agent"]
+__all__ = ["ensure_host_agent", "ensure_session_host"]
 
 
 def selected_ref(app: "FastAPI", sid: str, req: "PostMessageRequest") -> "ModelRef | None":
@@ -148,3 +148,20 @@ async def ensure_host_agent(app: "FastAPI", sid: str, req: "PostMessageRequest")
             ref.provider_id,
             ref.model_id,
         )
+
+
+async def ensure_session_host(app: "FastAPI", sid: str) -> None:
+    """Build the host from ``sid``'s own model for a call made outside any turn.
+
+    After a restart only a posted message built the host, so a plugin tab or an
+    MCP App used before the session's first turn found no agent at all. The
+    session's model is the same complete choice here; with none, nothing is built
+    and the caller reports the missing agent as before.
+    """
+
+    state = getattr(app, "state", None)
+    if getattr(state, "agent", None) is not None or getattr(state, "sessions", None) is None:
+        return
+    from clio_agent.gact.types import PostMessageRequest  # noqa: PLC0415
+
+    await ensure_host_agent(app, sid, PostMessageRequest(text=""))

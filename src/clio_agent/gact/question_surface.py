@@ -89,6 +89,7 @@ def question_view(app: Any, task: TaskSnapshot) -> dict[str, Any]:
         "answer": answer.answer,
         "selected_options": list(answer.selected_options),
         "answer_metadata": answer.metadata,
+        "answer_comment": answer.comment,
         "answer_input": receipt.model_dump(
             mode="json",
             include={"id", "session_id", "assignment_id", "iteration_id", "turn_id", "boundary"},
@@ -236,6 +237,7 @@ def answer_question(
         )
         if elicitation.get("mode") == "url" and not caller.human_action:
             raise PermissionError("URL consent requires the authenticated human control channel")
+        comment = reply.answer  # the person's words, unless they ARE a single field's value
         if elicitation.get("mode") == "form" and action == "accept":
             raw_fields = elicitation.get("fields", [])
             if not isinstance(raw_fields, list):
@@ -243,14 +245,12 @@ def answer_question(
             form_fields = [field for field in raw_fields if isinstance(field, dict)]
             if len(form_fields) != len(raw_fields):
                 raise ValueError("The MCP form's field definitions are malformed")
-            metadata = build_form_content(
-                form_fields,
-                answer=reply.answer,
-                selected_options=reply.selected_options,
-                answer_metadata=metadata,
-            )
+            built = {"selected_options": reply.selected_options, "answer_metadata": metadata}
+            metadata = build_form_content(form_fields, answer=reply.answer, **built)
+            if metadata != build_form_content(form_fields, answer="", **built):
+                comment = ""
         reply = QuestionReply.model_validate(
-            {**reply.model_dump(), "metadata": metadata, "action": action}
+            {**reply.model_dump(), "metadata": metadata, "action": action, "comment": comment}
         )
     if reply.parts:
         prepared = prepare_references_sync(

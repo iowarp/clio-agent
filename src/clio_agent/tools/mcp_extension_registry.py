@@ -23,14 +23,23 @@ if TYPE_CHECKING:
 UI_EXTENSION_ID = "io.modelcontextprotocol/ui"
 MCP_APP_MIME_TYPE = "text/html;profile=mcp-app"
 TASKS_EXTENSION_ID = "io.modelcontextprotocol/tasks"
+#: A2UI client ad (HS1a). A2UI publishes no official MCP extension id yet; if it
+#: does, advertise both.
+A2UI_EXTENSION_ID = "org.a2ui/a2ui"
+#: The mime type of an A2UI message batch in a tool result or a resource (HS1).
+A2UI_MIME_TYPE = "application/a2ui+json"
 
 __all__ = [
+    "A2UI_EXTENSION_ID",
+    "A2UI_MIME_TYPE",
     "AGENT_ELICITATION_EXTENSION_ID",
     "ENTERPRISE_MANAGED_AUTH_EXTENSION_ID",
     "KNOWN_EXTENSIONS",
     "MCP_APPS_PROTOCOL_REVISION",
     "MCP_APP_MIME_TYPE",
     "OAUTH_CLIENT_CREDENTIALS_EXTENSION_ID",
+    "RELAY_ASK_EXTENSION_ID",
+    "RELAY_CHOICE_EXTENSION_ID",
     "TASKS_EXTENSION_ID",
     "UI_EXTENSION_ID",
     "ExtensionsDeclaration",
@@ -70,6 +79,14 @@ ENTERPRISE_MANAGED_AUTH_EXTENSION_ID = "io.modelcontextprotocol/enterprise-manag
 #: ``x-clio-agent/*`` vendor namespace (the same convention as
 #: ``AGENT_AUDIENCE_META_KEY``), which satisfies SEP-2133's reverse-DNS-prefix rule.
 AGENT_ELICITATION_EXTENSION_ID = "x-clio-agent/agent-driven-elicitation"
+
+#: clio-relay's typed ask facts: ``_meta["io.iowarp.clio-relay/ask"][ask_id]`` is
+#: ``{detail, evidence}`` and ``.../choice`` a choice's options. A client that declares
+#: either gets the question sentence alone as the message and shows the facts itself
+#: (the web question card's Evidence disclosure); one that does not gets them inlined
+#: in the message. See clio-relay ``docs/mcp-tasks.md`` ("what a question says").
+RELAY_ASK_EXTENSION_ID = "io.iowarp.clio-relay/ask"
+RELAY_CHOICE_EXTENSION_ID = "io.iowarp.clio-relay/choice"
 
 
 @dataclass(frozen=True)
@@ -148,22 +165,90 @@ def _build_agent_elicitation(client_cls: Any, target: Any) -> MCPExtensionDeclar
     )
 
 
+def _build_relay_ask(client_cls: Any, target: Any) -> MCPExtensionDeclaration:  # noqa: ARG001 - uniform entry signature
+    """Registry entry: CLIO reads clio-relay's typed ask facts (:data:`RELAY_ASK_EXTENSION_ID`).
+
+    Ad-only and unconditional, like ``ui``: a server that does not know the id
+    ignores it. The elicitation path keeps a request's namespaced ``_meta`` on the
+    question (``metadata.elicitation.meta``) and the question card renders the
+    detail and evidence behind a closed disclosure.
+    """
+
+    from mcp.client.extension import advertise  # noqa: PLC0415
+
+    return MCPExtensionDeclaration(
+        identifier=RELAY_ASK_EXTENSION_ID,
+        extension=advertise(RELAY_ASK_EXTENSION_ID),
+        reason=None,
+    )
+
+
+def _build_relay_choice(client_cls: Any, target: Any) -> MCPExtensionDeclaration:  # noqa: ARG001 - uniform entry signature
+    """Registry entry: CLIO reads clio-relay's typed choices (:data:`RELAY_CHOICE_EXTENSION_ID`).
+
+    The question card draws each declared option with its label, meaning, note and
+    recommendation; see :func:`_build_relay_ask`.
+    """
+
+    from mcp.client.extension import advertise  # noqa: PLC0415
+
+    return MCPExtensionDeclaration(
+        identifier=RELAY_CHOICE_EXTENSION_ID,
+        extension=advertise(RELAY_CHOICE_EXTENSION_ID),
+        reason=None,
+    )
+
+
+def _build_a2ui(catalogs: tuple[str, ...]) -> MCPExtensionDeclaration:
+    """The A2UI client ad (HS1a): the A2UI versions and catalogs this host renders for a server.
+
+    ``catalogs`` are the catalog ids the server's plugin ships; a server whose plugin
+    ships none gets no entry, since it has nothing CLIO could render.
+    """
+
+    from mcp.client.extension import advertise  # noqa: PLC0415
+
+    from clio_agent.gact.protocol.constants import A2UI_WIRE_VERSIONS  # noqa: PLC0415
+
+    if not catalogs:
+        raise ValueError("the A2UI ad needs at least one catalog id")
+    versions = sorted(A2UI_WIRE_VERSIONS)
+    settings = {
+        "versions": versions,
+        "clientCapabilities": {
+            version: {"supportedCatalogIds": list(catalogs)} for version in versions
+        },
+    }
+    return MCPExtensionDeclaration(
+        identifier=A2UI_EXTENSION_ID,
+        extension=advertise(A2UI_EXTENSION_ID, settings),
+        reason=None,
+    )
+
+
 #: Fresh ad-only entries supplement the SDK's native Tasks extension.
 #: They do not own execution identities, polling, results or task storage.
 _ACTIVE_ENTRIES: tuple[Callable[[Any, Any], MCPExtensionDeclaration], ...] = (
     _build_ui,
     _build_agent_elicitation,
+    _build_relay_ask,
+    _build_relay_choice,
 )
 
 
-def extensions_declaration(client_cls: Any, target: Any = None) -> ExtensionsDeclaration:
+def extensions_declaration(
+    client_cls: Any, target: Any = None, *, a2ui_catalogs: tuple[str, ...] = ()
+) -> ExtensionsDeclaration:
     """Build fresh CLIO Apps/input advertisements for one SDK client.
 
     Native Tasks are folded by FastMCP itself, not by this registry. Client and
     transport arguments are passed to ad builders; no execution identity or task
-    state is created here."""
+    state is created here. ``a2ui_catalogs`` are the catalog ids of the server's
+    plugin (HS1a)."""
 
     outcomes = tuple(build(client_cls, target) for build in _ACTIVE_ENTRIES)
+    if a2ui_catalogs:
+        outcomes += (_build_a2ui(tuple(a2ui_catalogs)),)
     # Suppression is already logged at its source (e.g.
     # ``mcp_task_extension.tasks_declaration``'s own ``logger.debug`` call);
     # this composition site does not re-log it (review round 1: no duplicate
@@ -214,6 +299,30 @@ KNOWN_EXTENSIONS: tuple[MCPKnownExtension, ...] = (
             "server reads it via ctx.client_supports_extension to prefer the agent "
             "over dumping a fat result (absent -> return everything)"
         ),
+    ),
+    MCPKnownExtension(
+        identifier=A2UI_EXTENSION_ID,
+        spec_reference="A2UI v0.9 (host semantics HS1a)",
+        actively_declared=True,
+        note=(
+            "declared only for a server whose plugin ships A2UI catalogs; settings name "
+            "the versions and the plugin's catalog ids"
+        ),
+    ),
+    MCPKnownExtension(
+        identifier=RELAY_ASK_EXTENSION_ID,
+        spec_reference="clio-relay docs/mcp-tasks.md (what a question says)",
+        actively_declared=True,
+        note=(
+            "declared ad-only and unconditionally; relay then sends the question sentence "
+            "alone and its detail and evidence typed in _meta, which the question card shows"
+        ),
+    ),
+    MCPKnownExtension(
+        identifier=RELAY_CHOICE_EXTENSION_ID,
+        spec_reference="clio-relay docs/mcp-tasks.md (what a question says)",
+        actively_declared=True,
+        note="declared ad-only and unconditionally; the question card draws relay's typed choices",
     ),
     MCPKnownExtension(
         identifier=OAUTH_CLIENT_CREDENTIALS_EXTENSION_ID,

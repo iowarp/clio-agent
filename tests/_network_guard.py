@@ -17,7 +17,7 @@ stays open: local fake servers are how tests stand in for remote ones.
 
 Scope: this process only. Subprocesses (MCP servers, CLIs) are not covered. Tests that
 legitimately use the network are the ones marked ``integration``/``live``/
-``real_case``/``relay``, which the unit run excludes; the guard skips them too.
+``real_case``, which the unit run excludes; the guard skips them too.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ import threading
 import traceback
 from typing import Any
 
-EXEMPT_MARKERS = ("integration", "live", "real_case", "relay")
+EXEMPT_MARKERS = ("integration", "live", "real_case")
 
 _LOCAL_NAMES = frozenset({"localhost", "localhost.localdomain", "ip6-localhost", ""})
 

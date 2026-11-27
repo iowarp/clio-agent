@@ -58,9 +58,16 @@ def _default_allowed_roots() -> tuple[Path, ...]:
     sees the current cwd at the moment it's constructed. The temp root is
     the platform temp dir (a literal ``/tmp`` resolved to ``<drive>:\\tmp``
     on Windows — issue #765), unless ``paths.allow_system_temp`` is off (TD56).
+
+    A tool running for a session works in that session's workspace, which
+    :func:`_with_active_workspace` adds. The process's own cwd is only where the
+    server happened to start (a checkout, an install folder), not a place the
+    session was given, so it stands in for a workspace only when none is bound.
     """
     from clio_agent.runtime.session_scratch import system_temp_roots  # noqa: PLC0415
 
+    if _active_workspace_root() is not None:
+        return tuple(system_temp_roots())
     return (Path.cwd(), *system_temp_roots())
 
 
@@ -68,7 +75,8 @@ def _active_workspace_root() -> Path | None:
     """The active session's workspace root, when a tool is executing within one.
 
     A session must ALWAYS be able to read/write/shell inside its OWN workspace,
-    even when ``CLIO_ALLOWED_ROOTS`` (default: process cwd + temp dir) does not
+    even when ``CLIO_ALLOWED_ROOTS`` (default: temp dir, plus the process cwd when
+    no workspace is bound) does not
     name it — otherwise the agent is locked out of the very workspace it was
     launched to work in and is forced to route shell through ``/tmp`` with
     absolute paths. Bound by ``tools.execution.tool_workspace_context`` during
@@ -587,6 +595,18 @@ def validate_non_empty_string(value: str, *, field: str) -> None:
     )
 
 
+def relative_base() -> Path | None:
+    """The folder CLIO's own file tools resolve a relative path against, if one is bound.
+
+    An isolated node's relative paths land in its own folder; otherwise in the active
+    session's workspace root.
+    """
+
+    from clio_agent.tools.write_scope import active_tool_write_root  # noqa: PLC0415
+
+    return active_tool_write_root() or _active_workspace_root()
+
+
 def _coerce_path(raw: str, *, field: str) -> Path:
     if not isinstance(raw, str) or not raw.strip():
         raise FilePolicyError(
@@ -603,10 +623,7 @@ def _coerce_path(raw: str, *, field: str) -> Path:
         # process's own cwd. The managed backend process outlives its boot-time
         # cwd and can serve multiple workspaces, so Path.cwd() is only a
         # last-resort fallback for the app-less CLI grounding path.
-        from clio_agent.tools.write_scope import active_tool_write_root  # noqa: PLC0415
-
-        # An isolated node's relative paths land in its own folder.
-        workspace_root = active_tool_write_root() or _active_workspace_root()
+        workspace_root = relative_base()
         if workspace_root is not None:
             base = workspace_root
         else:

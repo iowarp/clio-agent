@@ -44,7 +44,7 @@ from clio_agent.gact.session_records import InvalidCursorError, PageQuery
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, ListSessionsResponse
 
 DEFAULT_PAGE_SIZE = 50
-SESSION_KINDS = frozenset({"conversation", "branch", "agent", "lookup"})
+SESSION_KINDS = frozenset({"conversation", "branch", "agent", "lookup", "page"})
 
 
 def _invalid(message: str, **details: Any) -> HTTPException:

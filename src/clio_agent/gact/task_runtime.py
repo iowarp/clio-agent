@@ -31,6 +31,20 @@ from clio_agent.gact.task_publication import subscription_caller
 logger = logging.getLogger(__name__)
 
 
+def authorization_mode(tool_name: str, args: Any, *, session_mode: str, human_action: bool) -> str:
+    """Return the session mode a durable submission's policy check resolves under.
+
+    A person's own action, and a call the gate classifies as a read, resolve without the
+    plan/architect lock (``""``), so a fast-allowed read is not refused after acceptance.
+    Policies still apply in that resolution, so a person's deny keeps holding.
+    """
+    from clio_agent.gact.runtime.grant_resolver import is_read_only  # noqa: PLC0415
+
+    if human_action or is_read_only("tool", tool_name, args, None):
+        return ""
+    return session_mode
+
+
 async def run_lifespan(
     app: Any, readiness: asyncio.Future[None], stopping: asyncio.Event
 ) -> tuple[BaseException, ...]:
@@ -101,7 +115,10 @@ async def start(app: Any) -> None:
 
     def authorize(submission: SubmissionContext) -> None:
         from clio_agent.gact.permission_gate import _policy_action_for_tool
-        from clio_agent.tools.task_call_context import permission_snapshot
+        from clio_agent.tools.task_call_context import (
+            permission_snapshot,
+            permissions_only_widened,
+        )
 
         session = session_store.get(submission.owner.session_id)
         assignment = history.task_snapshot(submission.owner.assignment_id)
@@ -140,6 +157,8 @@ async def start(app: Any) -> None:
             and submission.backend.server == "clio-builtins"
             and submission.attribution.get("read_only") is True
         )
+        # A read the gate fast-allowed (a plain shell listing, say) is not under the plan
+        # lock; a person's own deny policy still holds for it, as it does at the gate.
         action = (
             "allow"
             if declared_read or cleanup_only
@@ -149,13 +168,22 @@ async def start(app: Any) -> None:
                 session=session,
                 tool_name=public_name,
                 args=policy_context.arguments,
-                mode="" if submission.attribution.get("human_action") is True else session.mode,
+                mode=authorization_mode(
+                    public_name,
+                    policy_context.arguments,
+                    session_mode=session.mode,
+                    human_action=submission.attribution.get("human_action") is True,
+                ),
             )
         )
         if action == "deny":
             raise PermissionError("Execution permission was revoked")
+        # Grants the person adds meanwhile (another card's "allow for this session")
+        # cannot narrow this call; only a posture change or a removed rule can.
         current_permissions = permission_snapshot(app, session.id)
-        if current_permissions != submission.permissions and action != "allow":
+        if action != "allow" and not permissions_only_widened(
+            submission.permissions, current_permissions
+        ):
             raise PermissionError("Execution permissions changed; obtain new approval")
 
     async def cancel_owner(task: TaskSnapshot, caller: TaskCaller) -> dict[str, Any]:

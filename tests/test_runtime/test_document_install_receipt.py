@@ -321,6 +321,17 @@ def test_startup_cli_forwards_reuse_request(
         return result
 
     monkeypatch.setattr(installer, "install_document_runtime", install)
+    # The other install steps fetch the browser, Python, the marketplace and provider SDKs
+    # from the network into shared caches; this test is about the forwarded request only.
+    ready = {"status": "ready"}
+    monkeypatch.setattr(installer, "_prepare_browser", lambda args, emit: ready)
+    monkeypatch.setattr(installer, "_prefetch_server_python", lambda args, emit: ready)
+    monkeypatch.setattr(installer, "_prepare_default_marketplace", lambda args, emit: ready)
+    monkeypatch.setattr(installer, "_prepare_tool_servers", lambda args, market, emit: ready)
+    monkeypatch.setattr(installer, "_prepare_provider_support", lambda args, emit: ready)
+    monkeypatch.setattr(installer, "_prewarm_runtime_files", lambda args: {"status": "done"})
+    monkeypatch.setattr(installer, "prune_after_install", lambda: {"status": "pruned"})
+    monkeypatch.setattr(installer, "collect_snapshots_after_install", lambda: {"status": "done"})
     # The store-migration step is the install-time prepare's; the per-start reuse skips it.
     from clio_agent.gact import store_migrate_command
 

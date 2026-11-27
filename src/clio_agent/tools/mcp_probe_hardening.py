@@ -150,6 +150,7 @@ async def hardened_negotiate_auto(session: Any) -> None:
     from clio_agent.tools.mcp_server_progress import (  # noqa: PLC0415
         mcp_max_wait_s,
         server_work,
+        waits_on_live_server,
     )
 
     version = LATEST_MODERN_VERSION
@@ -175,7 +176,7 @@ async def hardened_negotiate_auto(session: Any) -> None:
                 if (
                     work is not None
                     and (last_work is None or work - last_work >= 0.01)
-                    and waited < mcp_max_wait_s()
+                    and (waits_on_live_server() or waited < mcp_max_wait_s())
                 ):
                     last_work = work
                     logger.info(
@@ -186,6 +187,16 @@ async def hardened_negotiate_auto(session: Any) -> None:
                     )
                     continue
                 last_work = work
+                if waits_on_live_server():
+                    # A measured wait owns the verdict on a silent live server: it reports
+                    # the stall and keeps waiting on this process, never a respawn.
+                    logger.warning(
+                        "mcp_probe_server_silent reason=discover_timed_out_server_alive "
+                        "version=%s waited_s=%.0f action=keep_waiting_same_process",
+                        version,
+                        waited,
+                    )
+                    continue
                 if timeout_retries_left > 0:
                     timeout_retries_left -= 1
                     logger.warning(
@@ -259,6 +270,11 @@ def install_probe_hardening() -> None:
 
     sdk_probe.negotiate_auto = hardened_negotiate_auto
     fastmcp_client.negotiate_auto = hardened_negotiate_auto
+    # The hardened probe waits on the connecting server's own work; give every connect
+    # a tree to measure, wherever it is opened.
+    from clio_agent.tools.mcp_server_progress import install_connection_trees  # noqa: PLC0415
+
+    install_connection_trees()
     _INSTALLED = True
     logger.info(
         "mcp_probe_hardening_installed reason=timeout_is_not_an_era_verdict retries=%d",

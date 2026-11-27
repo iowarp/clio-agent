@@ -11,6 +11,8 @@
       PARAVIEW_ADDRESS: ${need.address}
       PARAVIEW_VIA: ${need.via}
       PARAVIEW_PREPARE: ${need.prepare}
+      PARAVIEW_PVSERVER: ${need.pvserver}
+      PARAVIEW_VERSION: ${need.version}
   needs:
     - key: address
       kind: address
@@ -29,4 +31,16 @@
       required: false
       agent_settable: true
       help: For example "module load paraview".
+    - key: pvserver
+      kind: address
+      label: ParaView server to join
+      required: false
+      agent_settable: true
+      help: A running pvserver as host:port, for example the local port a relay service gives. Leave empty to join one on port 11111 where ParaView runs, if there is one.
+    - key: version
+      kind: value
+      label: ParaView version
+      required: false
+      agent_settable: true
+      help: The ParaView to fetch for this machine when none is installed. It must match the server it joins, for example 5.13.1.
   plugin: paraview

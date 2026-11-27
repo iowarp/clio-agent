@@ -21,7 +21,7 @@ def approved_plan_resume_text(
     )
     instruction = (
         " Begin implementing it; you will be prompted to approve each action."
-        if decision == "interactive"
+        if decision in ("ask", "interactive")
         else " Begin implementing the approved plan now."
     )
     content = str(approved_plan.get("content") or "")

@@ -26,6 +26,7 @@ joined namespace is never seen as a changed spec there (CV-N3).
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 from collections.abc import Mapping
 from typing import Any
@@ -36,6 +37,14 @@ from clio_agent.tools.fleet_key import fleet_root
 _PLUGIN_ENV = ("PLUGIN_ROOT", "PLUGIN_DATA")
 
 
+def _on_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
 def _executors(agent: Any) -> list[tuple[str, Any]]:
     out: list[tuple[str, Any]] = []
     default = getattr(agent, "tool_executor", None)
@@ -44,8 +53,18 @@ def _executors(agent: Any) -> list[tuple[str, Any]]:
     state = getattr(agent, "_workspace_state", None)
     if callable(state):
         lock, executors, _leases = state()
-        with lock:
-            out.extend(executors.items())
+        if not _on_event_loop():
+            with lock:
+                out.extend(executors.items())
+        elif lock.acquire(blocking=False):
+            try:
+                out.extend(executors.items())
+            finally:
+                lock.release()
+        else:
+            # Never wait for the registry lock on the loop: its holder may be waiting
+            # on this loop. A dict copy is atomic under the GIL.
+            out.extend(dict(executors).items())
     return out
 
 
@@ -85,6 +104,27 @@ def _same_connection(a: Any, b: Any) -> bool:
     return all(getattr(a, name, None) == getattr(b, name, None) for name in fields)
 
 
+def live_owners(agent: Any, namespace: str, declaration: Mapping[str, Any]) -> list[Any]:
+    """The namespace proxies of resident fleets that run exactly ``declaration``'s
+    connection: their kept-alive server is the one a new server of it would duplicate."""
+
+    owners: list[Any] = []
+    for _root, executor in _executors(agent):
+        specs = getattr(executor, "_clio_namespace_specs", None)
+        inner = getattr(executor, "_async_executor", None)
+        proxies = getattr(inner, "_namespace_servers", None)
+        if not isinstance(specs, dict) or namespace not in specs or not isinstance(proxies, dict):
+            continue
+        if getattr(executor, "closed", False) or getattr(executor, "_closed", False):
+            continue
+        proxy = proxies.get(namespace)
+        if proxy is not None and _same_connection(
+            rebound_spec(specs[namespace], declaration, namespace), specs[namespace]
+        ):
+            owners.append(proxy)
+    return owners
+
+
 def _install(executor: Any, namespace: str, spec: Any, root: str) -> None:
     """Route ``namespace`` of ``executor`` to a fresh proxy of ``spec`` (its connection
     is closed, so the next use starts it with ``spec``)."""
@@ -107,10 +147,21 @@ def _install(executor: Any, namespace: str, spec: Any, root: str) -> None:
         if isinstance(inner_specs, dict):
             inner_specs[namespace] = spec
         if proxy is not None:
+            from clio_agent.tools import namespace_instances  # noqa: PLC0415
+
             replaced = inner._namespace_servers.get(namespace)
+            stop = getattr(executor, "stop_namespace_instance", None)
+            shared = replaced is not None and namespace_instances.routers(replaced, exclude=inner)
+            if replaced is not None and callable(stop) and not shared:
+                # MI1: the replaced proxy's own kept-alive server stops before the new
+                # one can start in the same folder. Another fleet that still routes to
+                # it (its connection did not change) keeps it.
+                stop(namespace, "namespace_rebound")
             inner._namespace_servers[namespace] = proxy
             # CV-N2: a connection retained on the replaced proxy keeps its server running.
-            proxies_dropped(root, (replaced,), "namespace_rebound")
+            proxies_dropped(
+                root, namespace_instances.unshared((replaced,), inner), "namespace_rebound"
+            )
         factories = getattr(inner, "_clio_namespace_direct_factories", None)
         factory = namespace_direct_factories(gateway).get(namespace)
         if isinstance(factories, dict) and factory is not None:
@@ -256,6 +307,7 @@ def join_namespace(
     """
 
     from clio_agent.connectors import listing  # noqa: PLC0415
+    from clio_agent.errors import CancellationError  # noqa: PLC0415
     from clio_agent.tools.mcp_config import spec_from_declaration  # noqa: PLC0415
     from clio_agent.tools.mcp_discovery import ensure_namespace  # noqa: PLC0415
     from clio_agent.tools.mcp_tools_changed import prefixed_namespace_tools  # noqa: PLC0415
@@ -287,6 +339,8 @@ def join_namespace(
         tools = (
             prefixed_namespace_tools(namespace, kept) if kept else ensure_namespace(namespace, spec)
         )
+    except CancellationError:
+        raise  # the person stopped the turn: not a listing failure
     except Exception as exc:  # noqa: BLE001 - typed for the caller
         raise ConnectorJoinError("connector_join_listing_failed", type(exc).__name__) from exc
     merge(namespace, tools)

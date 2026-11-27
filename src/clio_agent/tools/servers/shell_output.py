@@ -36,17 +36,21 @@ or grep the returned path through the owning workspace's file policy.
 
 from __future__ import annotations
 
+import asyncio
 import codecs
 import io
 import json
 import logging
 from collections.abc import Mapping
 from pathlib import Path
-from typing import IO, Any, Protocol
+from typing import IO, TYPE_CHECKING, Any, Protocol
 
 from clio_agent.platform_paths import win_extended_path
 from clio_agent.runtime import trace
 from clio_agent.tools.result_room import ResultRoom, result_room
+
+if TYPE_CHECKING:
+    from clio_agent.runtime.sandbox import SandboxResult
 
 logger = logging.getLogger(__name__)
 
@@ -368,6 +372,19 @@ async def _forward(ctx: ProgressReporter, capture: StreamCapture, text: str) -> 
     )
     try:
         await ctx.report_progress(progress=capture.total_bytes, total=None, message=message)
+    except asyncio.CancelledError as exc:
+        # A delivery channel torn down mid-report (a stopped caller's connection) can
+        # surface as a cancelled await. Unless this reader itself was cancelled, that is
+        # a display failure: the reader must keep draining, or the shell's process-tree
+        # cleanup is never confirmed and its cancellation never settles.
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            raise
+        logger.warning(
+            "shell progress delivery failed stream=%s reason=progress_delivery_cancelled error=%r",
+            capture.stream,
+            exc,
+        )
     except Exception as exc:  # noqa: BLE001 - display progress cannot fail the command
         logger.warning(
             "shell progress delivery failed stream=%s reason=progress_delivery_failed error=%r",
@@ -532,6 +549,37 @@ def compose_output_fields(
     return fitted if fitted is not None else _assemble(reduced, captures, excerpted, 0, root)
 
 
+async def compose_shell_result(
+    base: Mapping[str, Any],
+    captures: list[StreamCapture],
+    confinement: "SandboxResult",
+    *,
+    command: str,
+    cwd: Path,
+    root: Path,
+) -> dict[str, Any]:
+    """The settled call's result: why the fence refused, plus its budgeted output.
+
+    Built on a worker thread, in a copy of this call's context. The shell runs on the app
+    loop that every other call shares, and measuring the result can block for seconds (a
+    cold tokenizer import), which held their timers and exit callbacks.
+    """
+    from clio_agent.runtime.net_refusals import confined_fields  # noqa: PLC0415
+
+    def build() -> dict[str, Any]:
+        err = captures[1]
+        fields = {**base} | confined_fields(  # budgeted with the output below
+            confinement,
+            exit_code=base["exit_code"],
+            stderr=err.full_text() + "\n" + err.tail_excerpt(8192),
+            command=command,
+            cwd=cwd,
+        )
+        return compose_output_fields(fields, captures, root=root, budget=shell_result_room())
+
+    return await asyncio.to_thread(build)
+
+
 __all__ = [
     "COMMAND_ECHO_OMITTED_REASON",
     "SPILLED_REASON",
@@ -540,6 +588,7 @@ __all__ = [
     "SPILL_NOTE",
     "StreamCapture",
     "compose_output_fields",
+    "compose_shell_result",
     "read_process_stream",
     "shell_result_room",
 ]

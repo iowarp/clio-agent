@@ -169,6 +169,9 @@ class TaskSnapshot(TaskRecord):
     resource_id: str | None = None
     #: The handle this task was forked from: whoever waits on that handle waits on this too.
     fork_of: str | None = None
+    #: The latest ``_meta`` an MCP server sent on this task's status or ``tasks/get``
+    #: reply, passed through for renderers of a server's typed data (e.g. a job card).
+    metadata: dict[str, Any] | None = None
 
     @classmethod
     def read_history(cls, record: dict[str, Any]) -> TaskSnapshot:
@@ -499,6 +502,7 @@ class QuestionOption(TaskRecord):
     label: str
     value: str
     description: str = ""
+    recommended: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -547,6 +551,9 @@ class QuestionReply(TaskRecord):
     responder_session: str | None = None
     source_action: QuestionAnswerAction | None = None
     action: Literal["accept", "decline", "cancel"] = "accept"
+    #: An MCP elicitation answer's comment from the person (not a form value); it reaches
+    #: the server as ``_meta["io.iowarp/approval"].comment``.
+    comment: str = ""
 
 
 def question_surface_resource(session_id: str, surface_id: str) -> str:

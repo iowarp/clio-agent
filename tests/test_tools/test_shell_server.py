@@ -16,13 +16,82 @@ from fastmcp import Client
 from clio_agent import conf
 from clio_agent.tools.execution import tool_workspace_context
 from clio_agent.tools.servers.shell_server import (
+    POWERSHELL_PREAMBLE,
     ShellEnvFacts,
     _detect_shell_env,
     _resolve_cwd,
+    _shell_argv,
     _translate_windows_paths_for_bash,
     build_shell_tool_description,
     shell_server,
 )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="PowerShell backend is Windows-only")
+def test_powershell_commands_cross_the_pipe_as_utf8(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A BOM-less UTF-8 file read with Get-Content, a literal and a Python child's output
+    all come back as UTF-8 without a console (the server's case), not ``â€”`` or ``?``."""
+
+    import shutil
+    import subprocess
+
+    if not (shutil.which("pwsh.exe") or shutil.which("powershell.exe")):
+        pytest.skip("no PowerShell")
+    monkeypatch.setenv("CLIO_WINDOWS_SHELL_BACKEND", "powershell")
+    script = tmp_path / "script.py"
+    script.write_text("print('em — dash, 21°C')\n", encoding="utf-8")
+    command = (
+        f"Get-Content '{script}'; Write-Output 'literal — 21°C'; "
+        f"& '{sys.executable}' '{script}'; "
+        f"'piped — 21°C' | & '{sys.executable}' -c \"import sys; print(sys.stdin.read())\"; "
+        "exit 5"
+    )
+    argv = _shell_argv(command)
+    assert argv[-1] == POWERSHELL_PREAMBLE + command
+    result = subprocess.run(
+        argv,
+        capture_output=True,
+        env={**os.environ, "PYTHONUTF8": "1"},
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        timeout=60,
+    )
+    text = result.stdout.decode("utf-8")
+    assert result.returncode == 5
+    assert text.count("em — dash, 21°C") == 2  # the file's text, then the script's output
+    assert "literal — 21°C" in text
+    assert "piped — 21°C" in text
+    assert "â€" not in text and "\ufffd" not in text
+
+
+@pytest.mark.skipif(os.name != "nt", reason="PowerShell backend is Windows-only")
+def test_powershell_drops_only_the_aliases_current_powershell_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``wget`` (dropped by PowerShell 6) runs the ``wget.cmd`` on PATH, while ``ls`` stays
+    ``Get-ChildItem`` even with an ``ls.cmd`` on PATH, as in current PowerShell."""
+
+    import shutil
+    import subprocess
+
+    if not (shutil.which("pwsh.exe") or shutil.which("powershell.exe")):
+        pytest.skip("no PowerShell")
+    monkeypatch.setenv("CLIO_WINDOWS_SHELL_BACKEND", "powershell")
+    (tmp_path / "wget.cmd").write_text("@echo native wget %*\r\n", encoding="ascii")
+    (tmp_path / "ls.cmd").write_text("@echo native ls\r\n", encoding="ascii")
+    command = "wget -sS x; (ls | Where-Object Name -like 'w*').Name"
+    result = subprocess.run(
+        _shell_argv(command),
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={**os.environ, "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"},
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["native", "wget", "-sS", "x", "wget.cmd"]
 
 
 def test_shell_bash_declares_open_world_destructive_annotations() -> None:
@@ -41,9 +110,10 @@ def test_shell_bash_declares_open_world_destructive_annotations() -> None:
     assert annotations["openWorldHint"] is True
     # open-world effectful -> NEITHER read nor write.
     assert classification_tags(annotations) == frozenset()
-    tags = get_tool_entry("shell_bash").tags
-    assert "read" not in tags
-    assert "write" not in tags
+    entry = get_tool_entry("shell_bash")
+    assert entry is not None
+    assert "read" not in entry.tags
+    assert "write" not in entry.tags
 
 
 def test_shell_description_windows_warns_off_wsl():
@@ -156,15 +226,21 @@ async def test_shell_bash_runs_simple_command(
     assert data["stdout"].strip().splitlines() == ["CLIO_SHELL_OK", "1"]
     assert data["stderr"] == ""
     stages = [record for record in caplog.records if record.msg.startswith("shell_phase ")]
-    assert [record.args[1] for record in stages] == [
+    phases: list[tuple[object, ...]] = []
+    for record in stages:
+        assert isinstance(record.args, tuple)
+        phases.append(record.args)
+    assert [row[1] for row in phases] == [
         "environment",
         "confinement",
         "process_start",
         "child_lifetime",
         "output_drain",
     ]
-    assert len({record.args[0] for record in stages}) == 1
-    assert all(record.args[2] == "completed" and record.args[3] >= 0 for record in stages)
+    assert len({row[0] for row in phases}) == 1
+    assert all(
+        row[2] == "completed" and isinstance(row[3], (int, float)) and row[3] >= 0 for row in phases
+    )
     assert all(command not in record.getMessage() for record in stages)
 
 
@@ -311,10 +387,11 @@ async def test_shell_bash_streams_typed_terminal_chunks_before_completion(
     first_chunk = asyncio.Event()
 
     async def on_progress(
-        _progress: float,
-        _total: float | None,
+        progress: float,
+        total: float | None,
         message: str | None,
     ) -> None:
+        del progress, total
         if message is not None:
             progress_messages.append(message)
             first_chunk.set()
@@ -355,11 +432,11 @@ def test_resolve_cwd_falls_back_to_process_cwd_with_a_typed_reason_when_unbound(
     # attribute-access import path resolves to the instance, not the module.
     shell_server_mod = sys.modules["clio_agent.tools.servers.shell_server"]
     monkeypatch.chdir(tmp_path)
-    events: list[tuple[object, ...]] = []
+    events: list[tuple[str, str, tuple[object, ...]]] = []
     orig_event = shell_server_mod.trace.event
 
-    def _spy(tag, fmt, *args):
-        events.append((tag, fmt, *args))
+    def _spy(tag: str, fmt: str, *args: object) -> None:
+        events.append((tag, fmt, args))
         orig_event(tag, fmt, *args)
 
     monkeypatch.setattr(shell_server_mod.trace, "event", _spy)
@@ -367,7 +444,7 @@ def test_resolve_cwd_falls_back_to_process_cwd_with_a_typed_reason_when_unbound(
     resolved = _resolve_cwd(None)
 
     assert resolved == tmp_path.resolve()
-    assert any("reason=no_active_workspace_root" in fmt for _tag, fmt, *_rest in events), events
+    assert any("reason=no_active_workspace_root" in fmt for _tag, fmt, _args in events), events
 
 
 @pytest.mark.asyncio
@@ -626,3 +703,75 @@ async def test_shell_bash_releases_its_egress_channel_when_the_command_exits(
             await client.call_tool("bash", {"command": "echo one"})
             await client.call_tool("bash", {"command": "exit 3"})
     assert closed == minted == ["child-0", "child-1"]
+
+
+def test_shell_confinement_does_not_hold_the_app_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A slow fence composition (a cold PowerShell policy query) leaves the loop that every
+    other call's timers and exit callbacks share running."""
+
+    import time
+
+    from clio_agent.tools.servers import shell_confinement
+
+    def blocking_confine(*_args: Any, **_kwargs: Any) -> str:
+        time.sleep(0.3)
+        return "spawn"
+
+    monkeypatch.setattr(shell_confinement, "confine", blocking_confine)
+
+    async def scenario() -> tuple[Any, int]:
+        ticks = 0
+
+        async def tick() -> None:
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.01)
+                ticks += 1
+
+        ticker = asyncio.create_task(tick())
+        spawn = await shell_confinement.confine_off_loop(["x"], Path("."), outside_sandbox=False)
+        ticker.cancel()
+        return spawn, ticks
+
+    spawn, ticks = asyncio.run(scenario())
+    assert spawn == "spawn"
+    assert ticks >= 5
+
+
+def test_cancelled_shell_call_releases_the_spawn_its_confinement_composed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The call goes away while the worker thread composes its fence: the spawn (and its
+    egress channel) is released when the thread finishes, not leaked."""
+
+    import threading
+
+    from clio_agent.tools.servers import shell_confinement
+
+    started, proceed, released = threading.Event(), threading.Event(), threading.Event()
+
+    class Spawn:
+        def release(self) -> None:
+            released.set()
+
+    def slow_confine(*_args: Any, **_kwargs: Any) -> Spawn:
+        started.set()
+        proceed.wait(5)
+        return Spawn()
+
+    monkeypatch.setattr(shell_confinement, "confine", slow_confine)
+
+    async def scenario() -> None:
+        call = asyncio.create_task(
+            shell_confinement.confine_off_loop(["x"], Path("."), outside_sandbox=False)
+        )
+        await asyncio.to_thread(started.wait, 5)
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        assert not released.is_set()
+        proceed.set()
+        await asyncio.to_thread(released.wait, 5)
+
+    asyncio.run(scenario())
+    assert released.is_set()

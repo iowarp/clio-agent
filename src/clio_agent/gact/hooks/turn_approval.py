@@ -18,6 +18,7 @@ from clio_agent.arc.task_types import (
 )
 from clio_agent.gact import context
 from clio_agent.gact.conversation_assignments import ConversationOutcome
+from clio_agent.gact.permission_comment import person_comment
 from clio_agent.gact.permission_delivery import publish_permission_event
 from clio_agent.gact.runtime.permission_actions import STANDARD_ANSWERS
 from clio_agent.gact.session_input import accept_session_input, input_delivery
@@ -224,6 +225,8 @@ def project(app: Any, task: TaskSnapshot, row: dict[str, Any]) -> None:
         "reason": "hook_defer_pending",
         "updated_at": task.updated_at,
     }
+    if comment := person_comment(row.get("answer_comment") or row.get("answer")):
+        permission["comment"] = comment
     prior = app.state.permissions.get(task.handle)
     if prior is not None and prior.get("updated_at", "") > task.updated_at:
         return
@@ -236,6 +239,31 @@ def project(app: Any, task: TaskSnapshot, row: dict[str, Any]) -> None:
     )
 
 
+def permission_card(app: Any, handle: str) -> dict[str, Any] | None:
+    """The permission card that presents hook approval ``handle``, else ``None``.
+
+    A turn-ending hook approval is one Question whose only presentation is this card,
+    filed under the Question's own handle (:func:`project`), so a person sees and
+    answers it once. A card missing after a restart is projected again from the
+    Question.
+    """
+    task = app.state.task_history.task_snapshot(handle)
+    if (
+        task is None
+        or task.kind != "Question"
+        or task.tool != SOURCE
+        or task.details is None
+        or not task.raw_status
+        or task.owner.human_id != app.state.human_principal
+    ):
+        return None
+    if handle not in app.state.permissions:
+        from clio_agent.gact.question_surface import question_view  # noqa: PLC0415
+
+        project(app, task, question_view(app, task))
+    return app.state.permissions.get(handle)
+
+
 def validate_decision(app: Any, captured: HookApproval, approved: bool) -> None:
     """An approval cannot substitute another segment's last output for missing evidence."""
     if approved and captured.event == "Stop":
@@ -244,8 +272,14 @@ def validate_decision(app: Any, captured: HookApproval, approved: bool) -> None:
         app.state.task_history.read_content(captured.completion.result)
 
 
-def respond(app: Any, task: TaskSnapshot, action: str, grantor: str) -> dict[str, Any]:
-    """Accept an authenticated decision through QuestionCommands, then repair its effect."""
+def respond(
+    app: Any, task: TaskSnapshot, action: str, grantor: str, comment: str = ""
+) -> dict[str, Any]:
+    """Accept an authenticated decision through QuestionCommands, then repair its effect.
+
+    The person's ``comment`` is kept on the answer and reaches the agent where it runs
+    next (:func:`_person_words`).
+    """
     if grantor != "user":
         raise PermissionError("Turn-ending hook approval requires the authenticated human")
     from clio_agent.gact.task_access import TaskAccess, TaskCaller
@@ -263,6 +297,7 @@ def respond(app: Any, task: TaskSnapshot, action: str, grantor: str) -> dict[str
         selected_options=("allow" if action.startswith("allow") else "deny",),
         responder_human=app.state.human_principal,
         metadata={"grantor": grantor},
+        comment=person_comment(comment),
     )
     with app.state.task_history.serialized():
         if task.terminal_at is None and not restore_gate(app, task):
@@ -298,6 +333,23 @@ def _decision(app: Any, task: TaskSnapshot, captured: HookApproval) -> dict[str,
             "binding": captured.model_dump(mode="json"),
         },
     )
+
+
+def _person_words(app: Any, task: TaskSnapshot, verdict: str) -> str:
+    """The person's comment on this answer, as the agent reads it (``""`` without one).
+
+    An approved Stop ends the turn and a denied prompt does not run, so there the comment
+    stays on the answer and the permission row only.
+    """
+    if task.raw_status != "answered" or task.result is None:
+        return ""
+    reply = QuestionReply.model_validate(app.state.task_history.read_content(task.result))
+    # Either answer route: the permission one keeps it as ``comment``, a Question answer
+    # (the hook offers choices only) as its free text.
+    comment = person_comment(reply.comment or reply.answer)
+    if not comment:
+        return ""
+    return f"The person {verdict} the {binding(app, task).event} hook's request and said: {comment}"
 
 
 def resolve(app: Any, task: TaskSnapshot) -> None:
@@ -404,11 +456,23 @@ def resolve(app: Any, task: TaskSnapshot) -> None:
                     ),
                     expected_revision=current.revision,
                 )
+            if frozen["approved"] and (words := _person_words(app, task, "approved")):
+                # The released prompt runs now: the person's comment goes with it.
+                accept_session_input(
+                    app,
+                    sid,
+                    words,
+                    source=SOURCE,
+                    metadata={"question_id": task.handle, "approval": True},
+                    steer_message_id="hook-comment:" + task.handle,
+                    handle=task.handle,
+                )
         elif task.raw_status == "answered":
+            words = _person_words(app, task, "denied")
             accept_session_input(
                 app,
                 sid,
-                captured.resume_text,
+                "\n\n".join(filter(None, (captured.resume_text, words))),
                 source=SOURCE,
                 metadata={"stop_defer_redrive": True, "question_id": task.handle, "approval": True},
                 steer_message_id="hook-resume:" + task.handle,

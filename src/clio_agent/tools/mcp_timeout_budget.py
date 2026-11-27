@@ -8,7 +8,7 @@ still missing: an ORDINARY call (no explicit caller-supplied budget, not a
 wait_for_terminal commitment) fell straight to the executor's flat,
 operator-tuned global (``CLIO_MCP_CALL_TIMEOUT_S`` / ``tools.mcp.call_timeout_s``)
 even when the TOOL ITSELF, via its own MCP schema, already declares that it
-typically needs longer — the live defect: a relay dispatch tool whose schema
+typically needs longer — the live defect: a remote dispatch tool whose schema
 declares a 600s ``timeout_seconds`` default died at a 180s/300s global because
 nothing ever read that default. :func:`component_declared_timeout_seconds` is
 that missing signal: a schema DEFAULT value is the component's own declared

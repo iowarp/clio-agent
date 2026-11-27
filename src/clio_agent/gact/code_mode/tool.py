@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from clio_agent import conf
-from clio_agent.runtime import trace
+from clio_agent.runtime import net_refusals, trace
 from clio_agent.runtime.commitment_activity import note_progress
 from clio_agent.tools.tool_observation import RefusedCallError
 
@@ -94,7 +94,8 @@ class CodeError(RuntimeError):
         self.reason = reason
 
 
-def _approve(app: Any, code: str) -> None:
+def _approve(app: Any, code: str) -> str:
+    """Ask for the script; return the person's comment on their Allow (``""`` without one)."""
     from clio_agent.gact.permission_gate import _invoke_permission_gate  # noqa: PLC0415
 
     gate = getattr(app.state, "pending_permission_gate", None) or app.state.make_permission_gate()
@@ -104,7 +105,7 @@ def _approve(app: Any, code: str) -> None:
     context = {"kind": "native", "summary": summary}
     decision = _invoke_permission_gate(gate, "run_code", {"code": code}, context)
     if decision == "allow":
-        return
+        return str(getattr(decision, "note", "") or "")
     if getattr(decision, "outcome", "") == "cancelled":
         # Stopped while the approval waited: nobody refused the script.
         from clio_agent.tools.foreground_cancellation import (  # noqa: PLC0415
@@ -223,18 +224,26 @@ def _session_approval_mode() -> str:
     return str(getattr(session, "approval_mode", "") or "")
 
 
-def prepare_script(agent: Any, code: str) -> PreparedScript:
-    """Capture the calling ``run_code`` call's grant and context for ``code``'s nested calls."""
+def new_grant(code: str) -> Any:
+    """The calling ``run_code`` call's grant for ``code``, before it is approved."""
     from clio_agent.gact.artifacts.observer_bridge import current_call_id  # noqa: PLC0415
+    from clio_agent.gact.code_mode.grants import ScriptGrant  # noqa: PLC0415
+
+    return ScriptGrant(current_call_id(), code, approval_mode=_session_approval_mode())
+
+
+def prepare_script(agent: Any, code: str, grant: Any = None) -> PreparedScript:
+    """Capture the calling ``run_code`` call's grant (``grant``, the one its approval
+    answered, else a new one) and context for ``code``'s nested calls."""
     from clio_agent.gact.code_mode.grants import (  # noqa: PLC0415
-        ScriptGrant,
         bind_grant,
+        binding_tools,
         reset_grant,
     )
     from clio_agent.gact.model_media import CALL_MEDIA, DETACHED, SCRIPT_MEDIA  # noqa: PLC0415
     from clio_agent.gact.tool_call_nesting import PARENT_CALL_ID  # noqa: PLC0415
 
-    grant = ScriptGrant(current_call_id(), code, approval_mode=_session_approval_mode())
+    grant = grant if grant is not None else new_grant(code)
     grant_token, parent_token = bind_grant(grant), PARENT_CALL_ID.set(grant.call_id)
     # The script's views ride the calling run_code call's result (model_media).
     call_media = CALL_MEDIA.get()
@@ -247,6 +256,10 @@ def prepare_script(agent: Any, code: str) -> PreparedScript:
         reset_grant(grant_token)
     direct_only, code_only = _callers(agent)
     servers = tuple(getattr(agent, "_clio_tool_servers", ()) or ())
+    grant.servers = servers
+    grant.bound_tools = binding_tools(
+        code, getattr(agent, "_clio_kernel_bindings", None) or {}, getattr(agent, "tools", {}) or {}
+    )
     return PreparedScript(agent, code, context, servers, direct_only, code_only)
 
 
@@ -265,6 +278,7 @@ def execute_script(
     from clio_agent.gact.agents.tool_settings import call_refusal  # noqa: PLC0415
     from clio_agent.gact.code_mode import kernels  # noqa: PLC0415
     from clio_agent.gact.code_mode.dispatch import Dispatcher  # noqa: PLC0415
+    from clio_agent.gact.code_mode.grants import grant_in, uses_binding  # noqa: PLC0415
     from clio_agent.gact.code_mode.stubs import stub_table  # noqa: PLC0415
 
     agent, code = prepared.agent, prepared.code
@@ -283,12 +297,26 @@ def execute_script(
     if live is not None:
         live["dispatcher"] = dispatcher  # a background task's status reads its call count
     outcome: dict[str, Any] = {"status": "failed", "output": "", "value": None, "error": ""}
+    threads: int | None = None  # the threads earlier scripts left, as the kernel counts them
+    processes: int | None = None
     session = _script_session(prepared)
     finished = False
     started = time.monotonic()
     poll = poll_s()
+    all_bindings = {**dict(getattr(agent, "_clio_kernel_bindings", None) or {}), **(bindings or {})}
     try:
-        with kernel.lock:
+        # The kernel is this script's alone while it holds the lock, unless an earlier
+        # script left a thread or process running in it: what the chokepoint refused on
+        # its channel then is this script's egress only when nothing was left.
+        with (
+            kernel.lock,
+            net_refusals.own_channel(
+                net_refusals.channel_of(getattr(kernel, "confinement", None)),
+                label="the Python kernel",
+            ) as egress,
+        ):
+            leftover = getattr(kernel, "leftover_processes", None)
+            processes = leftover() if leftover is not None else None
             kernel.bind(
                 stub_table(
                     agent.tools,
@@ -296,7 +324,7 @@ def execute_script(
                     direct_only=prepared.direct_only,
                     code_only=prepared.code_only,
                 ),
-                {**dict(getattr(agent, "_clio_kernel_bindings", None) or {}), **(bindings or {})},
+                all_bindings,
             )
             kernel.send(
                 {"type": "exec", "id": 1, "code": code}
@@ -317,7 +345,11 @@ def execute_script(
                     break
                 if message.get("type") == "call":
                     note_progress(session)  # a working script is not a silent turn
+                    if binding := str(message.get("binding") or ""):
+                        uses_binding(grant_in(prepared.context), binding, all_bindings, agent.tools)
                     dispatcher.submit(message, kernel.send)
+                elif message.get("type") == "started":
+                    threads = int(message.get("threads") or 0)
                 elif message.get("type") == "done":
                     finished = True
                     outcome.update(
@@ -341,6 +373,10 @@ def execute_script(
     )
     if outcome["status"] == "failed" and (boundary := _boundary(kernel, outcome)):
         outcome["boundary"] = boundary  # the fence refused a write: which folder, and how
+    # The egress refused on the kernel's channel while this script ran, which its output
+    # shows only as a reset or a 403 (a background script's result is recorded after its
+    # call returned, so it names them itself).
+    outcome |= egress(_alongside(threads, processes))
     if kernel.replaced:  # the scope's earlier kernel, and its variables, are gone
         outcome["new_kernel"], kernel.replaced = kernel.replaced, ""
     if kernel.read_only:  # plan mode: a write elsewhere is refused by the fence
@@ -354,6 +390,23 @@ def execute_script(
         outcome["duration_ms"],
     )
     return outcome
+
+
+def _alongside(threads: int | None, processes: int | None) -> str:
+    """What an earlier script left running in the kernel when this one started, as the
+    agent reads it (``""`` when nothing was: the kernel's egress was this script's)."""
+
+    if threads is None or processes is None:
+        return "CLIO could not tell whether an earlier script was still running in it"
+    left = [
+        f"{count} {noun}{'s' if count != 1 else ''}"
+        for count, noun in ((threads, "thread"), (processes, "process"))
+        if count
+    ]
+    if not left:
+        return ""
+    were = "were" if threads + processes != 1 else "was"
+    return f"{' and '.join(left)} that earlier scripts started {were} still running in it"
 
 
 def _boundary(kernel: Any, outcome: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -383,6 +436,7 @@ def run_script(
     session_id: str,
     scope: str,
     read_only: bool = False,
+    grant: Any = None,
     app: Any = None,
     label: str = "",
 ) -> dict[str, Any]:
@@ -397,7 +451,7 @@ def run_script(
         kernels,  # noqa: PLC0415
     )
 
-    prepared = prepare_script(agent, code)
+    prepared = prepare_script(agent, code, grant)
     kernel = kernels.kernel_for(session_id, scope, _workspace(), read_only=read_only)
     run = foreground.ForegroundRun(session_id, label or _first_line(code))
     run.live["kernel"] = kernel  # a task that takes the script over stops it at the end
@@ -430,6 +484,7 @@ def launch_background(
     *,
     session_id: str,
     read_only: bool,
+    grant: Any = None,
     prepared: Any = None,
     adopted: Any = None,
 ) -> dict[str, Any]:
@@ -442,7 +497,7 @@ def launch_background(
     from clio_agent.gact.model_media import DETACHED, SCRIPT_MEDIA  # noqa: PLC0415
     from clio_agent.gact.native_code import CodeLaunch, stage_launch, take_launch  # noqa: PLC0415
 
-    prepared = prepared or prepare_script(agent, code)
+    prepared = prepared or prepare_script(agent, code, grant)
     # It outlives this model step: an image it views has no result to ride (model_media).
     prepared.context.run(SCRIPT_MEDIA.set, DETACHED)
     key = stage_launch(CodeLaunch(prepared, session_id, _workspace(), read_only, adopted))
@@ -500,6 +555,8 @@ def model_text(outcome: Mapping[str, Any]) -> str:
         parts.append(f"Error:\n{str(outcome['error']).rstrip()}")
     if isinstance(boundary := outcome.get("boundary"), Mapping) and boundary.get("message"):
         parts.append(str(boundary["message"]))  # why the sandbox refused, and the next step
+    if outcome.get("network_refused"):
+        parts.append(str(outcome["network_refused"]))  # the egress CLIO refused, and why
     if outcome.get("value") is not None:
         parts.append(f"Value: {outcome['value']}")
     calls, failed = int(outcome.get("calls") or 0), int(outcome.get("failed_calls") or 0)
@@ -537,6 +594,7 @@ def build_run_code_tool() -> Any:
         declare_structured_content,
         native_tool,
     )
+    from clio_agent.gact.code_mode.grants import approving  # noqa: PLC0415
     from clio_agent.gact.code_mode.presentation import present, starting  # noqa: PLC0415
     from clio_agent.gact.model_media import CALL_MEDIA  # noqa: PLC0415
     from clio_agent.tools.tool_settings import self_gated  # noqa: PLC0415
@@ -550,13 +608,25 @@ def build_run_code_tool() -> Any:
         if not str(code or "").strip():
             raise CodeError("code is empty.", "code_empty")
         read_only = _plan_mode_refusal(app, session_id)
-        _approve(app, code)
+        grant = new_grant(code)
+        with approving(grant):  # its question offers "Allow for the rest of this script"
+            note = _approve(app, code)
+
+        def said(text: str) -> str:  # the person's comment on their Allow comes first
+            return f"{note}\n\n{text}" if note else text
+
         if background:
             receipt = launch_background(
-                app, loop.agent, code, label, session_id=session_id, read_only=read_only
+                app,
+                loop.agent,
+                code,
+                label,
+                session_id=session_id,
+                read_only=read_only,
+                grant=grant,
             )
             declare_structured_content(receipt)
-            return background_text(receipt, label)
+            return said(background_text(receipt, label))
         scope = _ctx.run_keyed_scope(_ctx.active_react_scope() or "")
         outcome = run_script(
             loop.agent,
@@ -564,16 +634,17 @@ def build_run_code_tool() -> Any:
             session_id=session_id,
             scope=scope,
             read_only=read_only,
+            grant=grant,
             app=app,
             label=label,
         )
         if outcome["status"] == "backgrounded":
             declare_structured_content(outcome)
-            return outcome["text"]
+            return said(outcome["text"])
         if viewed := CALL_MEDIA.get():
             outcome["attached_media"] = [_attached_row(item) for item in viewed]
         declare_structured_content(outcome)
-        return model_text(outcome)
+        return said(model_text(outcome))
 
     return self_gated(
         native_tool(

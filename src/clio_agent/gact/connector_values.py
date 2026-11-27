@@ -2,9 +2,13 @@
 
 Values the agent sets with ``set_connector_value`` and values the person types in a
 setup card inside a conversation belong to that conversation (the overlay,
-:mod:`clio_agent.connectors.overlay`), kept in its session metadata. The person's
-defaults in ``connectors.yaml`` stay what Extensions edits; a card's "Save as
-default" also writes them there. Secrets and sign-ins are never per conversation.
+:mod:`clio_agent.connectors.overlay`), kept in the session metadata of the
+conversation tree's root (:func:`tree_root`). A parent and all its subagents are one
+conversation: they read and write the same values, so they launch each connector the
+same way and share one server of it, and through it one desktop app (one KiCad
+server, one pcbnew). The person's defaults in ``connectors.yaml`` stay what
+Extensions edits; a card's "Save as default" also writes them there. Secrets and
+sign-ins are never per conversation.
 
 Applying a conversation's values never touches another conversation's server:
 
@@ -13,11 +17,16 @@ Applying a conversation's values never touches another conversation's server:
   (``plugins.servers``, ``tools.fleet_key``); the next resolve for this conversation
   gets its own fleet, built lazily, and every other conversation keeps its own;
 * :func:`move_session_fleet` builds that fleet now, lists the connector's tools
-  there (its state), and, when a turn of this conversation is running, moves the
-  connector's namespace of that turn to it (``LiveToolRefresher.move``) so the
-  agent's next step calls the server with the new values.
+  there (its state), and moves the connector's namespace of every running turn of
+  the tree to it (``LiveToolRefresher.move``), so each agent's next step calls the
+  server with the new values.
 
-A fleet left without conversations is reaped on the normal idle path.
+The shared server starts on its first use in the tree; while a turn of the tree runs,
+its fleet is leased, and once the last one ends it is reaped on the normal idle path.
+
+Moving to the new server never cuts a call off: new calls go to the new server, and
+the old one keeps answering the calls already running on it and retires once the last
+of them ends (``namespace_instances.claim``, typed ``mcp_namespace_instance_retained``).
 """
 
 from __future__ import annotations
@@ -43,30 +52,47 @@ def _session(app: Any, sid: str) -> Any:
     return sessions.get(sid) if sessions is not None and sid else None
 
 
-def session_overlay(app: Any, sid: str) -> overlay.Overlay:
-    """The conversation's checked connector values (``{}`` when it has none)."""
+def tree_root(app: Any, sid: str) -> str:
+    """The root session of ``sid``'s conversation tree (``sid`` itself for a root)."""
 
-    session = _session(app, sid)
+    seen: set[str] = set()
+    current = sid
+    while current and current not in seen:
+        seen.add(current)
+        parent = str(getattr(_session(app, current), "parent_session_id", "") or "")
+        if not parent or _session(app, parent) is None:
+            return current
+        current = parent
+    return sid
+
+
+def session_overlay(app: Any, sid: str) -> overlay.Overlay:
+    """The conversation tree's checked connector values (``{}`` when it has none)."""
+
+    root = tree_root(app, sid)
+    session = _session(app, root)
     metadata = getattr(session, "metadata", None) or {}
     raw = metadata.get(overlay.KEY) if isinstance(metadata, Mapping) else None
     if not raw:
         return {}
-    return overlay.validated(raw, state.all_entries(), where=sid)
+    return overlay.validated(raw, state.all_entries(), where=root)
 
 
-def session_fleet_variant(app: Any, sid: str) -> str:
-    """The connector-values variant of the fleet serving ``sid`` ("" for the plain one)."""
+def session_fleet_variant(app: Any, sid: str, root: str) -> str:
+    """The variant of the fleet serving ``sid`` at ``root`` ("" for the plain one).
 
-    if not session_overlay(app, sid):
-        return ""
+    Its connector values, and its own fleet when its plugin keeps a person's server
+    name there (:func:`clio_agent.tools.fleet_own_set.fleet_variant`).
+    """
+
     from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
         SessionAgentUnavailable,
         session_server_set,
     )
-    from clio_agent.plugins.servers import server_set_variant  # noqa: PLC0415
+    from clio_agent.tools.fleet_own_set import fleet_variant  # noqa: PLC0415
 
     try:
-        return server_set_variant(session_server_set(app, sid))
+        return fleet_variant(session_server_set(app, sid), root)
     except SessionAgentUnavailable as exc:
         # An agent that does not resolve mounts no plugin servers (its turn fails typed on
         # its own path), so no fleet carries this conversation's values: the plain one.
@@ -90,18 +116,20 @@ def write_overlay(
     """Apply ``changes`` (checked values; ``None`` clears) to the conversation's overlay."""
 
     sessions: Any = getattr(getattr(app, "state", None), "sessions", None)
+    root = tree_root(app, sid)
     with _LOCK:
-        current = session_overlay(app, sid)
+        current = session_overlay(app, root)
         mine = overlay.merged(current.get(connector_id, {}), changes)
         if mine:
             current[connector_id] = mine
         else:
             current.pop(connector_id, None)
-        sessions.update(sid, metadata_patch={overlay.KEY: current})
+        sessions.update(root, metadata_patch={overlay.KEY: current})
     trace.event(
         "TOOLS",
-        "connector_values_conversation session=%s connector=%s keys=%s",
+        "connector_values_conversation session=%s root=%s connector=%s keys=%s",
         sid,
+        root,
         connector_id,
         ",".join(sorted(changes)) or "-",
     )
@@ -169,19 +197,75 @@ def move_session_fleet(app: Any, sid: str, found: Entry, *, move_turn: bool) -> 
         merge(found.id, tools)
     if move_turn:
         move_running_turn(found.id, executor)
+    move_tree_turns(app, sid, found.id, resolve)
     return {"status": "ready", "tool_count": len(tools), "reason": None}
+
+
+def move_tree_turns(app: Any, sid: str, namespace: str, resolve: Any) -> int:
+    """Move ``namespace`` of the tree's other running turns to their fleet for the new
+    values, so none keeps calling (and so restarting) the server they replaced."""
+
+    from clio_agent.gact.agents.clio_react import running_loops  # noqa: PLC0415
+    from clio_agent.gact.runtime.globals import (  # noqa: PLC0415
+        _gact_app_context,
+        _tool_session_context,
+    )
+    from clio_agent.tools.mcp_discovery import ensure_namespace  # noqa: PLC0415
+
+    root = tree_root(app, sid)
+    moved = 0
+    for loop in running_loops():
+        other = str(getattr(loop, "session", "") or "")
+        if not other or other == sid or tree_root(app, other) != root:
+            continue
+        try:
+            with _gact_app_context(app), _tool_session_context(other, lease_fleet=False):
+                executor = resolve()
+            spec = (getattr(executor, "_clio_namespace_specs", None) or {}).get(namespace)
+            if spec is None:
+                continue
+            merge = getattr(executor, "merge_namespace_tools", None)
+            if callable(merge):
+                merge(namespace, ensure_namespace(namespace, spec))
+        except Exception as exc:  # noqa: BLE001 - that turn keeps its tools; typed
+            trace.event(
+                "TOOLS",
+                "connector_values_tree_move_failed session=%s namespace=%s error=%r",
+                other,
+                namespace,
+                exc,
+            )
+            continue
+        if _move_loop(loop, namespace, executor):
+            moved += 1
+    if moved:
+        trace.event(
+            "TOOLS",
+            "connector_values_tree_moved root=%s namespace=%s turns=%d",
+            root,
+            namespace,
+            moved,
+        )
+    return moved
 
 
 def move_running_turn(namespace: str, executor: Any) -> bool:
     """Have the turn running in this context take ``namespace`` from ``executor``."""
 
     from clio_agent.gact.agents.clio_react import active_loop  # noqa: PLC0415
+
+    if not _move_loop(active_loop(), namespace, executor):
+        trace.event("TOOLS", "connector_values_no_turn namespace=%s", namespace)
+        return False
+    return True
+
+
+def _move_loop(loop: Any, namespace: str, executor: Any) -> bool:
     from clio_agent.gact.agents.live_tool_refresh import LiveToolRefresher  # noqa: PLC0415
 
-    program = getattr(active_loop(), "agent", None)
+    program = getattr(loop, "agent", None)
     refresher = getattr(program, "_clio_tool_refresh", None)
     if refresher is None or not hasattr(refresher, "inner"):
-        trace.event("TOOLS", "connector_values_no_turn namespace=%s", namespace)
         return False
     if refresher.inner is None:
         refresher.inner = LiveToolRefresher(executor, set())

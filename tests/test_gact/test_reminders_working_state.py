@@ -126,8 +126,9 @@ def test_the_plan_renders_todays_text(plan_session: Any) -> None:
     text, path = _plan(app, sid)
     assert text == (
         f"## The plan (active, {path})\n\n"
-        "If this plan is relevant to the current work and not finished, continue on it, and "
-        "update it with plan_update when your understanding or direction changes.\n\n"
+        "If this plan is relevant to the current work and not finished, continue on it: track "
+        "its steps with write_todos, and revise it with plan_update when a finding changes "
+        "its approach.\n\n"
         f"{_PLAN_TEXT}"
     )
     app.state.sessions.update(sid, metadata_patch={PERSON_EDIT_KEY: True})
@@ -208,7 +209,7 @@ _CONTRACT_TAIL = (
     "the requested result will be made and checked after approval. The deliverable's names "
     "and places come from the person's request; the plan file's path is CLIO's own.\n"
     "- Keep what you know apart from what you still must find out: findings carry their "
-    "references, and what is unknown stays an open thread until you look it up.\n"
+    "references, and what is unknown stays an open issue until you look it up.\n"
     "- If a plan already exists, judge whether it still fits this task before editing it; "
     "a new task gets a fresh plan.\n"
     "- Show the plan to the person in your reply as well; they read your reply, not the file.\n"

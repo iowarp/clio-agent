@@ -25,7 +25,6 @@ from pydantic import Field
 
 from clio_agent import conf
 from clio_agent.runtime import trace
-from clio_agent.runtime.sandbox_diagnosis import diagnose_confined
 from clio_agent.tools.builtin_annotations import (
     _BASH_ANNOTATIONS,
 )
@@ -34,6 +33,9 @@ from clio_agent.tools.builtin_annotations import (
 )
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 from clio_agent.tools.servers import shell_confinement as confinement
+from clio_agent.tools.servers.shell_commands import (
+    POWERSHELL_PREAMBLE as POWERSHELL_PREAMBLE,
+)
 from clio_agent.tools.servers.shell_commands import (
     command_length_error,
     is_command_length_exception,
@@ -45,9 +47,8 @@ from clio_agent.tools.servers.shell_commands import (
 from clio_agent.tools.servers.shell_output import (
     ProgressReporter,
     StreamCapture,
-    compose_output_fields,
+    compose_shell_result,
     read_process_stream,
-    shell_result_room,
 )
 from clio_agent.tools.servers.shell_spill_store import (
     active_session_id,
@@ -270,7 +271,7 @@ def _shell_argv(command: str, *, prepared_environment: dict[str, str] | None = N
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                command,
+                POWERSHELL_PREAMBLE + command,
             ]
         return ["cmd.exe", "/d", "/s", "/c", command]
     shell = shutil.which("bash") or shutil.which("sh")
@@ -386,7 +387,9 @@ def build_shell_tool_description(facts: ShellEnvFacts, limits: ShellLimits | Non
         invocation = (
             "Windows drive paths in commands are translated to /mnt/<drive>/ for bash. "
             if is_bash
-            else "The tool invokes PowerShell with -NoLogo -NoProfile -NonInteractive -Command. "
+            else "The tool invokes PowerShell with -NoLogo -NoProfile -NonInteractive -Command, "
+            "with UTF-8 console I/O and UTF-8 the default for Get-Content, Select-String "
+            "and Import-Csv. "
             if "PowerShell" in facts.shell_label
             else "The tool invokes cmd.exe with /d /s /c. "
         )
@@ -472,7 +475,7 @@ async def bash(
     outside_sandbox: Annotated[
         bool,
         Field(
-            description="Run this one command outside CLIO's sandbox. Use it only when the sandbox, not the account, blocked the command (a boundary of kind privilege_denied, or a system install the sandbox cannot run even with folders allowed), and give access_reason. CLIO shows the person the exact command and runs it only if they allow; it never takes a password."
+            description="Run this one command outside CLIO's sandbox. Use it only when the sandbox, not the account, blocked the command (a boundary of kind privilege_denied or launch_blocked, or a system install the sandbox cannot run even with folders allowed), and give access_reason. CLIO shows the person the exact command and runs it only if they allow; it never takes a password."
         ),
     ] = False,
 ) -> dict[str, Any]:
@@ -574,7 +577,8 @@ async def execute_shell(
         safe_cwd = _resolve_cwd(cwd)
         from clio_agent.runtime.execution_environment import shell_environment
 
-        prepared = shell_environment(_spill_root(safe_cwd))
+        # Off the app loop, which every other call's timers and exit callbacks share.
+        prepared = await asyncio.to_thread(shell_environment, _spill_root(safe_cwd))
         argv = _shell_argv(command, prepared_environment=prepared)
     except FilePolicyError as exc:
         _log_shell_phase(call_id, "environment", phase_started, outcome="denied")
@@ -589,7 +593,12 @@ async def execute_shell(
     if outside_sandbox and (refused := confinement.outside_refusal(command, call_id)):
         return refused
     try:
-        confined = confinement.confine(argv, safe_cwd, outside_sandbox=outside_sandbox)
+        confined = await confinement.confine_off_loop(
+            argv,
+            safe_cwd,
+            outside_sandbox=outside_sandbox,
+            temp={key: prepared[key] for key in ("TEMP", "TMP") if key in prepared},
+        )
     except Exception:
         _log_shell_phase(call_id, "confinement", phase_started, outcome="failed")
         raise
@@ -739,24 +748,20 @@ async def execute_shell(
                         "timeout_s": timeout,
                     }
                     # #1905: why the fence refused, against the roots it was given.
-                    err = captures[1]
-                    if boundary := diagnose_confined(
+                    result = await compose_shell_result(
+                        base,
+                        captures,
                         confined.result,
-                        exit_code=base["exit_code"],
-                        stderr=err.full_text() + "\n" + err.tail_excerpt(8192),
                         command=command,
                         cwd=safe_cwd,
-                    ):
-                        base["boundary"] = boundary  # budgeted with the output below
-                    result = compose_output_fields(
-                        base, captures, root=spill_root, budget=shell_result_room()
+                        root=spill_root,
                     )
         if result is None:
             raise RuntimeError("Shell exited without confirmed process-tree settlement")
         return result
     finally:
         # The child has exited (or never started): its egress channel goes with it.
-        confined.release()
+        await asyncio.to_thread(confined.release)
 
 
 async def _cancel_pending_spawn(spawn: asyncio.Task[asyncio.subprocess.Process]) -> None:

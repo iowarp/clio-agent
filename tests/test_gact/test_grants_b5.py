@@ -20,18 +20,18 @@ from fastapi.testclient import TestClient
 from clio_agent.gact.app import build_app
 from clio_agent.gact.runtime import globals as gact_globals
 from clio_agent.gact.runtime import grants
-from clio_agent.runtime import sandbox_net, sandbox_roots
+from clio_agent.runtime import sandbox_roots
 
 
 @pytest.fixture(autouse=True)
 def _clean_registries():
     sandbox_roots.clear_write_root_grants()
-    sandbox_net.clear_namespace_children()
     grants._PENDING_EGRESS.clear()
+    grants.clear_egress_denials()
     yield
     sandbox_roots.clear_write_root_grants()
-    sandbox_net.clear_namespace_children()
     grants._PENDING_EGRESS.clear()
+    grants.clear_egress_denials()
 
 
 @pytest.fixture
@@ -525,6 +525,42 @@ def test_deny_mode_off_is_allow(tmp_path, captured_events) -> None:
     assert grants._egress_gate_decision(app, rec) == "allow"  # default ALLOW + RECORD (B4)
 
 
+def test_a_persons_ask_and_deny_rules_hold_outside_deny_mode(tmp_path, captured_events) -> None:
+    """Deny mode decides only hosts no rule covers; "Ask every time" asks, "Deny" refuses."""
+    from clio_agent.gact.routes.interactions import _permission_interaction
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    ws = app.state.workspaces.create(name="p", root_path=str(root))
+    app.state.sessions.create(workspace_id=ws.id)
+    for action, host in (("ask", "pypi.org:443"), ("deny", "evil.test")):
+        app.state.permission_policies.append(
+            {"scope": "workspace", "scope_id": ws.id, "action": action, "host_pattern": host}
+        )
+    assert grants._egress_gate_decision(app, _egress_record("evil.test", str(root))) == "deny"
+    result: dict = {}
+    t = threading.Thread(
+        target=lambda: result.update(
+            decision=grants._egress_gate_decision(app, _egress_record("pypi.org", str(root)))
+        ),
+        daemon=True,
+    )
+    t.start()
+    deadline, pid = time.time() + 5, ""
+    while time.time() < deadline and not pid:
+        pid = next((p for p, r in list(app.state.permissions.items()) if r.get("kind")), "")
+        time.sleep(0.02)
+    assert pid, "a person's ask rule must ask outside deny mode"
+    row = app.state.permissions[pid]
+    assert row["summary"].endswith("(a rule asks)")
+    assert _permission_interaction(app, row).title == "Connect to pypi.org"
+    row.update(status="resolved", action="allow")
+    app.state.permission_events[pid].set()
+    t.join(timeout=5)
+    assert result["decision"] == "allow"
+
+
 def test_deny_mode_unknown_domain_prompts_then_grant_unblocks(tmp_path, captured_events) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")
     root = tmp_path / "proj"
@@ -724,6 +760,236 @@ def test_deny_mode_prompt_cap_fails_closed_over_limit(
         if e["event_type"] == "permission.resolved"
     }
     assert grants.REASON_EGRESS_PROMPT_CAP in reasons
+
+
+def _local_record(host: str, workspace_root: str, network: str = "loopback"):
+    from dataclasses import replace
+
+    return replace(_egress_record(host, workspace_root), port=22, network=network)
+
+
+def _await_egress_prompt(app) -> str:
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        for pid, row in list(app.state.permissions.items()):
+            if row.get("kind") == "network_egress" and row.get("status") == "pending":
+                return pid
+        time.sleep(0.02)
+    return ""
+
+
+@pytest.mark.parametrize(("action", "decision"), [("allow", "allow"), ("deny", "deny")])
+def test_a_local_host_asks_the_person_outside_deny_mode(
+    tmp_path, captured_events, action: str, decision: str
+) -> None:
+    """A private or loopback target is never allowed by default: the person decides."""
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    ws = app.state.workspaces.create(name="p", root_path=str(root))
+    app.state.sessions.create(workspace_id=ws.id)
+    result: dict = {}
+
+    def _run() -> None:
+        result["decision"] = grants._egress_gate_decision(
+            app, _local_record("ares.local", str(root))
+        )
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    pid = _await_egress_prompt(app)
+    assert pid, "a loopback target must open an interactive permission request"
+    row = app.state.permissions[pid]
+    assert row["tool_call"]["input"]["network"] == "loopback"
+    assert "loopback address, not a public host" in row["summary"]
+    row["status"] = "resolved"
+    row["action"] = action
+    app.state.permission_events[pid].set()
+    t.join(timeout=5)
+    assert result["decision"] == decision
+
+
+def test_a_denied_host_is_not_asked_again_in_the_same_turn(tmp_path, captured_events) -> None:
+    """A "Deny" holds for the rest of its turn: retries fail at once, the next turn asks again."""
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    ws = app.state.workspaces.create(name="p", root_path=str(root))
+    sid = app.state.sessions.create(workspace_id=ws.id).id
+    running = {"turn": "turn_1"}
+    app.state.turn_runner = SimpleNamespace(
+        handle=lambda s: SimpleNamespace(turn_id=running["turn"]) if s == sid else None
+    )
+    rec = _local_record("10.9.8.7", str(root), network="private")
+
+    def _answer_next(action: str) -> dict:
+        result: dict = {}
+        t = threading.Thread(
+            target=lambda: result.update(decision=grants._egress_gate_decision(app, rec)),
+            daemon=True,
+        )
+        t.start()
+        pid = _await_egress_prompt(app)
+        assert pid, "the host must be asked about"
+        row = app.state.permissions[pid]
+        row["status"] = "resolved"
+        row["action"] = action
+        app.state.permission_events[pid].set()
+        t.join(timeout=5)
+        return result
+
+    assert _answer_next("deny")["decision"] == "deny"
+    asked = _types(captured_events).count("permission.requested")
+    for _ in range(5):
+        assert grants._egress_gate_decision(app, rec) == "deny"
+    assert _types(captured_events).count("permission.requested") == asked
+    assert grants.REASON_EGRESS_DENIED_THIS_TURN in _resolved_reasons(captured_events)
+
+    # A policy the person adds still decides before the held answer.
+    policy = {
+        "scope": "workspace",
+        "scope_id": ws.id,
+        "action": "allow",
+        "host_pattern": "10.9.8.7",
+    }
+    app.state.permission_policies.append(policy)
+    assert grants._egress_gate_decision(app, rec) == "allow"
+    app.state.permission_policies.remove(policy)
+
+    # The next turn asks again.
+    running["turn"] = "turn_2"
+    assert _answer_next("allow")["decision"] == "allow"
+
+
+def test_an_allowed_host_and_port_is_not_asked_again_in_the_same_turn(
+    tmp_path, captured_events
+) -> None:
+    """ "Allow once" holds for that host and port for the turn; "for this session" for the session.
+
+    A scheduler's command line (sbatch, squeue, scontrol) opens a connection per command.
+    """
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    ws = app.state.workspaces.create(name="p", root_path=str(root))
+    sid = app.state.sessions.create(workspace_id=ws.id).id
+    running = {"turn": "turn_1"}
+    app.state.turn_runner = SimpleNamespace(
+        handle=lambda s: SimpleNamespace(turn_id=running["turn"]) if s == sid else None
+    )
+    rec = _local_record("10.9.8.7", str(root), network="private")
+    from dataclasses import replace
+
+    other_port = replace(rec, port=6819)
+
+    def _answer_next(record, action: str) -> str:
+        result: dict = {}
+        t = threading.Thread(
+            target=lambda: result.update(decision=grants._egress_gate_decision(app, record)),
+            daemon=True,
+        )
+        t.start()
+        pid = _await_egress_prompt(app)
+        assert pid, "the host must be asked about"
+        row = app.state.permissions[pid]
+        row["status"] = "resolved"
+        row["action"] = action
+        app.state.permission_events[pid].set()
+        t.join(timeout=5)
+        return result["decision"]
+
+    assert _answer_next(rec, "allow") == "allow"
+    asked = _types(captured_events).count("permission.requested")
+    for _ in range(5):
+        assert grants._egress_gate_decision(app, rec) == "allow"
+    assert _types(captured_events).count("permission.requested") == asked
+    # Another port of the same host is its own question.
+    assert _answer_next(other_port, "allow_session") == "allow"
+
+    running["turn"] = "turn_2"
+    assert grants._egress_gate_decision(app, other_port) == "allow"  # held for the session
+    assert _answer_next(rec, "deny") == "deny"  # "allow once" ended with its turn
+
+
+def test_an_allow_covers_the_sessions_its_session_started(tmp_path, captured_events) -> None:
+    """A child session (a delegate, the agent answering a plugin's question) shares the answer.
+
+    Connections are attributed to the workspace's newest session, so a child the turn starts
+    must not turn the held "Allow once" into a second question; an unrelated session still asks.
+    """
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    ws = app.state.workspaces.create(name="p", root_path=str(root))
+    sid = app.state.sessions.create(workspace_id=ws.id).id
+    app.state.turn_runner = SimpleNamespace(
+        handle=lambda s: SimpleNamespace(turn_id="turn_1") if s == sid else None
+    )
+    rec = _local_record("10.9.8.7", str(root), network="private")
+
+    result: dict = {}
+    t = threading.Thread(
+        target=lambda: result.update(decision=grants._egress_gate_decision(app, rec)),
+        daemon=True,
+    )
+    t.start()
+    pid = _await_egress_prompt(app)
+    row = app.state.permissions[pid]
+    row["status"] = "resolved"
+    row["action"] = "allow"
+    app.state.permission_events[pid].set()
+    t.join(timeout=5)
+    assert result["decision"] == "allow"
+    asked = _types(captured_events).count("permission.requested")
+
+    child = app.state.sessions.create(workspace_id=ws.id, parent_session_id=sid).id
+    app.state.sessions.create(workspace_id=ws.id, parent_session_id=child)
+    assert grants._egress_gate_decision(app, rec) == "allow"  # a grandchild is newest
+    assert _types(captured_events).count("permission.requested") == asked
+
+    app.state.sessions.create(workspace_id=ws.id)
+    t = threading.Thread(target=grants._egress_gate_decision, args=(app, rec), daemon=True)
+    t.start()
+    pid = _await_egress_prompt(app)
+    assert pid, "an unrelated session is asked"
+    app.state.permissions[pid].update(status="resolved", action="deny")
+    app.state.permission_events[pid].set()
+    t.join(timeout=5)
+
+
+@pytest.mark.parametrize(("policy", "decision"), [("allow", "allow"), ("deny", "deny")])
+def test_a_workspace_host_policy_decides_a_local_host(
+    tmp_path, captured_events, policy: str, decision: str
+) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    ws = app.state.workspaces.create(name="p", root_path=str(root))
+    app.state.permission_policies.append(
+        {"scope": "workspace", "scope_id": ws.id, "action": policy, "host_pattern": "ares.local"}
+    )
+    rec = _local_record("ares.local", str(root), network="private")
+    assert grants._egress_gate_decision(app, rec) == decision
+    assert "permission.requested" not in _types(captured_events)
+
+
+def test_a_local_host_decision_error_fails_closed(tmp_path, captured_events, monkeypatch) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    app.state.workspaces.create(name="p", root_path=str(root))
+
+    def _boom(*a, **k):
+        raise RuntimeError("policy engine down")
+
+    monkeypatch.setattr(grants, "_host_action_for", _boom)
+    assert grants._egress_gate_decision(app, _local_record("10.0.0.5", str(root))) == "deny"
+    reasons = {
+        e["payload"].get("reason")
+        for e in captured_events
+        if e["event_type"] == "permission.resolved"
+    }
+    assert grants.REASON_EGRESS_DECISION_ERROR in reasons
 
 
 # --------------------------------------------------------------------------- #
@@ -976,8 +1242,20 @@ def test_fleet_serving_child_wired_join_mints_and_sibling_abstains(tmp_path) -> 
     ws = app.state.workspaces.create(name="p", root_path=str(root))
     sess = app.state.sessions.create(workspace_id=ws.id)
 
-    # Spawn-time registration (what mcp_config.transport_for does under an active fence).
-    sandbox_net.register_namespace_child(str(root), "geo", "child_geo")
+    # Spawn-time stamping (what transport_for + the gateway do under an active fence): the
+    # workspace's resident fleet routes ``geo`` to a server carrying its own channel.
+    from types import SimpleNamespace
+
+    from clio_agent.tools.fleet_serving import stamp_net_child
+    from clio_agent.tools.workspace_root import canonical_workspace_root
+
+    proxy = SimpleNamespace()
+    stamp_net_child(proxy, "child_geo")
+    fleet = SimpleNamespace(_namespace_servers={"geo": proxy})
+    app.state.agent = SimpleNamespace(
+        tool_executor=None,
+        _workspace_state=lambda: (None, {canonical_workspace_root(str(root)): fleet}, {}),
+    )
 
     # Observer started-phase: a call to the ``geo`` namespace joins call_id → child_geo.
     join_call_to_serving_child(app, sess.id, "geo_fetch", "call_1")

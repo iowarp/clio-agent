@@ -22,7 +22,7 @@ def write_text_with_policy(path: str, new_content: str) -> dict[str, Any]:
     ``newline=None`` rewrites every ``\\n`` to ``os.linesep`` — i.e. to ``\\r\\n``
     on Windows. That translation is silent corruption for any consumer that is
     not Windows: observed live (p5run2) when a compute expert authored a POSIX
-    shell script here, the relay staged the file's bytes to a Linux cluster, and
+    shell script here, the file's bytes were staged to a Linux cluster, and
     the job died on ``hostname\\r: not found`` while the following ``echo`` line
     still printed, because a trailing CR is invisible. A caller that genuinely
     wants CRLF puts CRLF in ``new_content`` and now gets exactly that.

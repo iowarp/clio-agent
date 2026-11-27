@@ -208,8 +208,9 @@ class PluginRecord:
     executable_digest: str = ""
     text_digest: str = ""
     keywords: tuple[str, ...] = ()
-    #: The category its marketplace entry declares (a Claude Code marketplace's
-    #: ``category``), else empty: what ``offer_plugin`` searches by category (OL-D11).
+    #: The category its manifest or marketplace entry declares (``plugin.json``
+    #: ``category``, or a Claude Code marketplace's), else empty: what ``offer_plugin``
+    #: searches by category (OL-D11).
     category: str = ""
     #: Python parts present but not imported, because the plugin is not trusted yet.
     python_pending: bool = False
@@ -220,6 +221,9 @@ class PluginRecord:
     #: joins and leaves the person's additions with that connector and is not offered
     #: in plugin pickers.
     follows: str = ""
+    #: Host semantics from the ``ai.iowarp.clio`` extension, normalized: ``tabs``
+    #: (each naming its server), ``accounts`` and ``elicitation``. Empty when none.
+    host: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # A plugin whose one server is a known clio-kit server follows that server's
@@ -310,4 +314,5 @@ class PluginRecord:
             python_pending=bool(data.get("python_pending")),
             disclosure=dict(data.get("disclosure") or {}),
             follows=str(data.get("follows") or ""),
+            host=dict(data.get("host") or {}),
         )

@@ -156,7 +156,6 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         build_attention_sources_tool,
         build_review_activity_tool,
     )
-    from clio_agent.gact.ssh_tools import build_ssh_execute_tool  # noqa: PLC0415
     from clio_agent.gact.storage.connect_tool import (  # noqa: PLC0415
         build_connected_data_connect_tool,
         build_connected_data_index_tool,
@@ -208,7 +207,6 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         "latex_build": build_latex_build_tool,
         "latex_outline": build_latex_outline_tool,
         "latex_locate": build_latex_locate_tool,
-        "ssh_execute": build_ssh_execute_tool,
         "clio_search": build_clio_search_tool,
         "clio_search_read": build_clio_search_read_tool,
         **MEMORY_BUILDERS,
@@ -272,7 +270,6 @@ _SINGLE_NAMES = frozenset(
         "latex_build",
         "latex_outline",
         "latex_locate",
-        "ssh_execute",
         "clio_search",
         "clio_search_read",
         "session_search",

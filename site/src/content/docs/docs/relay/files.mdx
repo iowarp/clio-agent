@@ -1,0 +1,75 @@
+---
+title: Files
+description: How relay's files tool behaves on every endpoint, which paths it takes, how large files move in chunks and resume after a dropped link, and which protocols take each operation.
+---
+
+The `files` tool works the same way on every endpoint. An endpoint that behaves
+differently from this page has a bug, and relay's adapter conformance kit checks for it.
+
+## Paths
+
+| Path | Means |
+| --- | --- |
+| `/abs/path` | The machine's own path. On Tapis it is under the system's root folder. |
+| `~/path` | Your home folder, on endpoints that have one (SSH, Worker). |
+| `rel/path` | Under relay's work folder on the machine. `..` may not leave it. |
+| empty | The work folder itself, for `list`. |
+| `jobs/<operation id>` | A job's folder. Jobs run there, and their outputs are listed from it. |
+
+A job's outputs are reported with absolute paths, so they can be read back as they
+are. A relative path that leaves the work folder is refused with `invalid_arguments`
+on every operation.
+
+## Operations
+
+| Op | Arguments | Does | Refuses with |
+| --- | --- | --- | --- |
+| `list` | `path` | Lists a folder. A file lists as itself. | `path_not_found` |
+| `stat` | `path` | Describes one path: kind, size, modified time | `path_not_found` |
+| `read` | `path`, `offset`, `limit` | Returns up to 4 MiB from `offset`, as text, or as base64 for binary data | `path_not_found` |
+| `write` | `path`, `content` or `content_base64`, `overwrite` | Writes a file of up to 4 MiB whole, making parent folders | `path_exists` without `overwrite` |
+| `write` (chunk) | as above, plus `offset` and `final` | Adds one chunk of a larger upload | `invalid_arguments` with `resume_at` on a wrong offset |
+| `delete` | `path`, `recursive` | Deletes a file, a symlink or a folder | `path_not_found`; `invalid_arguments` for a folder that is not empty without `recursive`, and for the work folder, the home folder or `/` |
+| `stage` | `content` or `content_base64` | Puts bytes in the endpoint's content store and returns their SHA-256, which a job input names | |
+| `has` | `digest` | Says whether the content store holds a SHA-256 | |
+
+`delete` removes a symlink itself and never follows it.
+
+`stage` is how a job gets its inputs. A job's input names a SHA-256, and relay copies
+it into the job's folder before the job starts. Content already on the endpoint is not
+sent again, so the same input for many jobs travels once.
+
+## Large files
+
+One call carries at most 4 MiB. Larger files move in chunks.
+
+**Upload.** Write the first chunk at `offset` 0 with `final` false, each next chunk at
+the offset where the last one ended, and the last chunk with `final` true. The chunks
+collect in `<path>.relay-part`, and the last one moves it to `path`. `overwrite` is
+checked on the first chunk and again when the file moves into place. A chunk with
+`final` false answers with `resume_at`, the offset of the next chunk.
+
+**Download.** `read` at increasing offsets until a read returns fewer bytes than you
+asked for.
+
+## Resume after a dropped link
+
+| Direction | Where to resume |
+| --- | --- |
+| Upload | `stat` on `<path>.relay-part` gives its size, which is the next offset. A chunk at any other offset is refused, and its `resume_at` names the right one. Starting again at offset 0 throws the part away. |
+| Download | You know how many bytes you hold. Read again from there. |
+
+## Which protocols take each operation
+
+| Protocol | list, stat, read, whole write | delete | chunked write | Notes |
+| --- | --- | --- | --- | --- |
+| [Local](/docs/relay/local/) | yes | yes | yes | The reference implementation |
+| [Worker](/docs/relay/worker/) | yes | yes | yes | The worker runs Local on the machine |
+| [Tapis](/docs/relay/tapis/) | yes | yes | not yet | Tapis Files cannot append |
+| [SSH](/docs/relay/ssh/) | yes | not yet | not yet | Relative paths still start in your home folder |
+| [Globus](/docs/relay/globus/) | yes | not yet | not yet | |
+| [IRI](/docs/relay/iri/) | yes, up to the API's 5 MiB | not yet | not yet | |
+| [SkyPilot](/docs/relay/skypilot/) | no | no | no | SkyPilot copies a job's work folder for it |
+
+An endpoint that does not take an operation yet refuses it with
+`verb_not_implemented`.

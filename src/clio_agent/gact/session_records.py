@@ -51,6 +51,7 @@ import zlib
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, Optional
 
@@ -58,6 +59,7 @@ from sortedcontainers import SortedList
 
 from clio_agent import conf
 from clio_agent.arc.batch_put import PutRecord
+from clio_agent.arc.native_threads import run_on_native_thread
 from clio_agent.errors import ClioError
 from clio_agent.gact.session_index_columns import (
     EXTENSION_STALE_REASON,
@@ -255,6 +257,12 @@ class _Writer:
             ticket = self._submitted
         return self.wait(ticket, timeout)
 
+    def _apply(self, batch: dict[str, Optional[bytes]]) -> None:
+        if puts := [PutRecord(name, data) for name, data in batch.items() if data is not None]:
+            self.store.put_many(KIND, puts)
+        for name in (name for name, data in batch.items() if data is None):
+            self.store.delete(KIND, name)
+
     def _run(self) -> None:
         backoff = 0.5
         while True:
@@ -267,12 +275,8 @@ class _Writer:
                 self._pending.clear()
                 ticket = self._submitted
             try:
-                puts = [PutRecord(name, data) for name, data in batch.items() if data is not None]
-                if puts:
-                    self.store.put_many(KIND, puts)
-                for name, data in batch.items():
-                    if data is None:
-                        self.store.delete(KIND, name)
+                # Idle writers retire: a persistent native thread keeps their clio-core fds.
+                run_on_native_thread(partial(self._apply, batch))
             except (ClioError, OSError, RuntimeError, TimeoutError, ValueError) as exc:
                 # A store write failure: retried, and reported typed each time.
                 stream_audit(

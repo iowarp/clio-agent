@@ -16,7 +16,8 @@ the selected compatibility baseline. Use `cancel_tasks`.
 
 Native model-facing `wait_tasks` defaults `interrupt_on_mail` to true. An
 authorized, eligible peer message, live human input, or question answer can
-return `interrupted="mail_received"` with the actual still-pending handles.
+return `interrupted="mail_received"` with the tasks still going listed under
+`unfinished`, each with its recorded `status` and `activity`.
 This does not satisfy `return_when="all"`, settle/cancel a child, or consume mail.
 The existing model-input commit delivers the addressed input before the next
 model decision. Already committed messages do not interrupt a later wait;

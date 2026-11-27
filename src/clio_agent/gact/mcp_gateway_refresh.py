@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from clio_agent.tools.execution import create_sync_tool_executor
+from clio_agent.tools.fleet_server_merge import stamp_default_fleet
 from clio_agent.tools.gateway import namespace_proxies
 
 
@@ -29,6 +30,7 @@ def refresh_declared_mcp_servers(agent: Any) -> Any:
         )
         replaced = agent.tool_executor
         agent._mcp_configuration_revision = getattr(agent, "_mcp_configuration_revision", 0) + 1
+        stamp_default_fleet(agent, executor, gateway)
         agent._tool_gateway = gateway
         agent.tool_executor = executor
         return replaced

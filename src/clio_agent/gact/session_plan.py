@@ -10,6 +10,9 @@ The plan is the file plan mode writes under CLIO's state folder, its path on
   approved it, so it is not called approved);
 - ``done`` or ``abandoned`` when the agent says so with ``plan_update``.
 
+Where it was written (``plan_mode`` or ``outside_plan_mode``) is kept on
+``session.metadata['plan_origin']``, since a done or abandoned status no longer says it.
+
 ``plan_update`` writes the whole plan or replaces one exact passage, in plan mode and
 outside it, so the agent replans at any step without a mode switch. While a plan is
 ``draft``, ``approved`` or ``active`` it is offered as working state (:func:`plan_injection`) at
@@ -43,6 +46,9 @@ __all__ = [
 ]
 
 PLAN_STATUS_KEY = "plan_status"
+#: Where the current plan was written: ``plan_mode`` or ``outside_plan_mode``. Kept beside the
+#: status because a done or abandoned status no longer says it.
+PLAN_ORIGIN_KEY = "plan_origin"
 #: Digest of the plan text as the agent's last ``plan_update`` call left it (a person's
 #: edit through the Work rail does not set it: the agent has not seen that text).
 WRITTEN_KEY = "plan_written_digest"
@@ -112,7 +118,19 @@ def rail_plan(session: Any) -> dict[str, Any] | None:
     state = plan_state(session)
     if not state["exists"]:
         return None
-    return {"path": state["path"], "status": state["status"] or "draft", "text": state["text"]}
+    status = state["status"] or "draft"
+    metadata = getattr(session, "metadata", None) or {}
+    origin = str(metadata.get(PLAN_ORIGIN_KEY) or "") or _ORIGIN_BY_STATUS.get(status)
+    plan = {"path": state["path"], "status": status, "text": state["text"]}
+    return {**plan, "origin": origin} if origin else plan
+
+
+#: The origin a status implies, for plans written before the origin was recorded.
+_ORIGIN_BY_STATUS = {
+    "draft": "plan_mode",
+    "approved": "plan_mode",
+    "active": "outside_plan_mode",
+}
 
 
 def set_plan_status(app: Any, session_id: str, status: str) -> None:
@@ -207,7 +225,9 @@ def enter_plan(app: Any, session_id: str, reason: str = "") -> str:
     session = _session(app, session_id)
     if str(getattr(session, "mode", "") or "") != "plan":
         app.state.sessions.update(
-            session_id, mode="plan", metadata_patch={PLAN_STATUS_KEY: "draft"}
+            session_id,
+            mode="plan",
+            metadata_patch={PLAN_STATUS_KEY: "draft", PLAN_ORIGIN_KEY: "plan_mode"},
         )
     session = _session(app, session_id)
     _plan_path(app, session_id, session)
@@ -260,7 +280,15 @@ def update_plan(
         next_status = "draft" if str(getattr(session, "mode", "")) == "plan" else "active"
     else:
         next_status = current
-    if next_status != current:
+    if next_status != current and next_status in {"draft", "active"}:
+        app.state.sessions.update(
+            session_id,
+            metadata_patch={
+                PLAN_STATUS_KEY: next_status,
+                PLAN_ORIGIN_KEY: _ORIGIN_BY_STATUS[next_status],
+            },
+        )
+    elif next_status != current:
         set_plan_status(app, session_id, next_status)
     _publish_work(app, session_id)
     text = path.read_text(encoding="utf-8") if path.exists() else ""
@@ -302,6 +330,15 @@ def _thread_counts(text: str) -> dict[str, int]:
     return {"unfinished_threads": unfinished, "marked_threads": len(states)}
 
 
+def _unfinished_todos(app: Any, session_id: str) -> int:
+    """How many of the session's todos (``write_todos``) are not completed."""
+    from clio_agent.gact.todos import recorded_todos  # noqa: PLC0415
+
+    session = app.state.sessions.get(session_id)
+    todos = recorded_todos(session) if session is not None else []
+    return sum(1 for todo in todos if todo.get("status") != "completed")
+
+
 def _publish_work(app: Any, session_id: str) -> None:
     from clio_agent.gact.work_events import publish_work_updated  # noqa: PLC0415
 
@@ -336,8 +373,8 @@ def build_plan_enter_tool() -> Any:
         desc=(
             "Enter plan mode when the person should approve a plan before anything changes: "
             "you investigate with read tools, write the plan with plan_update, and hand it "
-            "back for approval with plan_exit. Nothing else is changed in plan mode. A plan "
-            "you write and then carry out yourself needs no plan mode: write it with plan_update."
+            "back for approval with plan_exit. Nothing else is changed in plan mode. A list "
+            "of steps you carry out yourself is not a plan: keep it with write_todos."
         ),
         args={"reason": {"type": "string", "description": "Why planning first helps here."}},
     )
@@ -368,12 +405,9 @@ def build_plan_update_tool() -> Any:
             result["change"], "Plan status set"
         )
         reply = f"{what} ({result['status']}, {result['plan_file']})."
-        if result["status"] == "done" and not result["marked_threads"]:
-            reply += (
-                " No thread in the plan carries a state marker such as [open] or [closed],"
-                " so CLIO cannot tell whether any is still open."
-            )
-        elif result["unfinished_threads"]:
+        if result["status"] == "done" and (left := _unfinished_todos(app, session_id)):
+            reply += f" The todos still list {left} item{'s' if left != 1 else ''} not completed."
+        if result["unfinished_threads"]:
             count = result["unfinished_threads"]
             reply += (
                 f" The plan still marks {count} thread{'s' if count != 1 else ''} open or active."
@@ -388,10 +422,11 @@ def build_plan_update_tool() -> Any:
         domain="planning",
         title="Update plan",
         desc=(
-            "Write the session plan and keep it current, in plan mode or not (outside plan mode "
-            "the work goes on): content writes the whole plan; old and new replace one exact "
-            "passage; status done or abandoned closes it. "
-            "Update it when a finding changes your understanding or direction, not every step."
+            "Write the plan document, the result of a planning phase (objective, approach, "
+            "findings, the issues left to work), and revise it when a finding changes it: "
+            "content writes the whole plan; old and new replace one exact passage; status "
+            "done or abandoned closes it. Not for step lists or progress: keep those with "
+            "write_todos."
         ),
         args={
             "content": {"type": "string", "description": "The whole plan, as Markdown."},

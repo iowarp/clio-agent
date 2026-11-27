@@ -270,17 +270,49 @@ def test_a_turn_lease_on_the_workspace_protects_every_fleet_there() -> None:
     leases = {"/ws": 1}
     closed_channels: list[str] = []
     reaper = WorkspaceExecutorReaper(
-        registry, lock, leases=leases, ttl_s=1.0, channel_closer=closed_channels.append
+        registry,
+        lock,
+        leases=leases,
+        ttl_s=1.0,
+        channel_closer=lambda key, _executor: closed_channels.append(key) or 0,
     )
     assert reaper.reap_once() == ["/other"]
     assert sorted(registry) == ["/ws", "/ws|cv=abc"]
     leases.clear()
     registry["/ws"].busy = True  # one fleet of the workspace still in use
     assert reaper.reap_once() == ["/ws|cv=abc"]
-    assert closed_channels == ["/other"]  # /ws's channels stay while its plain fleet runs
+    # The reaped fleet's own channels close; the plain fleet's stay with it.
+    assert closed_channels == ["/other", "/ws|cv=abc"]
 
 
 # ---------------------------------------------------------- setting values
+
+
+def test_a_parent_and_its_subagents_share_one_set_of_values(
+    fixture_catalog: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = _app()
+    state.update("fixture-secret", enabled=True, values={"where": "this-machine"})
+    app.state.sessions.get("sess_child").parent_session_id = "sess_root"
+    app.state.sessions.get("sess_grandchild").parent_session_id = "sess_child"
+    app.state.sessions.get("sess_root").parent_session_id = ""
+    assert connector_values.tree_root(app, "sess_grandchild") == "sess_root"
+    monkeypatch.setattr(
+        connector_values,
+        "move_session_fleet",
+        lambda _app, sid, found, move_turn: {"status": "ready", "tool_count": 3, "reason": None},
+    )
+    asyncio.run(
+        connector_values.set_session_values(
+            app, "sess_grandchild", "fixture-secret", {"where": "node08"}, by_agent=True
+        )
+    )
+    for sid in ("sess_root", "sess_child", "sess_grandchild"):
+        assert connector_values.session_overlay(app, sid) == {
+            "fixture-secret": {"where": "node08"}
+        }, sid
+    assert overlay.KEY not in app.state.sessions.get("sess_grandchild").metadata  # at the root
+    assert connector_values.session_overlay(app, "sess_other") == {}
 
 
 def test_a_conversation_value_is_not_a_default_and_save_as_default_is(

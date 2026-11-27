@@ -5,7 +5,7 @@ of child egress (the ARC-as-source invariant forbids parsing srt proxy logs). Th
 the gact-side seam it calls back into:
 
 * :func:`install_egress_recorder` registers a closure with the chokepoint (wired from the
-  server lifespan once ARC is live) that (a) appends each :class:`EgressRecord` to a bounded
+  server lifespan when the fence is selected) that (a) appends each :class:`EgressRecord` to a bounded
   per-app ledger and (b) emits ONE trace-only ``net.egress`` semantic event via
   ``_emit_semantic_event`` — so the chokepoint never imports the god app, and every egress
   lands on the durable trace + ARC, never the SSE wire.
@@ -40,10 +40,11 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 from urllib.parse import urlsplit
 
 from clio_agent.gact.artifacts.transform_types import EdgeEvidence, EdgeRole, ProvEdge
+from clio_agent.runtime import net_refusals
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -93,6 +94,9 @@ def _record_to_dict(rec: "EgressRecord") -> dict[str, Any]:
         # The plain-HTTP verb (N2) — the write-classification signal on the durable record
         # (``""`` for an opaque CONNECT tunnel). Additive: existing consumers ignore it.
         "method": rec.method,
+        # Loopback, link-local or private when the person consented to a non-public host
+        # (``""`` for a public one), so the trace shows which egress needed that consent.
+        "network": rec.network,
     }
 
 
@@ -134,21 +138,27 @@ def record_egress(app: "FastAPI", rec: "EgressRecord") -> None:
         logger.debug("net egress event emit skipped reason=egress_emit_unavailable", exc_info=True)
 
 
-def install_egress_recorder(app: "FastAPI") -> None:
+def install_egress_recorder(app: "FastAPI") -> Optional[Callable[["EgressRecord"], None]]:
     """Wire the process chokepoint's egress recorder to THIS app (server lifespan, guarded).
 
-    Called once ARC is live (mirrors ``sandbox.emit_boot_state_event``). Registers a closure
-    over ``app`` so the runtime-side chokepoint never imports gact. Idempotent — re-wiring
-    simply replaces the closure with one over the same app.
+    Called when the server selects its fence, before any agent can spawn a child (see
+    ``server_boot.wire_egress_policy``). Registers a closure over ``app`` so the runtime-side
+    chokepoint never imports gact; the emit reads ARC at call time and is best-effort. Idempotent
+    — re-wiring simply replaces the closure. Returns the installed closure (``None`` on failure).
     """
     try:
         from clio_agent.runtime.net_chokepoint import set_egress_recorder  # noqa: PLC0415
 
-        set_egress_recorder(lambda rec: record_egress(app, rec))
+        def recorder(rec: "EgressRecord") -> None:
+            record_egress(app, rec)
+
+        set_egress_recorder(recorder)
+        return recorder
     except Exception as exc:  # noqa: BLE001 — recorder wiring is best-effort, never blocks boot
         logger.warning(
             "net egress recorder wiring skipped reason=egress_recorder_wire_failed error=%r", exc
         )
+        return None
 
 
 def net_egress_records(app: "FastAPI") -> list[dict[str, Any]]:
@@ -202,10 +212,10 @@ def join_call_to_serving_child(
 ) -> None:
     """Join a fleet ``call_id`` to its confined child's ``net_child_id`` (B5 #979.7, guarded).
 
-    A namespaced tool name is ``<namespace>_<tool>``; the fleet proxy for that namespace is one
-    persistent confined child whose ``net_child_id`` was registered at spawn (mcp_config
-    ``transport_for`` → :func:`clio_agent.runtime.sandbox_net.register_namespace_child`), keyed
-    by the workspace root. Resolve the child and record ``call_id -> net_child_id`` via
+    A namespaced tool name is ``<namespace>_<tool>``; the server the conversation's fleet
+    routes that namespace to carries its own ``net_child_id`` (stamped at spawn,
+    :mod:`clio_agent.tools.fleet_serving`), so two fleets of one folder running a namespace
+    of the same name are told apart. Record ``call_id -> net_child_id`` via
     :func:`register_serving_child` so the egress-only ingest mint (:func:`attach_ingest_edges`)
     can attribute THIS call's egress deterministically (#978 pt 5). Empty child (floor /
     built-in namespace) is a no-op — the mint abstains (precision over recall). Never raises.
@@ -215,15 +225,13 @@ def join_call_to_serving_child(
     """
     try:
         namespace = tool_name.split("_", 1)[0] if "_" in tool_name else tool_name
-        session = app.state.sessions.get(session_id) if session_id else None
-        workspace_id = str(getattr(session, "workspace_id", "") or "")
-        ws = app.state.workspaces.get(workspace_id) if workspace_id else None
-        workspace_root = str(getattr(ws, "root_path", "") or "")
-        from clio_agent.runtime.sandbox_net import resolve_namespace_child  # noqa: PLC0415
+        from clio_agent.gact.session_fleet import session_net_child  # noqa: PLC0415
 
-        child = resolve_namespace_child(workspace_root, namespace)
+        child = session_net_child(app, session_id, namespace)
         if child:
             register_serving_child(app, call_id, child)
+            # Its refusals reach this call's result, as the server's: calls share it.
+            net_refusals.join(child, label=f"the {namespace} server")
     except Exception:  # noqa: BLE001 — a linkage note must never break the tool call
         logger.debug("serving-child join skipped reason=join_unavailable", exc_info=True)
 

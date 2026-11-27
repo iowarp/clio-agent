@@ -124,7 +124,9 @@ def lifecycle_cycle(
         "Both should report pending held work honestly. Then finish without changing it.",
         "wait_tasks",
     )
-    assert handle in evidence.observation(observe["invocation"])["pending"]
+    assert handle in [
+        row["handle"] for row in evidence.observation(observe["invocation"])["unfinished"]
+    ]
     resume = evidence.model_turn(
         call,
         proof,

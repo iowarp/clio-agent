@@ -94,6 +94,12 @@ runtime.environment: "dev"
 # trusted local dev where sandbox setup gets in the way.
 sandbox.enabled: true
 
+# CLIO_SANDBOX_FORWARD_TCP  (list)  <- src/clio_agent/runtime/fence_forward.py
+# Raw TCP host:port endpoints (a Slurm controller) that Linux-fenced
+# children reach through CLIO's proxy, which records them and asks the
+# person; empty forwards nothing.
+# sandbox.forward_tcp:  # default unset; resolved in code
+
 # CLIO_RELEASE_MANIFEST_URL  (str)  <- src/clio_agent/gact/routes/latest_release.py
 # Release manifest the server reads to report the latest CLIO release to
 # clients; point at a mirror or a fork's releases feed.
@@ -375,16 +381,12 @@ limits.shell_max_timeout_s: 0.0
 # the model is shown (tools.result_share).
 limits.tool_result_chars: 12000
 
-# CLIO_TOOL_RESULT_RECORD_BYTES  (int)  <- src/clio_agent/tools/recorded_results.py
-# Largest tool result, in JSON bytes, a call's record keeps inline (at least
-# 1024); past it the record keeps the result's head and the whole result in
-# a file.
-limits.tool_result_record_bytes: 524288
-
 # CLIO_TOOL_STRUCTURED_BYTES  (int)  <- src/clio_agent/gact/structured_wire_bound.py
-# Byte bound on a tool result's structured content in the transcript and
-# trace (a script still receives the whole value); larger payloads are
-# recorded as an envelope with reason structured_content_over_wire_cap.
+# Byte bound on the preview of a tool result's structured content on the
+# wire and in the transcript row (a script still receives the whole value);
+# larger payloads show an envelope with reason
+# structured_content_over_wire_cap. The call's tool.call.completed event in
+# clio-core keeps the whole value.
 limits.tool_structured_bytes: 262144
 
 # CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS  (list)  <- src/clio_agent/agent.py
@@ -516,6 +518,12 @@ fleet.usage_poll_seconds: 300
 # uses the bundled marketplace, else the pinned default URL. Point it at a
 # mirror or an offline copy.
 # plugins.default_marketplace:  # default unset; resolved in code
+
+# CLIO_PLUGINS_JOIN_SET_UP  (bool)  <- src/clio_agent/gact/plugin_join.py
+# Whether a plugin the person has set up (its manifest setup.files hold a
+# value) joins new conversations by default, unless the person left it out
+# of the plugin list in Settings or the request removes it.
+plugins.join_set_up: true
 
 # CLIO_PLUGINS_OFFER_LISTED  (int)  <- src/clio_agent/gact/plugin_offer.py
 # How many plugins and connectors not in a conversation the session facts
@@ -931,6 +939,12 @@ permissions.ai_review_timeout_s: "45.0"
 # clio-core when the list pages to them.
 sessions.cache_records: 1024
 
+# CLIO_SESSION_DELETE_SETTLE_S  (float)  <- src/clio_agent/gact/routes/session_delete.py
+# Seconds deleting a conversation waits for the turn and tasks it stopped to
+# settle before refusing with 409; raise for servers that take long to
+# cancel.
+sessions.delete_settle_s: 60.0
+
 # CLIO_TRANSCRIPT_FILE  (bool)  <- src/clio_agent/gact/transcript_file.py
 # Keep the per-session messages/<sid>.json copy of every transcript next to
 # clio-core's atoms; set false to make clio-core the only transcript store
@@ -1011,8 +1025,8 @@ arc.core_threads: 8
 
 # CLIO_ARC_CTE_AUTO_EXPAND  (bool)  <- src/clio_agent/arc/clio_core_growth.py
 # Allow bounded live capacity additions when CLIO's generated file store is
-# full; disable to retain a fixed capacity. Explicit file_capacity settings
-# disable growth.
+# full; disable to retain a fixed capacity. An explicit file_capacity is the
+# seed size, not a ceiling: that store grows too.
 arc.cte.auto_expand: true
 
 # CLIO_ARC_CTE_DIR  (str)  <- src/clio_agent/arc/clio_core_config.py
@@ -1027,8 +1041,10 @@ arc.cte.disk_warn_fraction: 0.5
 
 # CLIO_ARC_CTE_FILE_CAPACITY  (str)  <- src/clio_agent/arc/clio_core_config.py
 # Capacity (e.g. "20GB") of clio-core's disk file tier; unset, a fresh
-# install sizes it to 10% of the disk's free space (2-50 GB). Windows
-# allocates it up front.
+# install sizes it to 10% of the disk's free space (2-50 GB). The file grows
+# in 1 GiB chunks up to that limit on every OS. A full tier grows unless
+# arc.cte.auto_expand is off; a store CLIO cannot grow that is under 2 GB is
+# warned at boot with the fix.
 # arc.cte.file_capacity:  # default unset; resolved in code
 
 # CLIO_ARC_CTE_HOME_RAM_CAPACITY  (str)  <- src/clio_agent/arc/home_runtime.py
@@ -1483,11 +1499,6 @@ code.idle_minutes: "30.0"
 # more tools is listed in part with a count of the rest.
 code.index_line_chars: 320
 
-# CLIO_CODE_MAX_OUTPUT_BYTES  (int)  <- src/clio_agent/gact/code_mode/kernels.py
-# Bytes of one run_code script's printed output the kernel returns; the rest
-# is cut with a note. Read when a kernel starts.
-code.max_output_bytes: 2000000
-
 # CLIO_CODE_MAX_SCRIPT_CHARS  (int)  <- src/clio_agent/gact/code_mode/grants.py
 # Characters of a run_code script that a permission question shows the
 # person.
@@ -1592,7 +1603,8 @@ tools.file_policy.allow_symlinks: false
 
 # CLIO_ALLOWED_ROOTS  (str)  <- src/clio_agent/tools/file_policy.py
 # Root directories every tool file read/write must resolve inside (default:
-# cwd + system temp dir); add a root to grant access.
+# system temp dir, plus the session's workspace, or cwd when no workspace is
+# bound); add a root to grant access.
 # tools.file_policy.allowed_roots:  # computed at runtime: _default_allowed_roots()
 
 # CLIO_MAX_FILE_SIZE_BYTES  (str)  <- src/clio_agent/tools/file_policy.py
@@ -1608,11 +1620,18 @@ tools.file_policy.max_file_size_bytes: "1073741824"
 tools.full_result: ["load_skill"]
 
 # CLIO_TOOLS_INSTRUCTIONS_CHARS  (int)  <- src/clio_agent/tools/mcp_server_instructions.py
-# Characters of an MCP server's own instructions used to describe a deferred
-# server in the prompt's listing, when its plugin gives no description; a
-# shortened entry says so, and search_tools returns the whole instructions
-# with the server's tools.
-tools.instructions_chars: 300
+# Characters of each MCP server's own instructions that the prompt carries,
+# for a listed or a deferred server; a shortened excerpt says so, and
+# search_tools returns the whole instructions with a deferred server's
+# tools.
+tools.instructions_chars: 1000
+
+# CLIO_TOOLS_INSTRUCTIONS_REFRESH_S  (float)  <- src/clio_agent/tools/mcp_server_instructions.py
+# Seconds a turn waits, before its prompt is built, for each kept-alive MCP
+# server to say again what it says about itself (server/discover on its open
+# connection), so a server whose instructions change while it runs is
+# described as it is now; 0 turns the refresh off.
+tools.instructions_refresh_s: 2.0
 
 # CLIO_MCP_CALL_TIMEOUT_S  (float)  <- src/clio_agent/tools/execution.py
 # Runaway backstop seconds for one synchronous MCP tool call before it's
@@ -1635,12 +1654,13 @@ tools.mcp.discovery_concurrency: 8
 tools.mcp.discovery_heal_interval_s: 20.0
 
 # CLIO_MCP_ELICITATION_AGENT_AUDIENCE_DEFAULT_UNHINTED  (bool)  <- src/clio_agent/gact/agent_elicitation_policy.py
-# Whether an UNHINTED form-mode elicitation defaults to the agent. fastmcp
-# drops the nested _meta on the InputRequiredResult round-trip, so an
-# explicit x-clio-agent/audience tag cannot survive MRTR; on = route by the
-# negotiated agent-driven-elicitation extension contract, off = strict
-# explicit-tag routing (unhinted questions go to the human).
-tools.mcp.elicitation.agent_audience.default_unhinted: true
+# Whether an UNHINTED form-mode elicitation goes to the agent. Off: only an
+# explicit x-clio-agent/audience=agent tag routes to the agent, and an
+# untagged question (a spend approval, a review) reaches the person while
+# the turn waits. fastmcp drops the nested _meta on the InputRequiredResult
+# round-trip, so turn on only when your servers need agent answers over
+# MRTR.
+tools.mcp.elicitation.agent_audience.default_unhinted: false
 
 # CLIO_MCP_ELICITATION_AGENT_AUDIENCE_DENIED_SERVERS  (list)  <- src/clio_agent/gact/agent_elicitation_policy.py
 # CSV of declared MCP server names whose agent-audience elicitations always
@@ -1677,6 +1697,13 @@ tools.mcp.hold_while_waiting_s: 1800.0
 # call; raise for tools needing many follow-up inputs.
 # tools.mcp.input_required_max_rounds:  # computed at runtime: DEFAULT_INPUT_REQUIRED_MAX_ROUNDS
 
+# CLIO_MCP_INSTALL_PREBUILD  (bool)  <- src/clio_agent/gact/plugin_prebuild.py
+# Build a trusted page plugin's MCP server environments (byte-compiled) in
+# the background when its marketplace is installed, updated or trusted and
+# when the app first lists its pages, so opening the page does not wait; set
+# false to build them only when a server first starts.
+tools.mcp.install_prebuild: true
+
 # CLIO_MCP_LISTING_TTL_H  (float)  <- src/clio_agent/tools/listing_cache.py
 # Hours a cached MCP tool listing stays valid before a live relist is
 # forced; lower to pick up upstream tool changes sooner.
@@ -1699,6 +1726,13 @@ tools.mcp.mount_retry_delays_s: ["0.5", "1.5"]
 # waited for up to tools.mcp.max_wait_s.
 tools.mcp.no_progress_s: 30.0
 
+# CLIO_MCP_PAGE_PRESTART_S  (float)  <- src/clio_agent/gact/plugin_prebuild.py
+# Seconds a page plugin that built cleanly keeps its servers after CLIO
+# starts them in the background (at install and when the app first lists its
+# pages), so the first open of the page finds its server running; 0 turns
+# prestarting off.
+tools.mcp.page_prestart_s: 1800.0
+
 # CLIO_MCP_PROBE_TIMEOUT_RETRIES  (int)  <- src/clio_agent/tools/mcp_probe_hardening.py
 # Retries of the era-negotiation probe after a client-side timeout before
 # giving up; raise for a slow-starting server.
@@ -1709,6 +1743,9 @@ tools.mcp.probe_timeout_retries: 3
 # starts (uv sync, clio-kit --prepare); a build that stops making progress
 # fails sooner, typed.
 tools.mcp.provision_max_wait_s: 900.0
+
+# CLIO_MCP_PROVISIONED_DIRECT  (bool)  <- src/clio_agent/tools/uv_provisioned_launch.py
+tools.mcp.provisioned_direct: true
 
 # CLIO_MCP_RESPONSE_CACHE_ENABLED  (bool)  <- src/clio_agent/tools/mcp_runtime.py
 # Opts execution-path MCP clients into SEP-2549 server-hinted response

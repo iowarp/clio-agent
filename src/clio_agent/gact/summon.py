@@ -97,6 +97,20 @@ def summon_parts(parts: Iterable["Part"]) -> list["Part"]:
     return [part for part in parts if part.type == SUMMON]
 
 
+def _agent_servers(app: "FastAPI", sid: str, resolution: Any) -> dict[str, dict[str, Any]]:
+    """The servers the session's agent has: its plugins' and, for a root agent, the
+    person's own (:mod:`clio_agent.gact.agents.person_servers`)."""
+
+    servers = dict(getattr(resolution, "mcp_servers", {}) or {})
+    agent = getattr(resolution, "agent", None) or {}
+    if agent.get("kind") == "subagent" and agent.get("parent"):
+        return servers
+    from clio_agent.gact.agents.person_servers import executor_person_servers  # noqa: PLC0415
+    from clio_agent.gact.mcp_prompt_commands import session_executor  # noqa: PLC0415
+
+    return {**executor_person_servers(session_executor(app, sid)), **servers}
+
+
 def _known(app: "FastAPI", sid: str) -> tuple[Any, dict[str, list[dict[str, Any]]]]:
     """The session's resolution and, per kind, the rows a person can summon."""
 
@@ -105,7 +119,7 @@ def _known(app: "FastAPI", sid: str) -> tuple[Any, dict[str, list[dict[str, Any]
     from clio_agent.plugins.workflows import resolution_workflows  # noqa: PLC0415
 
     resolution = session_resolution(app, sid)
-    servers = dict(getattr(resolution, "mcp_servers", {}) or {})
+    servers = _agent_servers(app, sid, resolution)
     return resolution, {
         SUBAGENT: [
             {"id": row["id"], "plugin": row["plugin"], "description": row["description"]}
@@ -154,10 +168,10 @@ def summon_targets(app: "FastAPI", sid: str) -> dict[str, Any]:
     from clio_agent.gact.mcp_prompt_commands import session_executor  # noqa: PLC0415
 
     try:
-        resolution, known = _known(app, sid)
+        _resolution, known = _known(app, sid)
     except SessionAgentUnavailable:
         return {"subagents": [], "servers": [], "workflows": [], "flows": [], "plugins": []}
-    servers = dict(resolution.mcp_servers or {})
+    servers = {row["name"]: row for row in known[SERVER]}
     executor = session_executor(app, sid)
     prepared = getattr(executor, "is_namespace_prepared", None)
     names = getattr(executor, "get_tool_names", None)

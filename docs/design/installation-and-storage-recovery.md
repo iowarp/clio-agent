@@ -44,8 +44,12 @@ pending or timed-out writes are not reissued by capacity recovery.
 For CLIO's generated default disk-only configuration, recovery:
 
 1. Serializes across clients with an interprocess lock and checks the configuration
-   fingerprint. Explicit external configurations and `arc.cte.file_capacity` /
-   `CLIO_ARC_CTE_FILE_CAPACITY` remain operator choices.
+   fingerprint. Explicit external configurations remain operator choices. An
+   explicit `arc.cte.file_capacity` / `CLIO_ARC_CTE_FILE_CAPACITY` only sizes the
+   seed tier of CLIO's generated config; that store still grows. Take 1r hit this:
+   a 512 MB seed filled, and clio-core refused a 27.7 MB event chunk with code 12.
+   clio-core has no per-put size limit on this path, so code 12 means that no
+   target had room.
 2. Measures the existing blob size and refreshes native target statistics. Only
    additional growth counts. Under `max_bw`, each candidate must individually
    have room; aggregate free space across undersized targets is insufficient.
@@ -61,7 +65,8 @@ For CLIO's generated default disk-only configuration, recovery:
 
 New generated configs record ownership in `cte-capacity.json`. An older config
 without that journal is eligible only when it matches the original generated
-single-file seed shape, owned paths and 2–50 GiB seed range. A custom topology is
+single-file seed shape and owned paths, with a 2–50 GiB seed or the configured
+explicit `arc.cte.file_capacity`. A custom topology is
 not automatically enrolled. Set `CLIO_ARC_CTE_AUTO_EXPAND=false` (or
 `arc.cte.auto_expand=false`) to retain a fixed managed capacity. Editing a
 journaled config also opts it out until an operator reconciles it.

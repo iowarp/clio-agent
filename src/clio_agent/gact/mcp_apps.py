@@ -272,6 +272,8 @@ class MCPAppRecord:
     surface_pinned: bool = False
     #: Weak reference to the fleet whose server opened the view (``mcp_app_fleet``).
     fleet: Any = None
+    #: That fleet's start of the namespace's server when the view opened (MI1).
+    instance_generation: int = 0
 
     @property
     def pinned(self) -> bool:
@@ -308,6 +310,8 @@ class MCPAppRegistry:
                 self.on_closed(record, reason)
             except Exception:  # noqa: BLE001 - typed; a notice never blocks a close
                 logger.exception("mcp_app_close_notice_failed reason=%s", reason)
+        if record is not None:
+            mcp_app_fleet.views_left()  # a superseded server it drew may retire now
 
     def register(
         self,
@@ -434,7 +438,9 @@ class MCPAppRegistry:
         """Forget a successfully cleaned capability."""
 
         with self._lock:
-            self._closing_records.pop(app_instance_id, None)
+            finished = self._closing_records.pop(app_instance_id, None)
+        if finished is not None:
+            mcp_app_fleet.views_left()
 
     def restore_close(self, record: MCPAppRecord) -> None:
         """Make a failed cleanup retriable without losing its ownership identity."""
@@ -528,6 +534,7 @@ def _registry(app: FastAPI) -> MCPAppRegistry:
         app.state.mcp_app_registry = registry
     if registry.on_closed is None:
         registry.on_closed = lambda record, reason: publish_closed(app, record, reason)
+        mcp_app_fleet.watch_views(registry)
     return registry
 
 
@@ -626,12 +633,16 @@ def install_mcp_app_runtime(app: FastAPI) -> None:
     app.state.pending_mcp_app_observer = _make_mcp_app_observer(app)
 
 
-def _bound_executor(app: FastAPI, sid: str) -> Any:
+def _bound_executor(app: FastAPI, sid: str, record: Any = None) -> Any:
     agent = getattr(app.state, "agent", None)
     if agent is None:
         raise RuntimeError("agent is not available")
-    resolver = getattr(agent, "_active_tool_executor", None)
-    executor = resolver() if callable(resolver) else getattr(agent, "tool_executor", None)
+    # A view's own call goes to the fleet whose server drew it, even after its
+    # conversation moved to another fleet (a connector value change, take 1s gap 15).
+    executor = mcp_app_fleet.drawing_fleet(record) if record is not None else None
+    if executor is None:
+        resolver = getattr(agent, "_active_tool_executor", None)
+        executor = resolver() if callable(resolver) else getattr(agent, "tool_executor", None)
     if executor is None:
         raise RuntimeError("agent tool executor is not available")
     # #1201: surface any recorded era downgrade for this executor's servers
@@ -644,14 +655,26 @@ def _bound_executor(app: FastAPI, sid: str) -> Any:
     return executor
 
 
-async def _run_bound(app: FastAPI, sid: str, operation: Any, *, request: Any = None) -> Any:
+async def _run_bound(
+    app: FastAPI, sid: str, operation: Any, *, request: Any = None, record: Any = None
+) -> Any:
     """Run a blocking executor operation in the exact session context.
 
+    With ``record`` (a view's own call) the operation runs on the fleet whose
+    server drew that view while it lives (:func:`mcp_app_fleet.drawing_fleet`).
     A view's call arrives outside any turn, so the session is bound as the turn
     session too: an external server's call is then owned by the session's latest
-    assignment, as the call that opened the view was. With no turn there is no
+    assignment, as the call that opened the view was. A session that never ran a
+    turn has none, so the call records a settled one first
+    (:mod:`.assignment_anchor`). With no turn there is no
     Cancel, so the call is bound to ``request`` instead (:mod:`.view_call_cancel`).
+    Before the session's first turn after a restart, the host is built from the
+    session's own model first, as that turn would build it.
     """
+
+    from clio_agent.gact.session_host_agent import ensure_session_host  # noqa: PLC0415
+
+    await ensure_session_host(app, sid)
 
     def invoke() -> Any:
         token = gact_context.set_session_id(sid)
@@ -662,7 +685,7 @@ async def _run_bound(app: FastAPI, sid: str, operation: Any, *, request: Any = N
                 view_call_transcript.collecting(app, sid),  # never inside an open turn
                 call_origin.scope("view"),  # the server sees the view's call (FP-D7)
             ):
-                return operation(_bound_executor(app, sid))
+                return operation(_bound_executor(app, sid, record))
         finally:
             gact_context.reset(token)
 
@@ -693,7 +716,9 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
     from clio_agent.gact.mcp_app_routes import (  # noqa: PLC0415
         register_mcp_app_routes as register_routes,
     )
+    from clio_agent.gact.view_pending import register_view_pending_routes  # noqa: PLC0415
 
+    register_view_pending_routes(app)  # first: ``pending/{pid}`` before ``{app_id}/…``
     register_routes(app, deps)
     from clio_agent.gact.mcp_app_calls import register_mcp_app_reopen_routes  # noqa: PLC0415
 

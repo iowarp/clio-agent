@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import logging
@@ -13,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, cast
 from urllib.parse import urlsplit
 
+from clio_agent.tools import namespace_instances, shared_direct_connections
 from clio_agent.tools.launcher_cache_lock import (
     aacquire_launcher_cache_lock,
     uses_shared_launcher_cache,
@@ -70,8 +72,8 @@ class MCPClientProtocol(Protocol):
         """Call a tool and forward optional native progress notifications."""
         ...
 
-    async def read_resource(self, uri: str) -> Any:
-        """Read a resource from the backing server."""
+    async def read_resource(self, uri: str, *, meta: dict[str, Any] | None = None) -> Any:
+        """Read a resource from the backing server, with optional request ``_meta``."""
         ...
 
 
@@ -224,6 +226,68 @@ def _builtin_namespace_server(namespace: str) -> Any:
     return dict(builtin_servers()).get(namespace)
 
 
+def _held_error(name: str, namespace: str, proxy: Any, error: BaseException) -> Exception | None:
+    """A failed call on a connector's new server, typed with the open views holding the
+    superseded one (``mcp_namespace_instance_held``); ``None`` when none is retained."""
+
+    from clio_agent.errors import (  # noqa: PLC0415
+        MCP_NAMESPACE_INSTANCE_HELD,
+        MCPNamespaceInstanceHeldError,
+    )
+    from clio_agent.gact.external_tasks import SERVER_STOPPED_UNDER_CALL  # noqa: PLC0415
+
+    if proxy is None or str(error).startswith(SERVER_STOPPED_UNDER_CALL):
+        return None  # its own server stopped under it: the typed retry stands
+    views = namespace_instances.holding_views(proxy)
+    if not views:
+        return None
+    logger.warning(
+        "%s namespace=%s tool=%s views=%d error_type=%s",
+        MCP_NAMESPACE_INSTANCE_HELD,
+        namespace,
+        name,
+        len(views),
+        type(error).__name__,
+    )
+    return MCPNamespaceInstanceHeldError(name, namespace, views, f"{type(error).__name__}: {error}")
+
+
+def _with_held_note(result: Any, name: str, namespace: str, proxy: Any) -> Any:
+    """An error result from a connector's new server, with the open views holding its
+    superseded server named after the server's own failure.
+
+    The server's text stays first: the shown failure is its first text block, cut at
+    500 characters, and a held note first (W17, 2026-11) hid an ordinary failure of
+    the new server behind "close the view", which the failure was not about."""
+
+    import mcp_types  # noqa: PLC0415
+    import pydantic  # noqa: PLC0415
+
+    from clio_agent.errors import MCP_NAMESPACE_INSTANCE_HELD, held_by_views_text  # noqa: PLC0415
+
+    views = namespace_instances.holding_views(proxy)
+    content = getattr(result, "content", None)
+    if not views or not isinstance(content, list):
+        return result
+    logger.warning(
+        "%s namespace=%s tool=%s views=%d error_type=tool_error",
+        MCP_NAMESPACE_INSTANCE_HELD,
+        namespace,
+        name,
+        len(views),
+    )
+    note = mcp_types.TextContent(
+        type="text",
+        text=f"({MCP_NAMESPACE_INSTANCE_HELD}) {held_by_views_text(namespace, views)}",
+    )
+    blocks = [*content, note]
+    if dataclasses.is_dataclass(result) and not isinstance(result, type):
+        return dataclasses.replace(result, content=blocks)  # FastMCP's client result
+    if isinstance(result, pydantic.BaseModel):
+        return result.model_copy(update={"content": blocks})  # an MCP CallToolResult
+    return result
+
+
 class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
     """Async FastMCP execution boundary with no background thread.
 
@@ -282,6 +346,8 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         self._namespace_locks: dict[str, asyncio.Lock] = {}
         self._started = False
         self._closed = False
+        #: HS3 resource watches, by ``(namespace, uri)`` (:meth:`set_resource_subscription`).
+        self._resource_watches: dict[tuple[str, str], asyncio.Task[None]] = {}
         # #1201: per-server runtime record of the negotiated protocol era.
         self._connection_era: MCPConnectionEra | None = None
         self._namespace_connection_eras: dict[str, MCPConnectionEra] = {}
@@ -398,6 +464,11 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                         return _MCPCallOutcome(json.dumps(value), result, "shell")
                     namespace, _, bare = name.partition("_")
                     proxy = self._namespace_servers.get(namespace)
+                    if proxy is not None:
+                        # MI1: a sibling fleet's server of the same launch serves this one.
+                        proxy = namespace_instances.adopt(self, namespace, proxy)
+                    pool_owner = proxy  # the fleet's proxy: its direct connection stays open
+                    proxy_route = False
                     if proxy is None and bare and name in self._mcp_tools:
                         proxy = _builtin_namespace_server(namespace)
                     if proxy is not None:
@@ -405,8 +476,17 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                             namespace, self._clio_namespace_direct_factories
                         )
                         record_namespace_route_decision(namespace, decision)
+                        if (
+                            configured is not None
+                            and pool_owner is not None
+                            and not await namespace_instances.may_go_direct(self, namespace, proxy)
+                        ):
+                            configured = None  # its proxy backend still draws views (MI1)
                         if configured is None:
                             configured = self._client_factory(proxy)
+                            proxy_route = pool_owner is not None
+                        if pool_owner is not None:
+                            await namespace_instances.claim(self, namespace, proxy)
                         server, tool = namespace, bare
                         spec = getattr(self, "_clio_namespace_specs", {}).get(namespace, {})
                     else:
@@ -422,6 +502,21 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                     auth_scope = hashlib.sha256(
                         json.dumps(spec, sort_keys=True, default=str).encode()
                     ).hexdigest()
+                    end_proxy_call = (
+                        namespace_instances.begin_proxy_call(self, namespace)
+                        if proxy_route
+                        else None
+                    )
+                    end_call = (
+                        namespace_instances.begin_call(pool_owner)
+                        if pool_owner is not None
+                        else None
+                    )
+                    stopped_under = (
+                        namespace_instances.stop_begun_since(self, namespace)
+                        if pool_owner is not None
+                        else None
+                    )
                     try:
                         result = await app.state.external_tasks.call(
                             server,
@@ -430,6 +525,8 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                             dict(args),
                             auth_scope=auth_scope,
                             progress_handler=progress_handler,
+                            pool_owner=pool_owner,
+                            stopped_under=stopped_under,
                         )
                     except Exception as error:
                         self._namespace_call_failed(namespace if proxy is not None else None, error)
@@ -439,8 +536,20 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                             app, captured, spec, name, error
                         ):
                             return await product_call()  # the same call, set up again (CN5)
+                        held = _held_error(
+                            name, namespace, proxy if pool_owner is not None else None, error
+                        )
+                        if held is not None:
+                            raise held from error
                         raise
+                    finally:
+                        if end_proxy_call is not None:
+                            end_proxy_call()
+                        if end_call is not None:
+                            end_call()
                     self._namespace_succeeded(namespace if proxy is not None else None)
+                    if pool_owner is not None and getattr(result, "is_error", False):
+                        result = _with_held_note(result, name, namespace, proxy)
                     return _MCPCallOutcome(
                         _result_to_text(result), result, namespace if proxy is not None else None
                     )
@@ -509,11 +618,16 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
             client = await self._namespace_client(namespace, proxy)
         else:
             client = self._client
-        return await asyncio.wait_for(client.read_resource(uri), timeout=self._timeout)
+        from clio_agent.tools.request_locale import locale_meta  # noqa: PLC0415
+
+        meta = locale_meta()  # the person's language, when the request named one
+        read = client.read_resource(uri, meta=meta) if meta else client.read_resource(uri)
+        return await asyncio.wait_for(read, timeout=self._timeout)
 
     async def _connect_namespace(self, namespace: str, proxy: Any) -> Any:
         """Connect a declared namespace, retaining era, route and cache-lock evidence."""
         from clio_agent.tools import spawn_diet
+        from clio_agent.tools.mcp_server_instructions import record_connection_instructions
 
         specs: Mapping[str, Any] = getattr(self, "_clio_namespace_specs", None) or {}
         spec = specs.get(namespace)
@@ -521,14 +635,28 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
             getattr(self, "_clio_namespace_direct_factories", None) or {}
         )
         try:
-            direct_client, decision = resolve_and_build_direct_client(namespace, direct_factories)
+            # MI1: a sibling fleet's server of the same launch serves this one.
+            proxy = namespace_instances.adopt(self, namespace, proxy)
+            # A stdio transport composes its fence: off the loop every call shares.
+            direct_client, decision = await asyncio.to_thread(
+                resolve_and_build_direct_client, namespace, direct_factories
+            )
             record_namespace_route_decision(namespace, decision)
+            if direct_client is not None and not await namespace_instances.may_go_direct(
+                self, namespace, proxy
+            ):
+                direct_client = None  # its proxy backend still draws views (MI1)
+            await namespace_instances.claim(self, namespace, proxy)
             ctx = direct_client if direct_client is not None else self._client_factory(proxy)
+            hold = shared_direct_connections.holder() if direct_client is not None else None
+            if direct_client is not None and hold is None:
+                # No host holder on this loop (CLI, tests): this executor owns the connection.
+                logger.info("mcp_direct_namespace_unshared namespace=%s", namespace)
             if spec is not None and uses_shared_launcher_cache(spec):
-                async with aacquire_launcher_cache_lock(namespace):
-                    client = await enter_connection(ctx)
+                async with aacquire_launcher_cache_lock(namespace, spec=spec):
+                    client, ctx = await self._enter_namespace(namespace, proxy, ctx, spec, hold)
             else:
-                client = await enter_connection(ctx)
+                client, ctx = await self._enter_namespace(namespace, proxy, ctx, spec, hold)
         except Exception:
             spawn_diet.spawn_failed(namespace)
             raise
@@ -551,8 +679,27 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                 connect_mode=resolved_connect_mode(),
             )
         if direct_client is not None:
+            # The server's own connection: what it says about itself now.
+            record_connection_instructions(namespace, client)
             self._namespace_succeeded(namespace)
+        self._ensure_tools_watch(namespace)
+        self._ensure_resource_watches(namespace)
         return client
+
+    async def _enter_namespace(
+        self, namespace: str, proxy: Any, ctx: Any, spec: Any, hold: Any
+    ) -> tuple[Any, Any]:
+        """Enter ``ctx``, or hold the application's kept-alive direct connection instead.
+
+        Returns the connected client and the context to exit when the namespace closes.
+        """
+        if hold is None:
+            return await enter_connection(ctx), ctx
+        auth_scope = hashlib.sha256(
+            json.dumps(spec or {}, sort_keys=True, default=str).encode()
+        ).hexdigest()
+        client, release = await hold(namespace, auth_scope, proxy, ctx)
+        return client, shared_direct_connections.HeldConnection(release)
 
     async def _route(self, name: str) -> tuple[Any, str, str | None]:
         """Resolve one namespace; reject unknown names before composite discovery."""
@@ -655,6 +802,9 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
             return
         self._close_requested = True
         self._closed = True
+
+        await self._stop_resource_watches()
+        await self._stop_tools_watch()
 
         for namespace, ctx in list(self._namespace_ctxs.items()):
             try:

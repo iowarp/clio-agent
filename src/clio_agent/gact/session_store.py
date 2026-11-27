@@ -194,28 +194,40 @@ def _append_session_message(
     retain_message_sources(app, message)
 
 
-def restart_error_info(session_id: str, turn_id: str) -> "ErrorInfo":
-    """The typed reason a turn the restart interrupted carries (``server_restart_interrupted``)."""
+def restart_error_info(session_id: str, turn_id: str, *, resuming: bool = False) -> "ErrorInfo":
+    """The typed reason a turn the restart interrupted carries (``server_restart_interrupted``).
+
+    ``resuming``: the restart's recovery continues this turn by itself
+    (:mod:`clio_agent.gact.conversation_recovery`), so the row says so and is not
+    offered for retry, which would ask for the same work again (CC-O1).
+    """
 
     from clio_agent.gact.types import ErrorInfo  # noqa: PLC0415
 
+    details: dict[str, object] = {
+        "reason": "server_restart_interrupted",
+        "session_id": session_id,
+        "turn_id": turn_id,
+    }
+    if resuming:
+        details["resuming"] = True
     return ErrorInfo(
         error="server_restart_interrupted",
         message=(
             "The agent service restarted before this response completed. "
-            "Your request was preserved and can be retried."
+            + (
+                "It is continuing from where it stopped."
+                if resuming
+                else "Your request was preserved and can be retried."
+            )
         ),
-        details={
-            "reason": "server_restart_interrupted",
-            "session_id": session_id,
-            "turn_id": turn_id,
-        },
-        recoverable=True,
+        details=details,
+        recoverable=not resuming,
     )
 
 
 def _interrupted_assistant_row(
-    app: "FastAPI", session_id: str, last_user_message: "Message"
+    app: "FastAPI", session_id: str, last_user_message: "Message", *, resuming: bool = False
 ) -> "Message":
     """Build the typed interrupted-turn row a crashed-mid-turn session gets.
 
@@ -249,7 +261,7 @@ def _interrupted_assistant_row(
 
     now = time.time()
     turn_id = last_user_message.turn_id or last_user_message.id
-    error_info = restart_error_info(session_id, turn_id)
+    error_info = restart_error_info(session_id, turn_id, resuming=resuming)
 
     arc = getattr(app.state, "arc", None)
     recorded = arc is not None and getattr(arc, "_segments", None) is not None

@@ -6,6 +6,7 @@ import base64
 import hashlib
 import os
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any
@@ -87,18 +88,23 @@ class NDPDevice(DeviceAuthorization):
     """Keep the device credential private while retaining the complete verification link."""
 
 
-def begin(app: OAuthApplication, verifier: str) -> NDPDevice:
-    """Start the tested device flow with S256 instead of the AAI's non-PKCE wrappers."""
+def begin(app: OAuthApplication, verifier: str, *, extra_scopes: Sequence[str] = ()) -> NDPDevice:
+    """Start the tested device flow with S256 instead of the AAI's non-PKCE wrappers.
+
+    ``extra_scopes`` are scopes a plugin declares for its NDP account (HS4).
+    """
     challenge = (
         base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
     )
+    scopes = ["openid", "offline_access"]
+    scopes.extend(scope for scope in extra_scopes if scope not in scopes)
     try:
         with httpx.Client(timeout=30, follow_redirects=False, verify=system_tls()) as client:
             response = client.post(
                 app.authorize_url,
                 data={
                     "client_id": app.client_id,
-                    "scope": "openid offline_access",
+                    "scope": " ".join(scopes),
                     "code_challenge": challenge,
                     "code_challenge_method": "S256",
                 },

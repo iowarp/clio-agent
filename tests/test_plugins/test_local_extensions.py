@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 import zipfile
 from pathlib import Path
 
@@ -180,16 +181,18 @@ def test_snapshot_copy_failure_retires_partial_tree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = tmp_path / "source"
-    source.mkdir()
+    (source / "skills").mkdir(parents=True)
+    (source / "unfinished.md").write_text("partial")
+    (source / "skills" / "refused.md").write_text("refused")
     target = tmp_path / "snapshots" / "digest"
+    copy2 = shutil.copy2
 
-    def fail_copy(_source: str, staging: str, **_kwargs: object) -> None:
-        partial = Path(staging)
-        partial.mkdir(parents=True)
-        (partial / "unfinished.md").write_text("partial")
-        raise PermissionError("copy was refused")
+    def fail_copy(src: str, dst: str) -> object:
+        if src.endswith("refused.md"):
+            raise PermissionError("copy was refused")
+        return copy2(src, dst)
 
-    monkeypatch.setattr("clio_agent.plugins.store.shutil.copytree", fail_copy)
+    monkeypatch.setattr("clio_agent.plugins.store.shutil.copy2", fail_copy)
     with pytest.raises(PermissionError, match="refused"):
         _copy_tree(source, target)
     assert not target.exists()

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import html
 import json
 import logging
 from collections.abc import Callable, Mapping
@@ -16,6 +15,7 @@ from clio_agent.tools.file_policy import validate_read_path
 from clio_agent.tools.fs_edit import PreviousContent, capture_previous_content
 from clio_agent.tools.result_errors import structured_tool_result_error
 from clio_agent.tools.shell_spill_presentation import saved_output_blocks
+from clio_agent.tools.structured_reading import structured_markdown
 from clio_agent.tools.task_envelope import settled_tool_result
 
 logger = logging.getLogger(__name__)
@@ -197,7 +197,7 @@ def standard_mcp_presentation(result: Any) -> dict[str, Any]:
             {
                 "id": "structured-result",
                 "type": "markdown",
-                "text": _structured_markdown(_without_boundary(_structured(result))),
+                "text": structured_markdown(_without_boundary(_structured(result))),
             }
         )
     if failed and not blocks:
@@ -227,66 +227,6 @@ def _without_boundary(value: Mapping[str, Any]) -> Mapping[str, Any]:
     if isinstance(boundary, Mapping) and {"kind", "confidence", "message"} <= set(boundary):
         return {key: item for key, item in value.items() if key != "boundary"}
     return value
-
-
-def _structured_markdown(value: Mapping[str, Any]) -> str:
-    """Bound a literal data outline without inferring domain meaning or outcomes."""
-    lines: list[str] = []
-    omitted = False
-
-    def literal(text: str) -> str:
-        return "".join(
-            "\\" + char if char in r"\`*_{}[]()#+-.!|>" else char
-            for char in html.escape(text, quote=False)
-        )
-
-    def visit(item: Any, label: str, depth: int) -> None:
-        nonlocal omitted
-        if len(lines) >= 24:
-            omitted = True
-            return
-        if depth < 4 and isinstance(item, Mapping) and item:
-            for key, child in item.items():
-                if len(lines) >= 24:
-                    omitted = True
-                    break
-                name = str(key).replace("_", " ")
-                visit(
-                    child, f"{label} › {name}" if label else name[:1].upper() + name[1:], depth + 1
-                )
-            return
-        if depth < 4 and isinstance(item, list) and item:
-            for index, child in enumerate(item):
-                if len(lines) >= 24:
-                    omitted = True
-                    break
-                visit(child, f"{label} › {index + 1}", depth + 1)
-            return
-        if isinstance(item, (Mapping, list)):
-            text = f"{len(item)} {'fields' if isinstance(item, Mapping) else 'items'}"
-            omitted |= bool(item)
-        else:
-            text = (
-                "null"
-                if item is None
-                else "true"
-                if item is True
-                else "false"
-                if item is False
-                else str(item)
-            )
-        if len(text) > 1000 or len(label) > 160:
-            omitted = True
-        label = label.replace("\r", " ").replace("\n", " ")
-        lines.append(
-            f"- **{literal(label[:160])}:** {literal(text[:1000]).replace(chr(10), chr(10) + '  ')}"
-            + ("…" if len(text) > 1000 else "")
-        )
-
-    visit(value, "", 0)
-    if omitted:
-        lines.append("\nMore recorded values are available in Technical details.")
-    return "\n".join(lines)
 
 
 def legacy_standard_mcp_presentation(part: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -427,13 +367,21 @@ def _terminal(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, 
     row = _structured(settled_tool_result(result) or result)
     exit_code = row.get("exit_code")
     timed_out = bool(row.get("timed_out"))
+    limit = row.get("timeout_s")
     return {
         **(
             {"status": "failed"}
             if timed_out or isinstance(exit_code, int) and exit_code != 0
             else {}
         ),
-        "summary": "",
+        # The reply's own fact; a non-zero exit already shows as the terminal's exit code.
+        "summary": (
+            f"Timed out at its {limit:g} s limit"
+            if isinstance(limit, int | float) and limit > 0
+            else "Timed out"
+        )
+        if timed_out
+        else "",
         "blocks": [
             {
                 "id": "terminal",

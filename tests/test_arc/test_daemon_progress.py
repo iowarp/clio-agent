@@ -198,6 +198,30 @@ def test_process_work_without_io_counters_is_cpu_only(monkeypatch: pytest.Monkey
     assert work is not None and work > 0
 
 
+def test_process_work_counts_network_filesystem_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A server importing from an NFS home does little CPU work and no block-device I/O;
+    only the char counters (Linux) show it reading, so it is busy, not stuck.
+
+    **Sabotage:** sum only ``read_bytes``/``write_bytes`` -> the 3 MiB read is not seen.
+    """
+    from types import SimpleNamespace
+
+    reads = {"chars": 0}
+
+    def counters(_self: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            read_bytes=0, write_bytes=0, read_chars=reads["chars"], write_chars=0
+        )
+
+    monkeypatch.setattr(psutil.Process, "io_counters", counters, raising=False)
+    pid = psutil.Process().pid
+    before = process_work(pid)
+    reads["chars"] = 3 << 20
+    after = process_work(pid)
+    assert before is not None and after is not None
+    assert after - before >= 3.0
+
+
 def test_tree_work_measures_only_the_awaited_tree(
     child_procs: list[subprocess.Popen[str]],
 ) -> None:

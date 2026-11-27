@@ -24,6 +24,31 @@ _TASKS = {
 }
 _STRING = {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None}
 _TIMEOUT = {"anyOf": [{"type": "number", "minimum": 0}, {"type": "null"}], "default": None}
+_QUESTION_OPTION = {
+    "type": "object",
+    "properties": {
+        "label": {"type": "string", "description": "The option's own words, without markers."},
+        "value": {"type": "string", "description": "Answer value; defaults to the label."},
+        "description": {"type": "string", "description": "What choosing it means."},
+        "recommended": {
+            "type": "boolean",
+            "default": False,
+            "description": "The option you recommend. At most one per single choice.",
+        },
+    },
+    "required": ["label"],
+}
+_BUNDLE_QUESTION = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string", "description": "Stable id: letters, digits, _ or -."},
+        "question": {"type": "string"},
+        "kind": {"type": "string", "enum": ["freeform", "choice", "confirmation"]},
+        "options": {"type": "array", "items": _QUESTION_OPTION},
+        "allowFreeform": {"type": "boolean", "default": False},
+    },
+    "required": ["id", "question"],
+}
 TASK_TOOL_NAMES = frozenset(
     {
         "query_tasks",
@@ -267,7 +292,7 @@ def build_task_tools() -> list[Any]:
                 "timeout_s": _TIMEOUT,
                 "interrupt_on_mail": {"type": "boolean", "default": True},
             },
-            "Collect independent task outcomes. With return_when='any', a member error is an available outcome; other handles remain explicitly pending and continue running. task_state_uncertain requires inspection, not repeated waits for the same receipt. Default wait is unbounded; zero snapshots; positive expiry or Stop ends only this waiter. By default, authorized messages or answers return interrupted=mail_received with pending tasks so you can coordinate before waiting again. Set interrupt_on_mail=false to wait only for task outcomes; task-result notices alone do not interrupt all.",
+            "Collect independent task outcomes. Tasks that have not finished are listed in unfinished with their own recorded status, such as running or queued, and activity; they continue. With return_when='any', a member error is an available outcome; other handles stay in unfinished. task_state_uncertain requires inspection, not repeated waits for the same receipt. Default wait is unbounded; zero snapshots; positive expiry or Stop ends only this waiter. By default, authorized messages or answers return interrupted=mail_received with the unfinished tasks so you can coordinate before waiting again. Set interrupt_on_mail=false to wait only for task outcomes; task-result notices alone do not interrupt all.",
             read=True,
         ),
         _tool(
@@ -441,7 +466,7 @@ def build_ask_user_tool(agent_def: Any = None) -> Any:
         {
             "question": {"type": "string"},
             "questions": {
-                "anyOf": [{"type": "array", "items": {"type": "object"}}, {"type": "null"}],
+                "anyOf": [{"type": "array", "items": _BUNDLE_QUESTION}, {"type": "null"}],
                 "default": None,
                 "description": "Optional bundle of questions with stable ids; all answers submit together.",
             },
@@ -451,7 +476,7 @@ def build_ask_user_tool(agent_def: Any = None) -> Any:
                 "default": "freeform",
             },
             "options": {
-                "anyOf": [{"type": "array", "items": {"type": "object"}}, {"type": "null"}],
+                "anyOf": [{"type": "array", "items": _QUESTION_OPTION}, {"type": "null"}],
                 "default": None,
             },
             "allow_freeform": {"type": "boolean", "default": True},
@@ -478,7 +503,7 @@ def build_ask_user_tool(agent_def: Any = None) -> Any:
                 "description": "Released alias for allow_freeform; retained for one compatibility cycle.",
             },
         },
-        "Post a durable Question and return its handle immediately. Continue independent work; wait_tasks(handle) explicitly waits for the answer. Stop leaves it open; cancel_tasks dismisses it. For visual context, create a surface first and pass surface_id. Only answer_action submits its answer; other controls remain ordinary feedback.",
+        "Post a durable Question and return its handle immediately. Continue independent work; wait_tasks(handle) explicitly waits for the answer. Stop leaves it open; cancel_tasks dismisses it. To recommend an option, set recommended=true on it; the card marks it. Never write Recommended or a similar marker into a label or description. For visual context, create a surface first and pass surface_id. Only answer_action submits its answer; other controls remain ordinary feedback.",
     )
 
 

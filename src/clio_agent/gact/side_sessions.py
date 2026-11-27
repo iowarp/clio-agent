@@ -83,6 +83,21 @@ def policy_deny_reason(mode: str) -> str:
     return REASON_READ_ONLY_SIDE_SESSION if mode == READ_ONLY_POLICY_MODE else "policy_deny"
 
 
+def policy_deny_source(mode: str, mode_lock_message: str, by_rule: bool) -> str:
+    """What blocked a call, as the person reads it after "Denied"; never the person.
+
+    A non-empty ``mode_lock_message`` means the mode's built-in lock decided it under
+    ``mode``; otherwise a permission rule (``by_rule``) or the tool's default did.
+    """
+
+    if mode_lock_message and policy_deny_reason(mode) == REASON_READ_ONLY_SIDE_SESSION:
+        return "this conversation is read-only"
+    if mode_lock_message:
+        # ``architect`` is how the person's "Deep research" choice runs.
+        return "plan mode blocked it" if mode == "plan" else "Deep research blocked it"
+    return "a permission rule blocked it" if by_rule else "its default permission blocked it"
+
+
 #: Typed refusal of a write route on a read-only side session.
 REFUSAL_SIDE_SESSION_READ_ONLY = "side_session_read_only"
 

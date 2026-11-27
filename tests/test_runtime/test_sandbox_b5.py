@@ -2,8 +2,7 @@
 
 Host-agnostic unit coverage (the deny-mode real-egress + fenced proofs run in the WSL live
 gate). Covers the write-root grant registry + its live ``effective_write_roots`` propagation,
-the deny-mode CONNECT gate on the chokepoint, and the fleet namespace→serving-child map that
-completes the deferred B4 WRITER (#978 pt 5).
+the deny-mode CONNECT gate on the chokepoint.
 """
 
 from __future__ import annotations
@@ -14,16 +13,14 @@ import threading
 import pytest
 
 from clio_agent.runtime import net_chokepoint as nc
-from clio_agent.runtime import sandbox_net, sandbox_roots
+from clio_agent.runtime import sandbox_roots
 
 
 @pytest.fixture(autouse=True)
 def _clean_registries():
     sandbox_roots.clear_write_root_grants()
-    sandbox_net.clear_namespace_children()
     yield
     sandbox_roots.clear_write_root_grants()
-    sandbox_net.clear_namespace_children()
 
 
 # --------------------------------------------------------------------------- #
@@ -156,20 +153,3 @@ def test_gate_that_raises_fails_open() -> None:
         cp.stop()
         nc.set_egress_gate(None)
         upstream.close()
-
-
-# --------------------------------------------------------------------------- #
-# Fleet namespace → serving child map (the deferred B4 WRITER, #979.7)
-# --------------------------------------------------------------------------- #
-
-
-def test_namespace_child_register_and_resolve(tmp_path) -> None:
-    root = str(tmp_path / "ws")
-    sandbox_net.register_namespace_child(root, "geo", "child_geo")
-    assert sandbox_net.resolve_namespace_child(root, "geo") == "child_geo"
-    # Workspace-scoped: another workspace's identically-named namespace does not collide.
-    assert sandbox_net.resolve_namespace_child(str(tmp_path / "other"), "geo") == ""
-    # Empty child / namespace are no-ops (floor / built-in namespace).
-    sandbox_net.register_namespace_child(root, "ndp", "")
-    assert sandbox_net.resolve_namespace_child(root, "ndp") == ""
-    assert sandbox_net.resolve_namespace_child(root, "") == ""

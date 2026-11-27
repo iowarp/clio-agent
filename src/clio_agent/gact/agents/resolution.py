@@ -7,10 +7,13 @@ A session freezes its resolved plugin set at start (``plugins-and-composition.md
 * ``agent_delta`` -- plugins added or removed inside this live session;
 * ``agent_resolution`` -- the digest of the pinned :class:`Resolution`.
 
-Parent updates and newly installed plugin versions reach the next session.
+Parent updates reach the next session. A newly installed version of a plugin the
+session holds moves an open session onto it once it resolves
+(:mod:`clio_agent.gact.plugin_update_follow`); a session not open moves when opened.
 Adding or removing a plugin inside a live session reruns stage 2 and pins the
 new result (:func:`pin_session_agent`). A defined subagent's child session pins
-its own resolution, computed from the parent's.
+its own resolution, computed from the parent's. A pin's MCP servers start from each
+plugin's installed copy, never an older one (:mod:`clio_agent.plugins.installed_servers`).
 
 Every function here is a query or an explicit pin; nothing falls back silently.
 A session whose agent cannot resolve fails with the typed resolution errors.
@@ -463,11 +466,15 @@ def supplied_server_values(
     session's workspace. An incomplete handoff is traced, not hidden; the
     server reads the problems from the file it was given.
     ``${CLIO_SOURCE_RANGE_ORIGIN}`` is the loopback prefix of the byte-range route.
+    ``${CLIO_SAVED_SSH_CONFIG}`` is the OpenSSH config file of this CLIO's saved SSH
+    hosts; without an infrastructure store it is not supplied, so its ``:-`` default
+    applies.
     """
 
     from clio_agent.plugins.servers import (  # noqa: PLC0415
         PROVENANCE_CONFIG_VAR,
         RANGE_ORIGIN_VAR,
+        SAVED_SSH_CONFIG_VAR,
         references_variable,
     )
 
@@ -477,6 +484,11 @@ def supplied_server_values(
         from clio_agent.gact.storage.range_handles import range_origin  # noqa: PLC0415
 
         values[RANGE_ORIGIN_VAR] = range_origin(app)
+    if references_variable(specs, SAVED_SSH_CONFIG_VAR):
+        store = getattr(getattr(app, "state", None), "infrastructure_store", None)
+        path = store.saved_ssh_config_path() if store is not None else None
+        if path is not None:
+            values[SAVED_SSH_CONFIG_VAR] = str(path)
     if not references_variable(specs, PROVENANCE_CONFIG_VAR):
         return values
     from clio_agent.gact.provenance.handoff import write_provenance_handoff  # noqa: PLC0415
@@ -514,6 +526,10 @@ def session_server_set(app: Any, session_id: str) -> str:
         servers = mounted_servers(app, session_id, session_resolution(app, session_id))
     except SessionAgentUnavailable:
         return ""
+    from clio_agent.plugins.installed_servers import follow_installed  # noqa: PLC0415
+
+    store = plugin_service(app).store
+    servers = follow_installed(servers, store.installed_records(), store.trusted)
     if not servers:
         return ""
     supplied = supplied_server_values(

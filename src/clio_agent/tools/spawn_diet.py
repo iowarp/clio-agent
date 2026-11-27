@@ -492,13 +492,17 @@ def diet_transport_args(
         return None
     merged_env = {**env, **plan["env"]}
     argv = plan["argv"]
+    key = _plan_key(resolved_command, spec_args)
     with _scan_lock:
-        _applied_plans[spec_name] = _plan_key(resolved_command, spec_args)
+        changed = _applied_plans.get(spec_name) != key
+        _applied_plans[spec_name] = key
         # Keep the pending registration: if this dieted spawn fails to
         # connect, spawn_failed drops the plan and the declared respawn
         # relearns through the same connect hook.
         _pending_learns[spec_name] = (spec_name, resolved_command, spec_args)
-    trace.event("TOOLS", "mcp_spawn_diet applied server=%s argv0=%s", spec_name, argv[0])
+    if changed:
+        # A launch description is built per routed call; nothing spawns until a connect.
+        trace.event("TOOLS", "mcp_spawn_diet applied server=%s argv0=%s", spec_name, argv[0])
     return argv[0], argv[1:], merged_env
 
 

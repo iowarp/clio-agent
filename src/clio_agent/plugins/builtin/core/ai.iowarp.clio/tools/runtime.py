@@ -21,7 +21,9 @@ plan_enter = native_tool("plan_enter")
 plan_update = native_tool("plan_update")
 plan_exit = native_tool("plan_exit")
 write_todos = native_tool("write_todos")
-create_artifact = native_tool("create_artifact")
+# Listed, not deferred: designation is the only way a file the agent makes becomes an
+# artifact the person can open (#966.1), so its schema must be in every turn's tool list.
+create_artifact = native_tool("create_artifact", defer=False)
 raise_alert_card = native_tool("raise_alert_card")
 recall_context = native_tool("recall_context")
 load_skill = native_tool("load_skill")

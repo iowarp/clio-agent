@@ -111,7 +111,9 @@ async def test_addressed_mail_interrupts_without_consuming_or_settling(
         result = await asyncio.wait_for(waiter, 10)
         assert result["interrupted"] == "mail_received" and result["timed_out"] is False
         assert result["outcomes"] == []
-        assert set(result["pending"]) == {task.handle for task in value.tasks}
+        assert {row["handle"] for row in result["unfinished"]} == {
+            task.handle for task in value.tasks
+        }
         assert await asyncio.to_thread(value.mail.interrupting_input, value.caller) == (item.id,)
         for task in value.tasks:
             current = await asyncio.to_thread(value.history.task_snapshot, task.handle)
@@ -137,7 +139,7 @@ async def test_outcome_only_wait_ignores_mail_and_collects_both_actual_results(
         assert not waiter.done()
         await asyncio.to_thread(finish, value.history, value.tasks[1])
         result = await asyncio.wait_for(waiter, 10)
-        assert result["pending"] == [] and "interrupted" not in result
+        assert result["unfinished"] == [] and "interrupted" not in result
         assert len(result["outcomes"]) == 2
     finally:
         waiter.cancel()
@@ -162,7 +164,7 @@ async def test_partial_completion_notice_does_not_interrupt_all_but_peer_mail_do
         await send(value)
         result = await asyncio.wait_for(waiter, 10)
         assert result["interrupted"] == "mail_received"
-        assert result["pending"] == [value.tasks[1].handle]
+        assert [row["handle"] for row in result["unfinished"]] == [value.tasks[1].handle]
         assert result["outcomes"][0]["status"] == "completed"
     finally:
         waiter.cancel()
@@ -252,7 +254,7 @@ async def test_other_recipient_and_failed_send_cannot_interrupt(arc: ARCMemory) 
     try:
         await asyncio.to_thread(finish, value.history, value.tasks[0])
         result = await asyncio.wait_for(waiter, 10)
-        assert not result["pending"] and "interrupted" not in result
+        assert not result["unfinished"] and "interrupted" not in result
     finally:
         waiter.cancel()
         await asyncio.gather(waiter, return_exceptions=True)

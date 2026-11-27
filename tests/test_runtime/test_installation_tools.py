@@ -74,7 +74,11 @@ def test_windows_layout_uses_the_exe_launcher(
 def test_adopted_folder_clears_the_degraded_launcher_and_finds_its_interpreter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The #739 symptom: ``mcp_launcher:clio-kit`` degraded on a desktop install."""
+    """The #739 symptom: ``mcp_launcher:clio-kit`` degraded on a desktop install.
+
+    The installation's own clio-kit is found whether or not its folder is on PATH
+    (:mod:`clio_agent.runtime.managed_launchers`).
+    """
 
     prefix = tmp_path / "data" / "app"
     bin_dir = _kit(prefix)
@@ -99,6 +103,6 @@ def test_adopted_folder_clears_the_degraded_launcher_and_finds_its_interpreter(
     adopt_installation_tools()
     after = probe_mcp_launchers(specs=specs)
 
-    assert [item.name for item in before] == ["mcp_launcher:clio-kit"]
+    assert before == []
     assert after == []
     assert launcher_interpreter(str(bin_dir / "clio-kit")) == str(tool_python)

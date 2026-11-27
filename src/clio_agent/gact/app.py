@@ -61,10 +61,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from clio_agent import conf
 from clio_agent.arc import loop_guard
-from clio_agent.gact import boot_timing, composer_runtime, server_boot
+from clio_agent.gact import boot_timing, composer_runtime, host_semantics_boot, server_boot
 from clio_agent.gact.auth import configure_bearer_auth
 from clio_agent.gact.cors import gact_cors_origins as _gact_cors_origins
 from clio_agent.gact.error_middleware import install_error_envelope, install_typed_error_handlers
+from clio_agent.gact.protocol.json_charset import install_json_charset
 from clio_agent.gact.protocol.negotiation import install_protocol_negotiation
 from clio_agent.gact.runtime.rework_state import initialize_a2ui_store, initialize_session_defaults
 from clio_agent.gact.semantic_events import (
@@ -73,6 +74,7 @@ from clio_agent.gact.semantic_events import (
 )
 from clio_agent.prompts import PromptRegistry, PromptSource
 from clio_agent.runtime import asyncio_wait_release, trace
+from clio_agent.tools import request_locale
 
 logger = logging.getLogger(__name__)
 
@@ -665,6 +667,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # The direct Codex provider owns one durable credential file,
     # not a spawned CLI's scratch home, so there is nothing here for it to reap.
     await server_boot.prepare_protection(app, windows=sys.platform == "win32")
+    server_boot.wire_egress_policy(app)  # before any agent path can spawn a fenced child
     # The shipped default marketplace installs off the loop (server_boot.start_plugin_sync).
     server_boot.start_plugin_sync(app)
 
@@ -764,6 +767,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         # binding above is the backstop. The owner helper never raises.
         _agent = getattr(app.state, "agent", None)
         await desktop_lifecycle.finalize_desktop_shutdown(app, _agent)
+        server_boot.unwire_egress_policy(app)
         if task_cleanup_errors:
             raise BaseExceptionGroup("Task runtime cleanup failed", list(task_cleanup_errors))
 
@@ -779,11 +783,10 @@ async def _construct_agent_async(app: "FastAPI") -> None:
     """
 
     loop = asyncio.get_running_loop()
-    # Construction starts before the executor build: ARC initialization and relay
-    # surface discovery import production dependencies too. Keep the entire startup
-    # boundary typed. A missing dependency or relay discovery failure must not leave
-    # a server that advertises provider readiness while every turn returns the vague
-    # ``not_configured`` state.
+    # Construction starts before the executor build: ARC initialization imports
+    # production dependencies too. Keep the entire startup boundary typed. A missing
+    # dependency must not leave a server that advertises provider readiness while
+    # every turn returns the vague ``not_configured`` state.
     try:
         # The ONE per-process ARC, injected so the agent never mints its own (no per-build
         # ARC churn / trace ⊋ ARC split). Built on a worker thread (server_boot): a clio-core
@@ -955,6 +958,7 @@ def build_app(
 
     install_protocol_negotiation(app)
     asyncio_wait_release.install()  # a pooled MCP session never keeps a tool call's turn
+    request_locale.install(app)  # a plugin server hears the person's X-Clio-Locale
 
     configure_bearer_auth(app)
 
@@ -1499,6 +1503,7 @@ def build_app(
     register_browser_routes(app)  # the shared tab: pages, live view, allowing a host
     composer_runtime.register_composer_routes(app, deps)
     register_a2ui_routes(app, deps)
+    host_semantics_boot.install(app)  # HS1 server surfaces, HS3 plugin tab routes
 
     # ---- /v1/agent-tasks + /v1/sessions/{sid}/agent-tasks (#948 S2 / #950) ----
     # The AgentTask projection read + cancel routes, over
@@ -1628,6 +1633,7 @@ def build_app(
     from clio_agent.gact.web_mount import mount_web_ui  # noqa: PLC0415
 
     mount_web_ui(app, _web_dir())
+    install_json_charset(app)
 
     return app
 

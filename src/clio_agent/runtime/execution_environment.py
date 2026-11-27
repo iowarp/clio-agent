@@ -109,17 +109,32 @@ def shell_environment(
     """Return only this process's verified workspace binding, never workspace input.
 
     ``TMPDIR``/``TEMP``/``TMP`` point at the session's own scratch folder (TD56) when a
-    session owns the call (``session_id``, else the active one); ``UV_CACHE_DIR`` and
-    ``CLIO_DOCUMENT_SCRATCH`` stay on the workspace scratch. ``read_only`` says the
-    caller's fence grants only scratch and temp (a plan-mode kernel); ``None`` reads the
-    active tool's mode.
+    session owns the call (``session_id``, else the active one), through a short link when
+    that folder is too deep for a unix socket; ``UV_CACHE_DIR`` and
+    ``CLIO_DOCUMENT_SCRATCH`` stay on the workspace scratch. A uv cache too deep for its
+    packages' native libraries or entry-point ``#!`` lines moves to a short stand-in
+    (``short_uv_cache``). Both go through ``session_scratch.short_root``, with each OS's
+    own limits.
+    ``read_only`` says the caller's fence grants only scratch and temp (a plan-mode
+    kernel); ``None`` reads the active tool's mode.
     """
     with _LOCK:
         environment = dict(_ENVIRONMENTS.get(workspace.resolve(), {}))
     environment.update(_session_temp(session_id))
+    from clio_agent.runtime import session_scratch  # noqa: PLC0415
+
+    # The uv cache comes from the real scratch folder, before TMPDIR takes its socket link.
     environment.update(_clio_tools(environment, workspace, read_only=read_only))
+    environment.update(session_scratch.socket_safe_temp(environment))
+    if cache := environment.get("UV_CACHE_DIR"):
+        short = session_scratch.short_uv_cache(Path(cache))
+        if short != Path(cache):
+            environment["UV_CACHE_DIR"] = str(short)
     _bundled_git(environment)
     environment.update(_without_command_line_tools_stubs(environment))
+    from clio_agent.runtime.fence_ssh import fence_ssh_environment  # noqa: PLC0415
+
+    environment.update(fence_ssh_environment(environment))
     path = environment.get("PATH", os.environ.get("PATH", ""))
     if shutil.which("gh", path=path):
         return environment

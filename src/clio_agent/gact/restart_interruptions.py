@@ -207,6 +207,9 @@ class RestartInterruptions:
 def _close_transcript(app: "FastAPI", session_id: str, messages: Optional[list["Message"]]) -> bool:
     """Append the interrupted-turn row after a dangling user message; settle the record."""
 
+    from clio_agent.gact.conversation_recovery import (  # noqa: PLC0415 - import cycle
+        resumes_after_restart,
+    )
     from clio_agent.gact.session_store import (  # noqa: PLC0415 - import cycle
         _interrupted_assistant_row,
         _replace_session_messages,
@@ -214,6 +217,7 @@ def _close_transcript(app: "FastAPI", session_id: str, messages: Optional[list["
     )
 
     sessions = app.state.sessions
+    resuming = resumes_after_restart(app, session_id)
     try:
         if messages is None:
             messages = _read_transcript(app, session_id)
@@ -221,7 +225,7 @@ def _close_transcript(app: "FastAPI", session_id: str, messages: Optional[list["
         last = durable[-1] if durable else None
         closing = None
         if last is not None and last.role == "user":
-            closing = _interrupted_assistant_row(app, session_id, last)
+            closing = _interrupted_assistant_row(app, session_id, last, resuming=resuming)
             durable.append(closing)
         elif last is not None and last.role == "assistant" and last.stop_reason == "incomplete":
             # The turn's own sealed parts are the last row: it keeps them as they are,
@@ -231,7 +235,9 @@ def _close_transcript(app: "FastAPI", session_id: str, messages: Optional[list["
             closing = _with_unrecorded_calls(app, session_id, last).model_copy(
                 update={
                     "stop_reason": "error",
-                    "error_info": restart_error_info(session_id, last.turn_id or last.id),
+                    "error_info": restart_error_info(
+                        session_id, last.turn_id or last.id, resuming=resuming
+                    ),
                 }
             )
             durable[-1] = closing

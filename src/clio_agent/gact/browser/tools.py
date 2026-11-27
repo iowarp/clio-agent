@@ -17,6 +17,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from clio_agent.gact.browser import files
+from clio_agent.gact.browser.presence import resolve
 from clio_agent.gact.browser.service import PageRecord, service
 from clio_agent.gact.browser.settings import BrowserError
 from clio_agent.gact.browser.targets import describe, locator_for
@@ -177,7 +178,7 @@ def browser_snapshot(page: str, target: Any = None, boxes: bool = False) -> dict
     app, record = _record(page)
 
     async def snap(r: PageRecord) -> str:
-        root = locator_for(r.page, target) if target else r.page.locator("body")
+        root = await resolve(r.page, target) if target else r.page.locator("body")
         return await root.aria_snapshot(mode="ai", boxes=bool(boxes))
 
     text = service().run(record, "snapshot", snap)
@@ -192,7 +193,10 @@ def browser_read(page: str, target: Any, what: str, name: str | None = None) -> 
         raise BrowserError("browser_argument_invalid", "reading an attribute needs its name")
 
     async def read(r: PageRecord) -> Any:
-        locator = locator_for(r.page, target)
+        if what in {"count", "visible"}:  # answered now, for no element too
+            locator = locator_for(r.page, target)
+            return await (locator.count() if what == "count" else locator.is_visible())
+        locator = await resolve(r.page, target)
         if what == "text":
             return await locator.inner_text()
         if what == "inner_html":
@@ -201,12 +205,8 @@ def browser_read(page: str, target: Any, what: str, name: str | None = None) -> 
             return await locator.input_value()
         if what == "attribute":
             return await locator.get_attribute(str(name))
-        if what == "count":
-            return await locator.count()
         if what == "box":
             return await locator.bounding_box()
-        if what == "visible":
-            return await locator.is_visible()
         return await locator.is_checked()
 
     value = service().run(record, f"read {what} {describe(target)}".strip(), read)
@@ -270,7 +270,7 @@ def _act_work(
             return
         if target is None:
             raise BrowserError("browser_argument_invalid", f"{action} needs a target")
-        locator = locator_for(page, target)
+        locator = await resolve(page, target)
         if action in {"fill", "type", "press"}:
             await _refuse_password(locator)
         if action == "fill":
@@ -288,7 +288,7 @@ def _act_work(
         elif action == "upload":
             await locator.set_input_files(files_to_upload)
         elif action == "drag_to":
-            await locator.drag_to(locator_for(page, value))
+            await locator.drag_to(await resolve(page, value))
         elif action == "scroll":
             await locator.scroll_into_view_if_needed()
         else:
@@ -354,7 +354,7 @@ def browser_screenshot(page: str, target: Any = None, full_page: bool = False) -
 
     async def shoot(r: PageRecord) -> None:
         if target is not None:
-            await locator_for(r.page, target).screenshot(path=str(path))
+            await (await resolve(r.page, target)).screenshot(path=str(path))
         else:
             await r.page.screenshot(path=str(path), full_page=bool(full_page))
 

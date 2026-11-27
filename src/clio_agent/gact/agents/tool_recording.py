@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents import skill_runtime as _skill_runtime
-from clio_agent.tools.result_errors import structured_tool_result_error
+from clio_agent.tools.result_errors import observed_value, structured_tool_result_error
 
 if TYPE_CHECKING:
     from clio_agent.gact.types import AgentDef
@@ -58,7 +58,7 @@ def recording_tool(tool: Any) -> Any:
         result: Any,
     ) -> None:
         tool_error = structured_tool_result_error(result)
-        row_result = _bounded_tool_call_result(result)
+        row_result = _bounded_tool_call_result(observed_value(result))
         if rows is not None:
             row = {
                 "name": name,

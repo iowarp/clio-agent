@@ -90,3 +90,25 @@ def test_the_connection_context_keeps_only_the_waits_server_tree() -> None:
         mcp_server_progress._SERVER_TREE.reset(token)
 
     assert dict(context) == {mcp_server_progress._SERVER_TREE: tree}
+
+
+def test_a_connection_opened_outside_a_wait_measures_its_own_server() -> None:
+    """Its discover probe can then tell a starting server from a stuck one."""
+    context = mcp_server_progress.connection_context()
+
+    tree = context[mcp_server_progress._SERVER_TREE]
+    assert isinstance(tree, mcp_server_progress.ProcessTreeWork)
+    assert tree.roots == ()
+
+
+def test_a_connect_binds_a_tree_only_outside_a_wait() -> None:
+    assert mcp_server_progress._SERVER_TREE.get() is None
+    token = mcp_server_progress.bind_connection_tree()
+    try:
+        bound = mcp_server_progress._SERVER_TREE.get()
+        assert isinstance(bound, mcp_server_progress.ProcessTreeWork)
+        assert mcp_server_progress.bind_connection_tree() is None
+        assert mcp_server_progress._SERVER_TREE.get() is bound
+    finally:
+        mcp_server_progress.release_connection_tree(token)
+    assert mcp_server_progress._SERVER_TREE.get() is None

@@ -35,7 +35,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from clio_agent.connectors import entries as entries_mod
-from clio_agent.connectors import listing, materialize, secrets, state
+from clio_agent.connectors import listing, materialize, outside_sandbox, secrets, state
 from clio_agent.connectors import refresh as saved_copy
 from clio_agent.connectors.entries import Entry, Need
 from clio_agent.connectors.overlay import value_problem
@@ -180,8 +180,51 @@ def unreachable_reason(found: Entry, declared: Mapping[str, Any], detail: str) -
     return f"{found.name} could not be started or reached: {detail[:300]}"
 
 
+async def _live_tools(
+    app: Any, found: Entry, declared: Mapping[str, Any]
+) -> list[dict[str, Any]] | None:
+    """The tools of the server the conversations run for ``found``'s ``declared``
+    connection now, read over that same process (``None`` when none runs), so a check
+    never starts a second server beside it. Joining a start in flight has no limit of
+    its own (its connect reports stalls); the listing itself has ``PROBE_SECONDS``."""
+
+    from clio_agent.gact.connector_rebind import live_owners  # noqa: PLC0415
+
+    app_state = getattr(app, "state", None)
+    external = getattr(app_state, "external_tasks", None)
+    agent = getattr(app_state, "agent", None)
+    if external is None or agent is None:
+        return None
+    owners = live_owners(agent, found.id, declared)
+    if not owners:
+        return None
+
+    async def read() -> list[Any] | None:
+        client = await external.live_client(found.id, owners)
+        if client is None:
+            return None
+        return list(await asyncio.wait_for(client.list_tools(), PROBE_SECONDS))
+
+    loop = getattr(app_state, "mcp_app_loop", None)
+    if loop is None or asyncio.get_running_loop() is loop:
+        tools = await read()
+    else:
+        tools = await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(read(), loop))
+    if tools is None:
+        return None
+    trace.event("TOOLS", "connector_probe_live_server connector=%s", found.id)
+    return [tool.model_dump(mode="json", by_alias=True, exclude_none=True) for tool in tools]
+
+
 async def probe(app: Any, found: Entry, choice: state.Choice, *, force: bool = False) -> dict:
-    """List the connector's tools once (cached until its configuration changes)."""
+    """List the connector's tools once (cached until its configuration changes).
+
+    When a conversation's server of this exact connection runs (or is starting), it
+    answers: the namespace never has a second server alive beside it (one with a node
+    slot or a scene would lose it). Only otherwise is a server started to check it.
+    """
+
+    from mcp.shared.exceptions import MCPError  # noqa: PLC0415
 
     from clio_agent.gact.routes.mcp_configuration import (  # noqa: PLC0415
         _probe_user_mcp_server,
@@ -192,12 +235,35 @@ async def probe(app: Any, found: Entry, choice: state.Choice, *, force: bool = F
     if cached and cached["key"] == key and not force:
         return cached
     declared = materialize.resolved(found, choice.values)
-    try:
-        tools, error = await asyncio.wait_for(
-            _probe_user_mcp_server(declared, details=True), PROBE_SECONDS
-        )
-    except TimeoutError:
-        tools, error = [], f"timed out after {int(PROBE_SECONDS)} s"
+    live, error = None, None
+    for attempt in range(2):
+        try:
+            live = await _live_tools(app, found, declared)
+        except TimeoutError:
+            live, error = None, f"timed out after {int(PROBE_SECONDS)} s"
+            break
+        except (MCPError, OSError, RuntimeError, ValueError, LookupError) as exc:
+            # The running server's own failure is the check's outcome. But a read whose
+            # kept-alive connection was retired under it (the server's calls moved to its
+            # proxy route) is no answer at all, so it reads once more first.
+            live, error = None, f"{type(exc).__name__}: {exc}"
+            if attempt == 0:
+                trace.event("TOOLS", "connector_probe_live_retry connector=%s", found.id)
+                continue
+        else:
+            error = None
+        break
+    if live is not None:
+        tools: list[Any] = live
+    elif error is not None:
+        tools = []
+    else:
+        try:
+            tools, error = await asyncio.wait_for(
+                _probe_user_mcp_server(declared, details=True), PROBE_SECONDS
+            )
+        except TimeoutError:
+            tools, error = [], f"timed out after {int(PROBE_SECONDS)} s"
     result: dict[str, Any] = {"key": key, "tool_count": None, "status": "ready", "reason": None}
     if error is None:
         result["tool_count"] = len(listing.offered(found.id, list(tools)))
@@ -269,6 +335,8 @@ def row(app: Any, found: Entry, choice: state.Choice | None = None) -> dict[str,
         "kit": found.kit or None,
         # What must already be on this machine, in words (LZ-O4, SL-D8).
         "requires": found.requires or None,
+        # What its server starts outside the sandbox, and the person's decision on it.
+        "outside_sandbox": outside_sandbox.wire(found.id),
         "enabled": choice.enabled,
         "plugin": _plugin(records, found),
         # What a conversation's plugin picker adds for this connector (CN9 *Amended*).
@@ -313,8 +381,12 @@ def publish_changed(app: Any, connector_id: str, sessions: list[str]) -> None:
         )
 
 
-async def apply(app: Any, found: Entry) -> dict[str, Any]:
-    """Apply the connector's current choices everywhere (CN7) and return its row."""
+async def apply(app: Any, found: Entry, *, keep_if_unchanged: bool = False) -> dict[str, Any]:
+    """Apply the connector's current choices everywhere (CN7) and return its row.
+
+    ``keep_if_unchanged``: the connector was on already, so when its saved connection is
+    unchanged the running servers keep running (see below).
+    """
 
     from clio_agent.gact.connector_follow import follow_in_open_sessions  # noqa: PLC0415
     from clio_agent.gact.connector_rebind import rebind_namespace  # noqa: PLC0415
@@ -324,14 +396,36 @@ async def apply(app: Any, found: Entry) -> dict[str, Any]:
 
     choice = state.choice(found.id)
     if choice.enabled:
+        before = await asyncio.to_thread(saved_connection, found.id)
         saved = await asyncio.to_thread(save_connection, found, choice)
-        await _refresh_agent_tool_gateway(app)
+        # Reloading the saved configuration rebuilds every workspace's servers at their
+        # next idle point, which drops each conversation's server state (an open scene,
+        # a notebook kernel). Enabling a connector that is on already (its setup card
+        # answered again) reloads it only when its saved connection changed; the rebind
+        # below gives running servers any new values in place.
+        declaration_changed = not (
+            keep_if_unchanged
+            and before is not None
+            and before == await asyncio.to_thread(saved_connection, found.id)
+        )
+        if declaration_changed:
+            await _refresh_agent_tool_gateway(app)
+        else:
+            trace.event("TOOLS", "connector_apply_unchanged connector=%s", found.id)
+        cached = _probes(app).get(found.id)
+        checked = (
+            not declaration_changed
+            and cached is not None
+            and cached.get("status") == "ready"
+            and cached.get("key") == _probe_key(found, choice)
+        )
         agent = getattr(app.state, "agent", None)
         steps: list[Coroutine[Any, Any, Any]] = []
         relist_failed: dict[str, str] = {}
         if agent is not None:
             steps.append(asyncio.to_thread(rebind_namespace, agent, found.id, saved, relist_failed))
-        if not any(need.kind != "sign-in" for need in missing(found, choice)):
+        # A server already checked under these exact choices is not started again to check it.
+        if not checked and not any(need.kind != "sign-in" for need in missing(found, choice)):
             steps.append(probe(app, found, choice, force=True))
         # The running servers' rebind and the probe are separate processes: run them
         # together, so a value change costs one server start, not two in a row.
@@ -340,6 +434,24 @@ async def apply(app: Any, found: Entry) -> dict[str, Any]:
             _relist_failed(app, found, choice, saved, relist_failed)
     sessions = await asyncio.to_thread(follow_in_open_sessions, app)
     publish_changed(app, found.id, sessions)
+    return row(app, found, state.choice(found.id))
+
+
+async def take_back_outside_sandbox(app: Any, connector_id: str) -> dict[str, Any]:
+    """Forget the person's decision: the server runs fenced again, and is asked anew."""
+
+    from clio_agent.gact.connector_outside import restart_servers  # noqa: PLC0415
+
+    found = entry(connector_id)
+    if not found.outside_sandbox:
+        raise ConnectorError(
+            "connector_not_outside_sandbox", "This connector's server runs only in the sandbox"
+        )
+    was_allowed = outside_sandbox.allowed(found.id)
+    await asyncio.to_thread(outside_sandbox.forget, found.id)
+    if was_allowed:
+        await asyncio.to_thread(restart_servers, app, found.id, "outside_sandbox_taken_back")
+    publish_changed(app, found.id, [])
     return row(app, found, state.choice(found.id))
 
 
@@ -425,8 +537,9 @@ async def enable(app: Any, connector_id: str) -> dict[str, Any]:
                 f"A saved connection named {found.id!r} already exists. Remove it first.",
                 409,
             )
+    was_enabled = state.choice(found.id).enabled
     await asyncio.to_thread(state.update, found.id, enabled=True)
-    return await apply(app, found)
+    return await apply(app, found, keep_if_unchanged=was_enabled)
 
 
 async def disable(app: Any, connector_id: str) -> dict[str, Any]:

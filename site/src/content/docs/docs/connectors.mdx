@@ -412,13 +412,15 @@ can ask the agent to show a change without saving it.
 
 Brings a skill for working with scenes and the server that opens your data in ParaView
 and shows it in a live view in a tab. It needs ParaView 6.0 or later where ParaView
-runs. Its server has three settings, all optional, and the agent can set each:
+runs. Its server has five settings, all optional, and the agent can set each:
 
 | Row | What to enter |
 |---|---|
 | **Where ParaView runs** | Empty for this machine. Otherwise an SSH host name, including an alias from your `~/.ssh/config`. |
 | **Jump host** | A host to go through, when your SSH configuration does not already give one. |
 | **Command to run first** | A line that puts `pvpython` on the path, for example `module load paraview`. |
+| **ParaView server to join** | A running `pvserver` as `host:port`, for example the local port a relay service gives for a job's `pvserver`. Empty joins one on port 11111 where ParaView runs, if there is one. |
+| **ParaView version** | The ParaView to fetch for this machine when none is installed. It must match the server it joins, for example `5.13.1`. |
 
 On this machine, CLIO looks for `pvpython` after running the first command. If there is
 none, the first scene request says so and tells the agent how to point ParaView at

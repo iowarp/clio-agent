@@ -26,7 +26,6 @@ The current driver matrix is explicit:
 | SearXNG | Windows/Linux/macOS with uv, within the native driver's architecture constraints | None |
 | CLIO Web Search | Windows/Linux/macOS gateway with a private native SearXNG backend; optional document processing uses a supplied GROBID service | Docker, Podman or Apptainer |
 | Flowcept / HPE CMF | Linux x86-64 application with managed native databases or site database settings | Existing hybrid application/container database stack remains selectable |
-| CLIO Relay | Released uv tool | None |
 | Remote CLIO | Published bootstrap on a Linux SSH host | None |
 
 CPU container availability is not the same as native Linux support: the image runs

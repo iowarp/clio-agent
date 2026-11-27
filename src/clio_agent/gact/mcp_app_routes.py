@@ -14,6 +14,7 @@ from urllib.parse import urlencode
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from clio_agent.gact import view_pending
 from clio_agent.gact.file_view_routes import register_file_view_routes
 from clio_agent.gact.mcp_app_calls import set_saved_display_mode
 from clio_agent.gact.mcp_app_cleanup import _cleanup_record
@@ -90,6 +91,7 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
                 record.source_namespace,
                 record.resource_uri,
             ),
+            record=record,
         )
         html, csp, permissions = _resource_payload(result)
         record.html = html
@@ -97,8 +99,19 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
         record.permissions = permissions
 
     @app.get("/v1/sessions/{sid}/mcp-apps/{app_id}")
-    async def get_mcp_app(sid: str, app_id: str, data_ref: str, request: Request) -> JSONResponse:
+    async def get_mcp_app(sid: str, app_id: str, data_ref: str, request: Request) -> Any:
         record = resolve(sid, app_id, data_ref)
+        return await view_pending.respond(
+            app,
+            request,
+            sid,
+            "descriptor",
+            lambda _cancel: _descriptor(record, request, sid, app_id, data_ref),
+        )
+
+    async def _descriptor(
+        record: MCPAppRecord, request: Request, sid: str, app_id: str, data_ref: str
+    ) -> JSONResponse:
         try:
             await ensure_resource(record)
         except (RuntimeError, ValueError) as exc:
@@ -157,26 +170,24 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
             },
         )
 
-    @app.post("/v1/sessions/{sid}/mcp-apps/{app_id}/tools/call")
-    async def call_mcp_app_tool(
-        sid: str, app_id: str, data_ref: str, request: Request
+    async def _view_tool_call(
+        record: MCPAppRecord,
+        ids: tuple[str, str],
+        requested: str,
+        arguments: dict[str, Any],
+        cancel: Any,
     ) -> dict[str, Any]:
-        record = resolve(sid, app_id, data_ref)
-        body = await json_body(request, route="POST MCP App tools/call")
-        requested = str(body.get("name") or "").strip()
-        arguments = body.get("arguments") or {}
-        if not requested or not isinstance(arguments, Mapping):
-            raise HTTPException(status_code=422, detail="name and object arguments are required")
+        sid, app_id = ids
 
         def call(executor: Any) -> Any:
             full_name = _resolve_app_tool(executor, record, requested)
             # A tool only the view sees keeps a record, not its content (MC-F3).
             definition = executor.get_all_tool_definitions().get(full_name)
             with view_only_results.scope(full_name, definition):
-                return executor.call_tool_result(full_name, dict(arguments))
+                return executor.call_tool_result(full_name, arguments)
 
         try:
-            result = await _run_bound(app, sid, call, request=request)
+            result = await _run_bound(app, sid, call, request=cancel, record=record)
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         wire, dropped = strip_service_declaration(call_tool_result_to_wire(result))
@@ -184,22 +195,43 @@ def register_mcp_app_routes(app: FastAPI, deps: GactDeps) -> None:
             record_service_reason("service_declaration_ignored", app_instance_id=app_id)
         return wire
 
+    @app.post("/v1/sessions/{sid}/mcp-apps/{app_id}/tools/call")
+    async def call_mcp_app_tool(sid: str, app_id: str, data_ref: str, request: Request) -> Any:
+        record = resolve(sid, app_id, data_ref)
+        body = await json_body(request, route="POST MCP App tools/call")
+        requested = str(body.get("name") or "").strip()
+        arguments = body.get("arguments") or {}
+        if not requested or not isinstance(arguments, Mapping):
+            raise HTTPException(status_code=422, detail="name and object arguments are required")
+        return await view_pending.respond(
+            app,
+            request,
+            sid,
+            "tools/call",
+            lambda cancel: _view_tool_call(
+                record, (sid, app_id), requested, dict(arguments), cancel
+            ),
+        )
+
     @app.post("/v1/sessions/{sid}/mcp-apps/{app_id}/resources/read")
-    async def read_mcp_app_resource(
-        sid: str, app_id: str, data_ref: str, request: Request
-    ) -> dict[str, Any]:
+    async def read_mcp_app_resource(sid: str, app_id: str, data_ref: str, request: Request) -> Any:
         record = resolve(sid, app_id, data_ref)
         body = await json_body(request, route="POST MCP App resources/read")
         uri = str(body.get("uri") or "").strip()
         if not uri:
             raise HTTPException(status_code=422, detail="uri is required")
-        result = await _run_bound(
-            app,
-            sid,
-            lambda executor: executor.read_resource(record.source_namespace, uri),
-            request=request,
-        )
-        return read_resource_result_to_wire(result)
+
+        async def read(cancel: Any) -> dict[str, Any]:
+            result = await _run_bound(
+                app,
+                sid,
+                lambda executor: executor.read_resource(record.source_namespace, uri),
+                request=cancel,
+                record=record,
+            )
+            return read_resource_result_to_wire(result)
+
+        return await view_pending.respond(app, request, sid, "resources/read", read)
 
     register_app_context_and_tool_routes(app, resolve)
     register_app_look_routes(app, resolve)

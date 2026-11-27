@@ -14,7 +14,6 @@ name the child (no timing heuristic).
 from __future__ import annotations
 
 import logging
-import threading
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
@@ -27,104 +26,6 @@ logger = logging.getLogger(__name__)
 
 #: The loopback host every confined child reaches the chokepoint on (clio-private).
 _LOOPBACK_HOST = "127.0.0.1"
-
-
-# --------------------------------------------------------------------------- #
-# Fleet namespace → serving child map (B5 #979.7 — the deferred B4 WRITER).
-# --------------------------------------------------------------------------- #
-#
-# A confined MCP-fleet proxy is ONE persistent child per (workspace, namespace): its
-# ``net_child_id`` is minted at ``transport_for`` (proxy build) and is stable for the child's
-# life. The gact tool-observer mints the ``call_id`` on a DIFFERENT thread and only knows the
-# tool NAME (``<namespace>_<tool>``), so this runtime-layer registry bridges the two: the
-# spawn seam registers ``(workspace_root, namespace) -> net_child_id`` here, and the observer
-# resolves it to call ``register_serving_child(app, call_id, net_child_id)`` — completing the
-# ``egress -> child -> call-window -> transform`` join (#978 pt 5). Keyed by workspace_root +
-# namespace (NOT process-global by namespace alone), so two workspaces' identically-named
-# namespaces never cross-attribute; the fleet child is workspace-shared, so a workspace key is
-# the child's real scope (a session key would be too narrow — sessions share the child). A
-# rebuilt gateway overwrites the entry with the fresh child; the floor leaves it empty
-# (net_child_id="" → the observer no-ops → the mint abstains: precision preserved).
-_NAMESPACE_CHILD: dict[tuple[str, str], str] = {}
-_NAMESPACE_CHILD_LOCK = threading.Lock()
-
-
-def _ns_key(workspace_root: Optional[str], namespace: str) -> tuple[str, str]:
-    root = ""
-    if workspace_root:
-        try:
-            root = str(Path(workspace_root).expanduser().resolve(strict=False))
-        except OSError:
-            root = str(Path(workspace_root).expanduser())
-    return root, (namespace or "").strip()
-
-
-def register_namespace_child(
-    workspace_root: Optional[str], namespace: str, net_child_id: str
-) -> None:
-    """Associate a fleet namespace's persistent confined child with its ``net_child_id`` (B5).
-
-    No-op for an empty ``net_child_id`` (the floor / unfenced case) or empty ``namespace``.
-    """
-    child = (net_child_id or "").strip()
-    ns = (namespace or "").strip()
-    if not child or not ns:
-        return
-    with _NAMESPACE_CHILD_LOCK:
-        _NAMESPACE_CHILD[_ns_key(workspace_root, ns)] = child
-
-
-def resolve_namespace_child(workspace_root: Optional[str], namespace: str) -> str:
-    """Return the confined ``net_child_id`` serving ``namespace`` in ``workspace_root``, or ``""``."""
-    ns = (namespace or "").strip()
-    if not ns:
-        return ""
-    with _NAMESPACE_CHILD_LOCK:
-        return _NAMESPACE_CHILD.get(_ns_key(workspace_root, ns), "")
-
-
-def clear_namespace_children() -> None:
-    """Drop all namespace→child associations (test isolation seam)."""
-    with _NAMESPACE_CHILD_LOCK:
-        _NAMESPACE_CHILD.clear()
-
-
-def close_namespace_children(workspace_root: Optional[str]) -> int:
-    """Close + drop every per-child net channel serving ``workspace_root`` (#1033).
-
-    The stop half of a drain-aware fleet restart: when a workspace's resident fleet is
-    torn down (reaped for idle/LRU, or restarted to pick up a widened write territory), its
-    per-child chokepoint listeners must go with it — otherwise they leak toward the bounded
-    ``_MAX_CHILD_CHANNELS`` cap (the previously-UNWIRED :func:`close_child_channel` seam). Pops
-    each ``(root, namespace) -> net_child_id`` entry for the root and closes that specific
-    channel by id (compare-and-close is unnecessary here because the pop removes exactly the
-    ids we then close; a subsequent lazy respawn registers fresh ids). Returns the count of
-    channels closed. Guarded per channel with a typed reason — a close error never leaves a
-    half-popped registry.
-    """
-    root = _ns_key(workspace_root, "")[0]
-    if not root:
-        return 0
-    with _NAMESPACE_CHILD_LOCK:
-        keys = [key for key in _NAMESPACE_CHILD if key[0] == root]
-        children = [_NAMESPACE_CHILD.pop(key) for key in keys]
-    if not children:
-        return 0
-    from clio_agent.runtime.net_chokepoint import close_child_channel  # noqa: PLC0415
-
-    closed = 0
-    for child in children:
-        try:
-            close_child_channel(child)
-        except Exception as exc:  # noqa: BLE001 — a channel-close error is typed, never silent
-            logger.warning(
-                "net child channel close skipped reason=net_child_close_failed child=%s error=%r",
-                child,
-                exc,
-            )
-            continue
-        closed += 1
-    return closed
 
 
 def net_mechanism_label(state: "SandboxResult") -> str:
@@ -151,21 +52,30 @@ def net_mechanism_label(state: "SandboxResult") -> str:
 
 
 def open_child_egress(
-    state: "SandboxResult", write_roots: Sequence[Path] | Sequence[str]
+    state: "SandboxResult",
+    write_roots: Sequence[Path] | Sequence[str],
+    *,
+    workspace_root: Path | str | None = None,
 ) -> tuple[str, Optional[int], dict[str, str]]:
     """Open a per-child chokepoint channel for a confined child (B4). Guarded, typed.
 
     Returns ``(child_id, port, env_overlay)``. ``port`` is ``None`` when no channel could be
     opened — the fence still composes; egress falls back to the shared unattributed listener
-    (a typed reason, never a silent hole), and ``env_overlay`` is empty. Otherwise the overlay
+    (a typed reason, never a silent hole), and ``env_overlay`` is empty, except on an enforcing
+    Linux fence, where it names a closed upstream so the child stays offline. Otherwise the overlay
     points ``HTTP(S)_PROXY``/``ALL_PROXY`` at the per-child channel (the child's route to the
     chokepoint on the floor/Landlock tier; srt overrides it inside the sandbox but the port
     identity is the per-child one). The channel carries the tier's honest net mechanism and
-    the child's primary write territory so the ``used web:domain@time`` join can scope by
-    workspace without a timing heuristic.
+    the child's workspace (``workspace_root``, else its first write root) so deny mode, approvals
+    and the ``used web:domain@time`` join scope by workspace without a timing heuristic. The
+    first write root is often a session scratch folder, which belongs to no workspace.
     """
     child_id = f"child_{uuid.uuid4().hex[:12]}"
-    workspace_root = str(write_roots[0]) if write_roots else ""
+    if workspace_root:
+        workspace_root = str(workspace_root)
+    else:
+        workspace_root = str(write_roots[0]) if write_roots else ""
+    port: Optional[int] = None
     try:
         from clio_agent.runtime.net_chokepoint import open_child_channel  # noqa: PLC0415
 
@@ -178,22 +88,57 @@ def open_child_egress(
             child_id,
             exc,
         )
-        return "", None, {}
     if not port:
-        return "", None, {}
-    proxy_url = f"http://{_LOOPBACK_HOST}:{port}"
+        return "", None, _closed_upstream(state)
+    overlay = _proxy_overlay(f"http://{_LOOPBACK_HOST}:{port}")
+    if _linux_proxy_fence(state):
+        # Codex's proxy passes only public hosts on; the SSH helper reaches the rest through
+        # the relay tunnel CLIO's chokepoint answers itself (see net_connect).
+        from clio_agent.runtime.fence_service import FENCE_CHILD_VARIABLE  # noqa: PLC0415
+        from clio_agent.runtime.net_connect import RELAY_AUTHORITY, RELAY_VARIABLE  # noqa: PLC0415
+
+        overlay[RELAY_VARIABLE] = RELAY_AUTHORITY
+        # The child's own network namespace is found by this mark, to reach a port it declares.
+        overlay[FENCE_CHILD_VARIABLE] = child_id
+    return child_id, port, overlay
+
+
+def _linux_proxy_fence(state: "SandboxResult") -> bool:
+    """Whether ``state`` is the Linux fence whose network leaves only through the proxy."""
+    from clio_agent.runtime.sandbox import NET_ENFORCEMENT_PROXY  # noqa: PLC0415
+
+    details = state.details if isinstance(state.details, dict) else {}
+    return details.get("net_enforcement") == NET_ENFORCEMENT_PROXY and str(
+        details.get("platform", "")
+    ).startswith("linux")
+
+
+def _closed_upstream(state: "SandboxResult") -> dict[str, str]:
+    """Without a channel, keep an enforcing Linux fence closed instead of letting Codex dial out.
+
+    Codex's managed proxy connects directly when it has no upstream, which would turn a
+    chokepoint failure into unrecorded egress. Pointing it at a port nobody listens on makes
+    every tunnel fail instead. Other tiers keep the old behavior (no overlay).
+    """
+    if not _linux_proxy_fence(state):
+        return {}
+    logger.warning("egress channel unavailable: the Linux fence keeps the child offline")
+    return _proxy_overlay(f"http://{_LOOPBACK_HOST}:{_CLOSED_PORT}")
+
+
+#: The TCP discard port: nothing listens on it, so every proxied connection is refused.
+_CLOSED_PORT = 9
+
+
+def _proxy_overlay(proxy_url: str) -> dict[str, str]:
     overlay: dict[str, str] = {}
     for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
         overlay[key] = proxy_url
         overlay[key.lower()] = proxy_url
-    return child_id, port, overlay
+    return overlay
 
 
 __all__ = [
-    "clear_namespace_children",
-    "close_namespace_children",
     "net_mechanism_label",
     "open_child_egress",
-    "register_namespace_child",
-    "resolve_namespace_child",
 ]

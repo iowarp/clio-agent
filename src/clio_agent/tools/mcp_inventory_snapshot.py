@@ -31,6 +31,8 @@ class WorkspaceMcpSnapshot:
     namespaces: dict[str, dict[str, Any]] = field(default_factory=dict)
     reason: str = ""
     detail: str = ""
+    #: The fleet read: its key (:mod:`clio_agent.tools.fleet_key`), or ``default``.
+    fleet: str = ""
 
     @property
     def degraded(self) -> dict[str, str] | None:
@@ -41,19 +43,26 @@ class WorkspaceMcpSnapshot:
         return {"reason": self.reason, "detail": self.detail}
 
 
-def _degraded(reason: str, detail: str) -> WorkspaceMcpSnapshot:
-    return WorkspaceMcpSnapshot(reason=reason, detail=detail)
+def _degraded(reason: str, detail: str, fleet: str = "") -> WorkspaceMcpSnapshot:
+    return WorkspaceMcpSnapshot(reason=reason, detail=detail, fleet=fleet)
 
 
-def workspace_mcp_snapshot(agent: Any, root: str) -> WorkspaceMcpSnapshot:
+#: The ``fleet`` of a snapshot read off the default executor (no fleet key).
+DEFAULT_FLEET = "default"
+
+
+def workspace_mcp_snapshot(agent: Any, fleet: str) -> WorkspaceMcpSnapshot:
     """Return resident MCP namespace state without creating or starting a fleet.
 
     This function deliberately reads the executor cache directly: calling the
     normal resolver would create a fleet and turn an Infrastructure page view
-    into a runtime lifecycle mutation. ``root`` is canonicalized through the same
-    helper the fleet registry keys with, so a workspace whose ``root_path`` is
-    spelled differently (``~``, trailing separator, forward slashes on Windows)
-    still finds its own executor.
+    into a runtime lifecycle mutation. ``fleet`` is the key of the fleet serving
+    the conversation (a workspace root, or a root with the variant of a fleet of
+    its own); it is canonicalized through the same helper the fleet registry keys
+    with, so a workspace whose ``root_path`` is spelled differently (``~``,
+    trailing separator, forward slashes on Windows) still finds its own executor.
+    ``""`` reads the default executor, which serves a workspace without a root
+    folder.
 
     NOTE: this takes ``ClioAgent._workspace_executor_lock``, a ``threading.Lock``
     a live turn can hold. Async callers must run it on a worker thread.
@@ -71,18 +80,19 @@ def workspace_mcp_snapshot(agent: Any, root: str) -> WorkspaceMcpSnapshot:
             FLEET_INTERFACE_DRIFT,
             f"agent._workspace_tool_executors is {type(executors).__name__}, expected dict",
         )
-    key = canonical_workspace_root(root)
+    key = canonical_workspace_root(fleet)
+    label = key or DEFAULT_FLEET
     with lock:
-        executor = executors.get(key)
+        executor = executors.get(key) if key else getattr(agent, "tool_executor", None)
         if executor is None:
             return _degraded(
-                FLEET_NOT_STARTED,
-                f"no resident tool executor for workspace root {key or '<unbound>'}",
+                FLEET_NOT_STARTED, f"no resident tool executor for fleet {label}", label
             )
         if getattr(executor, "closed", False):
             return _degraded(
                 FLEET_CLOSED,
-                f"the resident fleet for {key} was closed; it rebuilds on the next tool call",
+                f"the resident fleet {label} was closed; it rebuilds on the next tool call",
+                label,
             )
         try:
             # Hard attribute access, not a ``getattr(..., default)``: every real
@@ -91,7 +101,9 @@ def workspace_mcp_snapshot(agent: Any, root: str) -> WorkspaceMcpSnapshot:
             namespaces = tuple(executor.namespaces())
             prepared = executor.is_namespace_prepared
         except AttributeError as exc:
-            return _degraded(FLEET_INTERFACE_DRIFT, f"resident executor is missing {exc}")
+            return _degraded(
+                FLEET_INTERFACE_DRIFT, f"resident executor {label} is missing {exc}", label
+            )
         return WorkspaceMcpSnapshot(
             namespaces={
                 namespace: {
@@ -99,5 +111,6 @@ def workspace_mcp_snapshot(agent: Any, root: str) -> WorkspaceMcpSnapshot:
                     "tools": [name for name in names if name.startswith(f"{namespace}_")],
                 }
                 for namespace in namespaces
-            }
+            },
+            fleet=label,
         )

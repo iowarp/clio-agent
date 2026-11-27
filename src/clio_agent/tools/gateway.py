@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextvars
 import functools
 import inspect
 import logging
@@ -132,6 +133,7 @@ def _proxy_for_spec(
         _mirror_front_era_mode,
     )
 
+    from clio_agent.plugins.host_semantics import spec_a2ui_catalogs  # noqa: PLC0415
     from clio_agent.tools.mcp_connection_era import instrument_client_era  # noqa: PLC0415
     from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
 
@@ -141,6 +143,7 @@ def _proxy_for_spec(
         capabilities=capabilities,
         client_cls=ProxyClient,
         list_changed_namespace=spec.name,
+        a2ui_catalogs=spec_a2ui_catalogs(spec),
     )
 
     def _client_factory() -> Any:
@@ -172,11 +175,19 @@ def _proxy_for_spec(
 
     # Surface upstream connection failures and close the shared backend only
     # when its owning proxy lifetime ends, after all borrowed call clients exit.
-    return FastMCPProxy(
+    proxy = FastMCPProxy(
         client_factory=_client_factory,
         provider_error_strategy="raise",
         lifespan=owned_transport_lifespan(transport),
     )
+    if spec.transport == "stdio":
+        from clio_agent.tools import namespace_instances  # noqa: PLC0415
+
+        # One live server of this connector per folder (MI1); fleets share one launch.
+        launch = namespace_instances.launch_key(spec, cwd)
+        owner = namespace_instances.connector_owner(spec)
+        namespace_instances.register(proxy, spec.name, cwd, transport, launch, owner)
+    return proxy
 
 
 def _proxy_factory_accepts_cwd(factory: Callable[..., FastMCP]) -> bool:
@@ -237,14 +248,6 @@ def build_gateway(
         capabilities: Optional client-capability declaration (#1111) forwarded to
             the default proxy factory so each declared server's backend advertises
             it. Ignored when ``proxy_factory`` is supplied.
-            reserved ``remote`` namespace. Its bare server names are mounted back
-            into the exact relay aliases ``remote_<ns>_<tool>``.
-
-            reserved jarvis namespace.
-            A2: register/bootstrap/status/session/proxy over the local clio-relay
-            CLI) mounted under the reserved relay_ops namespace.
-            retained on the gateway for diagnostics even when only part of the relay
-            surface could be mounted.
 
     Returns:
         The gateway with the built-ins and declared proxies mounted.
@@ -266,7 +269,9 @@ def build_gateway(
     else:
         make_proxy = _proxy_for_spec
     accepts_cwd = _proxy_factory_accepts_cwd(make_proxy)
-    from clio_agent.tools import hidden_tools, mcp_task_routing  # noqa: PLC0415
+    from clio_agent.tools import hidden_tools, mcp_task_routing, mount_failures  # noqa: PLC0415
+
+    mount_failures.ensure_root(cwd, declared_specs)
 
     # Attached to the gateway object (not a module map keyed by id(gw)): it
     # dies with the gateway, id-reuse cannot alias a stale registry, and a
@@ -303,18 +308,15 @@ def build_gateway(
             existing.add(name)
             registry[name] = proxy
             specs_registry[name] = spec
-            # #1281 F9 (adversarial review): an INJECTED proxy_factory (tests:
-            # an in-process double with no real transport behind the spec)
-            # means `spec` may not honestly describe how to reach this
-            # namespace directly -- skip stamping a factory built from
-            # transport_for(spec) rather than mount one that would silently
-            # dial something the test never intended.
+            mount_failures.clear(cwd, name)
+            # #1281 F9: an INJECTED proxy_factory (a test double) may not describe how
+            # to reach this namespace directly, so no direct factory is stamped for it.
             if proxy_factory is None:
                 direct_factories[name] = mcp_task_routing.direct_client_factory(
                     spec, spec_cwd, handlers=handlers, capabilities=capabilities, namespace=name
                 )
         except Exception as exc:  # noqa: BLE001 - non-fatal: log + skip a bad server
-            logger.warning("failed to mount declared MCP %r: %s", name, exc)
+            mount_failures.record(cwd, name, exc)
     gw._clio_namespace_proxies = registry  # type: ignore[attr-defined]
     gw._clio_namespace_specs = specs_registry  # type: ignore[attr-defined]
     gw._clio_namespace_direct_factories = direct_factories  # type: ignore[attr-defined]
@@ -567,8 +569,9 @@ def _run_coro_sync(factory: Callable[[], Any]) -> Any:
         asyncio.get_running_loop()
     except RuntimeError:
         return run_in_new_loop(factory())
+    context = contextvars.copy_context()  # the pool thread sees this call's turn and stop
     with concurrent.futures.ThreadPoolExecutor() as pool:
-        return pool.submit(lambda: run_in_new_loop(factory())).result()
+        return pool.submit(context.run, lambda: run_in_new_loop(factory())).result()
 
 
 def _list_tools_sync(gw: FastMCP) -> list[Any]:
@@ -616,6 +619,7 @@ def _list_declared_tools(
     library-side logger; this reaches CLIO's trace instead. Best-effort,
     never affects ``listed`` itself.
     """
+    from clio_agent.tools.call_cancellation import until_cancelled  # noqa: PLC0415
     from clio_agent.tools.mcp_header_mismatch import (  # noqa: PLC0415
         trace_dropped_x_mcp_header_tools,
     )
@@ -640,7 +644,12 @@ def _list_declared_tools(
                 with suppress(Exception):
                     await disconnect()
 
-    return _run_coro_sync(lambda: wait_while_server_works(_list(), op_name=f"list {spec.name}"))
+    return _run_coro_sync(
+        lambda: until_cancelled(
+            wait_while_server_works(_list(), op_name=f"list {spec.name}"),
+            stage=f"list {spec.name}",
+        )
+    )
 
 
 def _namespace_of(tool_name: str) -> str:

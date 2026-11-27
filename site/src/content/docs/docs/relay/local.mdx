@@ -1,0 +1,61 @@
+---
+title: Local
+description: Run jobs, commands and services on the computer relay runs on. Use it to try relay without a cluster, or on a login node where relay itself is installed.
+---
+
+import Capture from '../../../../components/overview/Capture';
+import { captureImage } from '../../../../lib/captures';
+import localAdd from '../../../../assets/captures/relay/local-add.png';
+import localAddPhone from '../../../../assets/captures/relay/local-add-phone.png';
+
+The **Local** protocol runs work on the computer relay itself runs on. It needs no
+sign-in and no network.
+
+It takes all five tools: `describe`, `run`, `exec`, `files` and `serve`.
+
+Use it to try relay before you add a cluster, to let the agent run longer jobs on your
+own computer with relay's records and cancel, or on a cluster's login node where you
+run relay directly. The [Worker](/docs/relay/worker/) protocol runs Local on the
+cluster for you.
+
+## Add a Local endpoint
+
+On the [Compute page](/docs/compute/), choose **Add endpoint**, fill in **Your own**
+with an **Endpoint ID** such as `laptop`, choose the **Local** tab, and choose **Add
+endpoint**. It needs no settings.
+
+From a terminal:
+
+```sh
+clio-relay site add laptop --adapter local --policy open --spend never
+```
+
+<Capture client:visible image={await captureImage(localAdd)}
+  alt="The output of clio-relay site add laptop --adapter local, an open endpoint with no address"
+  caption="A Local endpoint needs no settings."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(localAddPhone)}
+  alt="The output of clio-relay site add laptop --adapter local, an open endpoint with no address, on a phone-width terminal"
+  sizes="(min-width: 50rem) 24rem, 100vw" />
+
+## Settings
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `scheduler` | `auto` | `auto` picks the scheduler whose submit command is on `PATH`. `none` runs jobs directly. |
+| `work_dir` | relay's state folder | Where job folders go |
+| `submit_timeout_s` | 60 | How long one scheduler submit may take |
+
+## How a job runs
+
+Where the computer has a batch scheduler, such as Slurm on a login node, relay writes
+the submit script and submits it, and checks the job with the scheduler's own status
+command.
+
+With no scheduler, the job runs under a small detached supervisor that writes the
+job's state, output and exit code to its folder. The job keeps running if relay
+restarts, and any relay that starts later can follow it or cancel it.
+
+`exec` runs one command as a list of arguments, with no shell, and returns up to
+64 KiB of its output unless the call asks for more.

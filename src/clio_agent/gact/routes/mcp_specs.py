@@ -16,7 +16,7 @@ from clio_agent.gact.agents.resolution import (
     session_server_set,
 )
 from clio_agent.tools.mcp_config import MCPServerSpec, unreadable_mcp_yaml_snapshot
-from clio_agent.tools.mcp_inventory_snapshot import WorkspaceMcpSnapshot, workspace_mcp_snapshot
+from clio_agent.tools.mcp_inventory_snapshot import workspace_mcp_snapshot
 from clio_agent.tools.mcp_redaction import redact_mcp_spec
 from clio_agent.tools.workspace_mcp_trust import (
     WORKSPACE_MCP_UNTRUSTED,
@@ -25,30 +25,56 @@ from clio_agent.tools.workspace_mcp_trust import (
 
 
 def declared_mcp_specs(
-    app: Any, cwd: Path | None = None, *, session_id: str = ""
+    app: Any,
+    cwd: Path | None = None,
+    *,
+    session_id: str = "",
+    taken: list[dict[str, str]] | None = None,
+    server_set: str | None = None,
 ) -> dict[str, Any]:
     """Return MCP specs declared for the selected session and workspace.
 
-    The session agent's plugin servers, then user and workspace ``mcp.yaml``.
+    The session agent's plugin servers, then user and workspace ``mcp.yaml``. ``taken``
+    collects the person's entries left out for a plugin server's name. ``server_set``
+    is the session's, when the caller already resolved it.
     """
 
     from clio_agent.plugins.servers import server_set_declarations  # noqa: PLC0415
     from clio_agent.tools.mcp_config import load_mcp_servers  # noqa: PLC0415
 
-    server_set = session_server_set(app, session_id) if session_id else ""
+    if server_set is None:
+        server_set = session_server_set(app, session_id) if session_id else ""
     plugin_servers = server_set_declarations(server_set) if server_set else {}
-    return load_mcp_servers(cwd=cwd, plugin_servers=plugin_servers)
+    return load_mcp_servers(cwd=cwd, plugin_servers=plugin_servers, taken=taken)
 
 
-def _draft_mcp_specs(app: Any, cwd: Path | None, agent_ref: str) -> dict[str, Any]:
-    """The MCP specs a new conversation on ``agent_ref`` in this workspace would declare."""
+def _draft_mcp_specs(
+    app: Any,
+    cwd: Path | None,
+    server_set: str,
+    taken: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    """The MCP specs a new conversation with ``server_set`` in this workspace would declare."""
 
     from clio_agent.plugins.servers import server_set_declarations  # noqa: PLC0415
     from clio_agent.tools.mcp_config import load_mcp_servers  # noqa: PLC0415
 
-    server_set = agent_server_set(app, agent_ref)
     plugin_servers = server_set_declarations(server_set) if server_set else {}
-    return load_mcp_servers(cwd=cwd, plugin_servers=plugin_servers)
+    return load_mcp_servers(cwd=cwd, plugin_servers=plugin_servers, taken=taken)
+
+
+def _serving_fleet(cwd: Path | None, server_set: str) -> str:
+    """The key of the fleet that serves ``server_set`` in this workspace.
+
+    The same key the turn-bound resolve files that fleet under
+    (``workspace_fleet.resolve_workspace_executor``): the plain fleet, or one of the
+    conversation's own (connector values, a plugin keeping a person's server name).
+    ``""`` is the default executor, which serves a workspace without a root folder.
+    """
+
+    from clio_agent.tools.fleet_serving import serving_fleet_key  # noqa: PLC0415
+
+    return serving_fleet_key(str(cwd) if cwd is not None else "", server_set)
 
 
 @dataclass(frozen=True)
@@ -75,13 +101,18 @@ def session_mcp_inventory(
     ``threading.Lock``. Async callers run it on a worker (see ``routes.mcp``).
     """
 
+    taken: list[dict[str, str]] = []
+    server_set = ""
     if session_id:
         try:
             agent_ref = str(session_resolution(app, session_id).agent.get("ref") or "")
         except SessionAgentUnavailable as exc:
             agent_ref = exc.ref
         try:
-            specs = declared_mcp_specs(app, cwd=cwd, session_id=session_id)
+            server_set = session_server_set(app, session_id)
+            specs = declared_mcp_specs(
+                app, cwd=cwd, session_id=session_id, taken=taken, server_set=server_set
+            )
             connection_error = ""
         except SessionAgentUnavailable as exc:
             specs = {}
@@ -90,7 +121,8 @@ def session_mcp_inventory(
         # No conversation chosen: what a new one here would get, on the default agent.
         agent_ref = default_agent_ref(app)
         try:
-            specs = _draft_mcp_specs(app, cwd, agent_ref)
+            server_set = agent_server_set(app, agent_ref)
+            specs = _draft_mcp_specs(app, cwd, server_set, taken)
             connection_error = ""
         except SessionAgentUnavailable as exc:
             specs = {}
@@ -104,6 +136,15 @@ def session_mcp_inventory(
         }
         for row in unreadable_mcp_yaml_snapshot()
     ]
+    degradations.extend(
+        {
+            "reason": row["reason"],
+            "detail": f"{row['path']}: {row['server']!r} is the name of plugin "
+            f"{row['plugin']}'s server, which keeps it; rename this entry, or add "
+            "replaces_plugin_server: true to use it in the plugin's place",
+        }
+        for row in taken
+    )
     # A workspace mcp.yaml is mounted only once its content is trusted.
     degradations.extend(
         {
@@ -113,11 +154,13 @@ def session_mcp_inventory(
         }
         for row in untrusted_workspace_mcp_snapshot()
     )
-    snapshot = WorkspaceMcpSnapshot()
     if connection_error:
         degradations.append({"reason": "mcp_connection_unavailable", "detail": connection_error})
-    if cwd is not None:
-        snapshot = workspace_mcp_snapshot(getattr(app.state, "agent", None), str(cwd))
+    # The fleet that serves this conversation, which may be one of its own rather than
+    # the workspace's plain fleet; a workspace without a root folder reads the default.
+    snapshot = workspace_mcp_snapshot(
+        getattr(app.state, "agent", None), _serving_fleet(cwd, server_set)
+    )
     degraded = snapshot.degraded
     if degraded is not None:
         degradations.append(degraded)
@@ -128,6 +171,7 @@ def session_mcp_inventory(
                 spec,
                 runtime=snapshot.namespaces.get(namespace, {}),
                 runtime_unavailable=snapshot.reason,
+                fleet=snapshot.fleet,
                 session_id=session_id,
                 agent_ref=agent_ref,
             )
@@ -143,6 +187,7 @@ def _session_mcp_server_row(
     *,
     runtime: Mapping[str, Any],
     runtime_unavailable: str,
+    fleet: str = "",
     session_id: str,
     agent_ref: str,
 ) -> dict[str, Any]:
@@ -169,6 +214,8 @@ def _session_mcp_server_row(
         "source": "plugin" if plugin_owned else spec.source or "workspace",
         "enabled": spec.usable,
         "session_id": session_id,
+        # The fleet ``status`` and ``tools`` were read from (``default`` without a root).
+        "fleet": fleet,
         "spec": redact_mcp_spec(asdict(spec)),
     }
     if preparation is not None:

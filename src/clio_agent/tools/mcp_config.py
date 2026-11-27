@@ -17,7 +17,8 @@ For the rare case that needs env vars, headers, or OAuth, a mapping value is
 also accepted (``{command, args, env}`` or ``{url, headers, auth}``), but the string form is
 the documented, default surface.
 
-Scopes: workspace ``mcp.yaml`` (once trusted) > user config > plugin servers > built-ins.
+Scopes: workspace ``mcp.yaml`` (once trusted) > user config, beside the session's plugin
+servers, whose names stay theirs (``mcp_person_precedence``). Built-ins are core's.
 
 Parsing only; ``transport_for`` turns a spec into a transport ``execution.py`` accepts.
 """
@@ -30,7 +31,6 @@ import re
 import shutil
 import sys
 import threading
-import weakref
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -45,6 +45,7 @@ from clio_agent.tools.mcp_cache import _mcp_uv_cache_dir
 from clio_agent.tools.mcp_command_line import split_command
 from clio_agent.tools.mcp_config_values import optional_int
 from clio_agent.tools.mcp_environment import stdio_environment
+from clio_agent.tools.mcp_person_precedence import merge_person_specs
 from clio_agent.tools.workspace_mcp_trust import workspace_mcp_trusted
 
 if TYPE_CHECKING:
@@ -174,6 +175,8 @@ class MCPServerSpec:
     #: place. Empty on a spec built without expansion.
     declared: Mapping[str, Any] = field(default_factory=dict, repr=False)
     connector: str = ""  # the connector this connection was saved for
+    #: Takes the place of a session plugin's same-named server (``mcp_person_precedence``).
+    replaces_plugin_server: bool = False
 
     @property
     def usable(self) -> bool:
@@ -385,6 +388,7 @@ def _spec_from_mapping(
         source=source,
         validation_errors=tuple(errors),
         declared=declared_text,
+        replaces_plugin_server=entry.get("replaces_plugin_server") is True,
     )
 
 
@@ -470,12 +474,14 @@ def load_mcp_servers(
     cwd: str | Path | None = None,
     plugin_servers: Mapping[str, Mapping[str, Any]] = (),  # type: ignore[assignment]
     env: Mapping[str, str] | None = None,
+    taken: list[dict[str, str]] | None = None,
 ) -> dict[str, MCPServerSpec]:
     """Discover + merge declared MCP servers across all scopes.
 
     Precedence (highest wins, merged whole by name): a trusted workspace
-    ``<cwd>/.clio/mcp.yaml`` > user ``<config>/clio-agent/mcp.yaml`` > the
-    session's plugin servers (``plugin_servers`` = ``{plugin_id: {name: declaration}}``). Built-in
+    ``<cwd>/.clio/mcp.yaml`` > user ``<config>/clio-agent/mcp.yaml``, beside the session's
+    plugin servers (``plugin_servers`` = ``{plugin_id: {name: declaration}}``), whose names
+    stay theirs (``mcp_person_precedence``; left-out entries go to ``taken``). Built-in
     ``fs``/``shell`` are provided by core, not part of this map.
     """
     home = home or Path.home()
@@ -485,17 +491,18 @@ def load_mcp_servers(
     with _UNREADABLE_MCP_YAML_LOCK:
         _UNREADABLE_MCP_YAML.clear()
 
-    # lowest precedence first
     for plugin_id, servers in dict(plugin_servers).items():
         if isinstance(servers, Mapping):
             merged.update(specs_from_mapping(servers, source=f"plugin:{plugin_id}", env=env))
     from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
 
+    person: dict[str, MCPServerSpec] = {}
     user_mcp = paths.user_config_dir_for(home, lookup) / "mcp.yaml"
-    _merge_mcp_yaml(merged, user_mcp, source="user", env=env)
+    _merge_mcp_yaml(person, user_mcp, source="user", env=env)
     workspace_mcp = paths.workspace_config_path(cwd, "mcp.yaml")
     if workspace_mcp_trusted(workspace_mcp, home=home, env=lookup):  # workspace_mcp_trust
-        _merge_mcp_yaml(merged, workspace_mcp, source="workspace", env=env)
+        _merge_mcp_yaml(person, workspace_mcp, source="workspace", env=env)
+    merge_person_specs(merged, person, {"user": user_mcp, "workspace": workspace_mcp}, taken)
 
     return {n: replace(s, name=n) for n, s in merged.items()}
 
@@ -558,11 +565,11 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
         cwd = os.path.abspath(cwd) if cwd else cwd
         # Fail-loud preflight (iowarp/clio-agent MCP spawn diagnosability): catch the
         # two preconditions that otherwise make the subprocess die post-spawn with a
-        # bare ``os error 2`` and surface them precisely instead. A missing ``cwd`` is
-        # the prime default-deployment culprit: the workspace dir is passed both as the
-        # subprocess working directory (chdir target) and as ``CLIO_KIT_ARTIFACTS``, so
-        # if it does not exist the spawn fails with ENOENT.
-        if cwd is not None and not os.path.isdir(cwd):
+        # bare ``os error 2`` and surface them precisely instead. A missing ``cwd`` (the
+        # workspace dir: chdir target and ``CLIO_KIT_ARTIFACTS``) is recreated first.
+        from clio_agent.tools.mount_failures import recreate_root  # noqa: PLC0415
+
+        if cwd is not None and not recreate_root(cwd, "missing_before_transport"):
             raise MCPSpawnError(
                 f"MCP server {spec.name!r}: working directory {cwd!r} does not exist, so "
                 f"the stdio subprocess cannot start (chdir/artifacts-root ENOENT). "
@@ -570,10 +577,11 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
             )
         # Prefer the packaged module so an ambient shim cannot replace it.
         bundled = dmr.bundled_module_launcher(spec.command, spec.args) if spec.command else None
-        from clio_agent.runtime.macos_clt import real_which  # noqa: PLC0415
+        from clio_agent.runtime.managed_launchers import resolve_launcher  # noqa: PLC0415
 
-        # A Command Line Tools stub (macOS ``/usr/bin/python3``) is not a launcher.
-        resolved = bundled[0] if bundled is not None else real_which(spec.command)
+        # CLIO's own copy of a launcher it ships, never another on PATH; a Command Line
+        # Tools stub (macOS ``/usr/bin/python3``) is not a launcher.
+        resolved = bundled[0] if bundled is not None else resolve_launcher(spec.command)
         resolved_args = list(spec.args)
         launcher_env: dict[str, str] = {}
         if bundled is not None:
@@ -620,34 +628,25 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
         from clio_agent.tools import spawn_diet, spawn_diet_transport  # noqa: PLC0415
 
         diet = spawn_diet.diet_transport_args(spec.name, resolved, tuple(resolved_args), env)
+        direct = None
+        if diet is None and bundled is None:
+            from clio_agent.tools.uv_provisioned_launch import provisioned_launch  # noqa: PLC0415
+
+            # A provisioned ``uv run --project`` server starts from its environment,
+            # so no spawn re-checks or re-syncs the project.
+            direct = provisioned_launch(spec, resolved, resolved_args, env)
         if diet is not None:
             diet_command, diet_args, env = diet
             final_command, final_args = diet_command, diet_args
+        elif direct is not None:
+            final_command, final_args, env = direct
         else:
             final_command, final_args = resolved, resolved_args
-        # Route post-spawn-diet argv through the shared confinement owner (#975),
-        # preserving cwd independently of grants and the existing pdeathsig=False lifetime.
-        from clio_agent.runtime import sandbox  # noqa: PLC0415 - avoid import cycle
+        from clio_agent.tools.mcp_confine import confine_stdio_server  # noqa: PLC0415
 
-        confined = sandbox.wrap_confined(
-            final_command,
-            final_args,
-            write_roots=sandbox.effective_write_roots(sandbox.PROFILE_FLEET, workspace_root=cwd),
-            net_policy=sandbox.NET_ALLOW_RECORD,
-            profile=sandbox.PROFILE_FLEET,
-            pdeathsig=False,
-            cwd=cwd if cwd is not None else os.getcwd(),
+        confined, env = confine_stdio_server(
+            spec.name, final_command, final_args, env, cwd, connector=spec.connector or ""
         )
-        # B5 #979.7 (the deferred B4 WRITER): this fleet proxy is ONE persistent confined child
-        # per (workspace, namespace). Register its ``net_child_id`` (empty on the floor → no-op)
-        # keyed by ``spec.name`` (the namespace) + ``cwd`` (the workspace root) so the gact
-        # tool-observer can join ``call_id -> serving child`` for the egress ingest mint (#978
-        # pt 5). Runtime-layer registry (sandbox_net) so this seam never imports gact.
-        sandbox_net_child = str(confined.result.details.get("net_child_id") or "")
-        if sandbox_net_child:
-            from clio_agent.runtime.sandbox_net import register_namespace_child  # noqa: PLC0415
-
-            register_namespace_child(cwd, spec.name, sandbox_net_child)
         # A dieted launch re-declares itself once its plan is dropped (VF-D9).
         transport = spawn_diet_transport.stdio_transport(spec, cwd, diet is not None)(
             command=confined.command,
@@ -656,9 +655,9 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
             cwd=cwd,
             **confined.popen_kwargs,
         )
-        # A rebuilt fleet registers a new channel for this namespace; the replaced
-        # transport's channel closes when that transport goes, as it respawns on it.
-        weakref.finalize(transport, confined.release)
+        from clio_agent.tools.fleet_serving import own_server_channel  # noqa: PLC0415
+
+        own_server_channel(transport, confined)
         desktop_log = dmr.desktop_mcp_log_file(spec.name)
         if desktop_log is not None and hasattr(transport, "log_file"):
             transport.log_file = desktop_log

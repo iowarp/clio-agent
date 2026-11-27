@@ -38,6 +38,7 @@ def test_file_citation_guidance_is_shared_and_workspace_scoped(
     assert "natural language" in text
     assert "session://WORKSPACE_ID/SESSION_ID" in text
     assert "matching ordered entries" in text
+    assert "![Final vorticity slice](artifact://artifact_actual-id)" in text
     assert "inline LaTeX uses $$x^2$$" in text
     assert r"\bar{x} = \frac{1}{n}" in text
 

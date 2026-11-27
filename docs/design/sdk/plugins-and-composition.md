@@ -82,7 +82,7 @@ Learned copies work the same way. `hdf5_personal` declares `evolved_from` the ex
 | pip-installed package | Trusted by construction, as pip already is |
 | Git repository or external marketplace | Explicit trust step at install |
 | Update that changes executable parts (server commands, Python tools, hooks) | Trust step again before it applies |
-| Update that changes only text (skills, fragments) | Applies to the next session without a new trust step |
+| Update that changes only text (skills, fragments) | Applies without a new trust step, to open sessions too |
 | Personal evolved fork | Inherits its upstream's trust, since the optimizer never touches executable parts |
 
 ## Agents as plugin sets
@@ -116,7 +116,7 @@ remove: [xlsx]
 
 **Membership versus requirement.** Pack membership is removable: dropping plato from manufacturing is fine. A hard requirement takes its dependents with it: removing shell when the github plugin requires it is allowed and removes github as well, and the UI shows what else goes. Requirements are declared per plugin.
 
-**Sessions are pinned.** A session freezes its resolved plugin set at start. Parent updates and newly evolved personal plugins apply to the next session. Adding or removing a plugin inside a live session produces a new resolved set and a new prompt for that session.
+**Sessions are pinned.** A session freezes its resolved plugin set at start. Parent updates and newly evolved personal plugins apply to the next session. An installed update of a plugin the session already holds is the exception: once it resolves (after its trust step, if it needs one), each open session holding the older copy is pinned again onto it, with its servers remounted from the new snapshot. Adding or removing a plugin inside a live session produces a new resolved set and a new prompt for that session. A plugin's servers never run from two copies at once, because its `PLUGIN_DATA` folder is shared by every copy. A session still pinned to an older copy (not open when the plugin updated, warmed at start, or a child) starts that plugin's servers from the installed copy, or doesn't start them while that copy awaits trust. A resident fleet still running an older copy restarts when the store changes.
 
 **Traceability.** The UI shows where each plugin came from: core, standard, science, a pack, or the user.
 
@@ -206,7 +206,7 @@ A failure at gate 1 points to the upstream change; a failure at gate 2 points to
 | Cost | Deferred tool loading and lazy server startup |
 | Main prompt | Composed from fragments in five fixed sections, attributed in the UI |
 | Fragments | Live with their capability, stand alone, have ids, stay small |
-| Sessions | Pinned at start; updates apply to the next session |
+| Sessions | Pinned at start; an installed update of a held plugin moves open sessions |
 | Evolution | Periodic, agent-driven, regenerated from upstream plus lessons, gated after rebase and after new lessons |
 | Evolvable parts | Skills, prompt fragments and configuration only |
 | External agents | An external-agents pack (a2a, acp, academy) provides discovery and one fragment; specific peers are declared by the plugins that need them; agents own only their exposure |

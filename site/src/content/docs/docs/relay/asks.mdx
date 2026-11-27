@@ -1,0 +1,132 @@
+---
+title: Asks and sign-in
+description: When relay needs a person, for a sign-in, a one-time code, a choice or approval to spend an allocation, it asks. This page covers where those questions appear, how to answer them and where sign-ins are kept.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import Capture from '../../../../components/overview/Capture';
+import { captureImage } from '../../../../lib/captures';
+import approveFiles from '../../../../assets/captures/relay/convo-approve-files.png';
+import approveFilesPhone from '../../../../assets/captures/relay/convo-approve-files-phone.png';
+
+Relay stops and asks a person when it needs one of these:
+
+- **A sign-in.** Globus, GitHub or TACC, before an endpoint that needs it can be
+  reached.
+- **A secret.** A password or a cloud key that relay keeps for later.
+- **A one-time code.** An SSH login that prompts for a code or a password.
+- **A choice.** For example, which of several allocations to charge.
+- **An approval.** Permission to spend an allocation, or to run a package on a
+  [Secure](/docs/relay/guardrails/) endpoint. The page shows the queue, the account,
+  the nodes, the walltime and the most it may use.
+
+The operation waits while the ask is open. Nothing about a person has a time limit:
+an ask stays open until it is answered or declined.
+
+## Where an ask appears
+
+| Client | What you see |
+| --- | --- |
+| CLIO | The question in the conversation, with a button that opens relay's page |
+| An MCP client with tasks | The task turns `input_required` and lists the question under `input_requests`. The client answers with `tasks/update`. |
+| An MCP client with elicitation | A form or a link, from the client |
+| Any other client | A refusal that names the ask and the page where you can answer it |
+| A terminal | `clio-relay asks list` |
+
+The agent never sees a password, a code or a token. They go from relay's page
+straight to relay.
+
+In CLIO you may also see an approval card before the agent uses a relay tool. That
+card is CLIO's, not relay's: CLIO asks before the agent first calls `exec`, `files`,
+`run` or `serve`, whatever relay itself would ask. When several calls wait, the card
+pages through them. See [CLIO's approvals](/docs/relay/guardrails/#clios-approvals).
+
+<Capture client:visible image={await captureImage(approveFiles)}
+  alt="CLIO's approval card titled 'List, read, write and stage files on a site', marked 1 of 3, with Allow once, This session, This workspace and Deny"
+  caption="CLIO's own approval, before the agent's first file operation on Ares."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(approveFilesPhone)}
+  alt="The same file approval card on a phone, with the choices stacked"
+  sizes="(min-width: 50rem) 24rem, 100vw" />
+
+## Relay's page
+
+Each ask has its own page. A link is good for one answer; after that it returns
+404. A link expires after 24 hours, but the ask does not:
+`clio-relay asks page <ask id>` prints a fresh one. `CLIO_RELAY_PAGE_TTL_S` changes
+the lifetime of a link, in seconds.
+
+When relay runs on your computer, the page is on `127.0.0.1` and needs no password.
+
+### Over HTTP
+
+When relay is [served over HTTP](/docs/relay/install/#over-http), the page is at
+`/relay/asks/<ask id>` on relay's own address. It asks for a password: any user
+name, with relay's operator token as the password. The token is
+`CLIO_RELAY_OPERATOR_TOKEN`, or the file `operator-token` in relay's state folder.
+
+The operator token is separate from the MCP bearer token, so a client that can call
+relay's tools cannot approve anything on its own.
+
+## Answer from a terminal
+
+```sh
+clio-relay asks list            # what relay is waiting on
+clio-relay asks show <ask id>   # one ask, and what an approval approves
+clio-relay asks answer <ask id> # approve, or say a sign-in is finished
+clio-relay asks answer <ask id> --value <choice>
+clio-relay asks decline <ask id>
+```
+
+Declining cancels the operation that was waiting. An approval is tied to the exact
+job it was asked for and its cost. If the job changed after the question was asked,
+`answer` refuses with `approval_mismatch` and exit code 2.
+
+## Sign-ins
+
+| Identity | How you sign in | Used by |
+| --- | --- | --- |
+| Globus | Relay's page links to Globus; you sign in there and paste the code Globus gives you back on relay's page | [Globus](/docs/relay/globus/) endpoints |
+| GitHub | A device code: relay's page shows a code and a link to GitHub, where you type it | Work that needs your GitHub access, with the `repo` and `read:org` scopes |
+| TACC | Your TACC user name, password and token code | [Tapis](/docs/relay/tapis/) endpoints at TACC |
+
+In CLIO, an endpoint that needs a sign-in shows **Needs a sign-in** on the
+[Compute page](/docs/compute/). Choose **Connect** from its row's menu to open the
+sign-in page.
+
+From a terminal:
+
+```sh
+clio-relay asks identities         # each sign-in, and where its token comes from
+clio-relay asks sign-in globus
+clio-relay asks probe globus       # try every endpoint Globus unlocks
+clio-relay asks sign-out globus
+```
+
+### Where sign-ins are kept
+
+Relay keeps sign-ins and secrets in your system's keyring, under the name
+`clio-relay`. When there is no usable keyring, as on a headless server, it keeps them
+in `credentials.json` in its config folder, readable only by you. `describe` says
+which one an endpoint uses. `CLIO_RELAY_KEYRING` picks one: `keyring` or `file`.
+
+### Sign-ins from the host
+
+A host can keep a sign-in current for relay with a grant file: a file holding a
+token, which the host rewrites before it expires. Relay reads it again whenever it
+changes and uses it before its own sign-in.
+
+```sh
+clio-relay serve --grant-file globus=/path/to/globus-token.json
+```
+
+`CLIO_RELAY_GRANT_FILE_GLOBUS` does the same. In CLIO, the relay plugin is given
+CLIO's own Globus sign-in this way, so signing in to Globus in CLIO also signs
+relay in. `asks sign-out` forgets only relay's own
+sign-in; a grant file stays the host's.
+
+<Aside type="note" title="SSH prompts">
+For an SSH login that asks for a password or a code, relay shows the prompt on its
+page. This needs OpenSSH 8.4 or later on your computer.
+</Aside>

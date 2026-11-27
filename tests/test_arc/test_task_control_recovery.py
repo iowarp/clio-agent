@@ -152,7 +152,7 @@ async def test_pause_resume_then_cancel_clears_own_question_gate_and_resume_inst
         )
         assert (await owner.cancel(caller, root.handle))["cancellation_requested"]
         settled = await operations.wait(caller, root.handle)
-        assert settled["outcomes"][0]["status"] == "cancelled" and not settled["pending"]
+        assert settled["outcomes"][0]["status"] == "cancelled" and not settled["unfinished"]
         assert owner.history.task_snapshot(question).status == "cancelled"
         assert app.state.sessions.get(sid).metadata["execution_gate"] == ""
         assert owner.history.mail_withdrawn(sid, resume.id)
@@ -336,7 +336,7 @@ async def test_an_agent_wait_ends_when_its_conversation_is_stopped(
         result = await asyncio.wait_for(waiting, 5)
 
         assert result["interrupted"] == "stopped"
-        assert result["pending"] == [child["handle"]]
+        assert [row["handle"] for row in result["unfinished"]] == [child["handle"]]
         assert owner.history.task_snapshot(child["handle"]).terminal_at is None
     finally:
         await owner.shutdown()

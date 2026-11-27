@@ -14,6 +14,10 @@
   group: Electronics
   logo: kicad.svg
   description: Design circuit boards in KiCad and see the board, schematic, BOM, checks and parts in a tab
+  # KiCad's editors keep their settings in the person's own user space (the registry and
+  # Documents on Windows, ~/Library on macOS, ~/.config and the display on Linux), which
+  # the sandbox blocks, so the person is asked once to let this server run outside it.
+  outside_sandbox: It opens the KiCad desktop editors, which keep their settings in your own user folders and registry.
   server:
     command: uvx
     args:
@@ -26,7 +30,7 @@
       - --with
       - install-jdk>=1.1,<2
       - --from
-      - git+https://github.com/JaimeCernuda/kicad-mcp-pro@8965bdcaa9672869d13263fb74eb28422b598a7f
+      - git+https://github.com/JaimeCernuda/kicad-mcp-pro@cdc8b5927fb744cb462e0d75ec7de95e9a976872
       - kicad-mcp-pro
       - --transport
       - stdio
@@ -60,7 +64,7 @@
       label: Where KiCad is
       required: false
       agent_settable: true
-      help: Leave empty to find KiCad on this machine. Otherwise the path to kicad-cli; the server then uses only that install.
+      help: Leave empty to look on PATH and in KiCad's standard install folders. Otherwise the path to kicad-cli (for a portable or unusual install); the server then uses only that install.
     - key: nexar_id
       kind: value
       label: Nexar client ID

@@ -55,14 +55,8 @@ def _atomic_text(path: Path, text: str) -> None:
 
 
 def _managed_config(config: Path, text: str) -> dict[str, Any] | None:
-    """Recognize the generated default; explicit config/capacity choices opt out."""
-    explicit = conf.resolve(
-        "arc.cte.file_capacity", env="CLIO_ARC_CTE_FILE_CAPACITY", default="", cast=conf.as_str
-    )
-    enabled = conf.resolve(
-        "arc.cte.auto_expand", env="CLIO_ARC_CTE_AUTO_EXPAND", default=True, cast=conf.as_bool
-    )
-    if explicit or not enabled or config != (_default_cte_dir() / "cte.yaml").resolve():
+    """Recognize the generated default; a hand-written config or layout opts out."""
+    if not _growth_enabled(config):
         return None
     document = yaml.safe_load(text)
     if not isinstance(document, dict):
@@ -70,12 +64,12 @@ def _managed_config(config: Path, text: str) -> dict[str, Any] | None:
     try:
         ram, module, *indexer = document["compose"]
         (tier,) = module["storage"]
-        capacity = parse_capacity_bytes(tier["capacity_limit"])
+        parse_capacity_bytes(tier["capacity_limit"])
         # Older generated configs have no journal. Adopt only the unchanged seed
-        # shape, owned paths and original bounded seed range. Custom topologies,
-        # capacities, paths, limits or policies are never rewritten.
-        if not 2 * _GIB <= capacity <= 50 * _GIB or capacity % _GIB:
-            return None
+        # shape and owned paths, whatever capacity it was seeded with: a stale small
+        # seed (an old explicit arc.cte.file_capacity such as 512MB) must grow too,
+        # since agent data is never capped. Custom topologies, paths, limits or
+        # policies are never rewritten; arc.cte.auto_expand=false keeps a fixed size.
         expected = _DEFAULT_CTE_CONFIG_TEMPLATE.format(
             core_port=document["networking"]["port"],
             core_threads=document["runtime"]["num_threads"],  # any count CLIO seeded
@@ -277,16 +271,14 @@ def recover_capacity(store: Any, tag_id: Any, name: str, payload_bytes: int) -> 
 
 
 def _growth_enabled(config: Path) -> bool:
-    explicit = conf.resolve(
-        "arc.cte.file_capacity", env="CLIO_ARC_CTE_FILE_CAPACITY", default="", cast=conf.as_str
-    )
-    return (
-        not explicit
-        and config == (_default_cte_dir() / "cte.yaml").resolve()
-        and conf.resolve(
-            "arc.cte.auto_expand", env="CLIO_ARC_CTE_AUTO_EXPAND", default=True, cast=conf.as_bool
-        )
-    )
+    """Whether CLIO grows this store: its own generated config, unless auto_expand is off.
+
+    An explicit ``arc.cte.file_capacity`` is the size CLIO seeds the file tier with, not
+    a ceiling: a full tier still refuses what the agent must store (take 1r: a 512 MB
+    tier refused a 27.7 MB event chunk with code 12). Only ``arc.cte.auto_expand=false``
+    keeps a fixed capacity.
+    """
+    return config == (_default_cte_dir() / "cte.yaml").resolve() and _auto_expand()
 
 
 def _before_clio_upgrades(text: str) -> list[str]:
@@ -333,3 +325,95 @@ def initialize_managed_capacity(config: Path) -> None:
                 "config_sha256": _digest(config.read_text(encoding="utf-8")),
             },
         )
+
+
+#: Below this total a file store cannot hold a long conversation's events (take 1r and
+#: W17: a 512 MB tier refused event chunks with codes 12 and 13). The seed rule's floor.
+_UNDERSIZED_BYTES = 2 * _GIB
+#: Undersized stores already reported this process, so a boot logs each once.
+_WARNED_UNDERSIZED: set[Path] = set()
+
+
+def _journal_owns(journal_path: Path, text: str) -> bool:
+    """Whether CLIO's capacity journal still owns ``text`` (so growth will extend it)."""
+    try:
+        journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(journal, dict) or journal.get("schema") != 1:
+        return False
+    owned = {_digest(text), *map(_digest, _before_clio_upgrades(text))}
+    pending = journal.get("pending")
+    if isinstance(pending, dict) and isinstance(pending.get("config_text"), str):
+        owned.add(_digest(pending["config_text"]))
+    return journal.get("config_sha256") in owned
+
+
+def _file_tier_bytes(text: str) -> int | None:
+    """The summed ``capacity_limit`` of a config's file tiers, ``None`` when unreadable."""
+    try:
+        document = yaml.safe_load(text)
+        total = 0
+        for module in document["compose"]:
+            for tier in (module.get("storage") or []) if isinstance(module, dict) else []:
+                if str(tier.get("bdev_type", "")).strip().lower() == "file":
+                    total += parse_capacity_bytes(str(tier["capacity_limit"]))
+    except (KeyError, TypeError, ValueError, AttributeError, yaml.YAMLError):
+        return None
+    return total
+
+
+def adopt_or_warn_undersized(config: Path) -> None:
+    """At boot, bring CLIO's own store under growth, or name the fix for one it cannot grow.
+
+    A store CLIO generated before it kept a capacity journal (or while an explicit
+    ``arc.cte.file_capacity`` turned growth off) is adopted here, whatever capacity it was
+    seeded with, so a full tier grows instead of refusing the agent's data. A store growth
+    cannot reach (a hand-edited or custom config, an explicit ``arc.cte.dir``, or
+    ``arc.cte.auto_expand=false``) whose file tiers total less than the seed floor is
+    logged once per boot with the exact edit that raises it; it is never rewritten.
+    """
+    config = config.resolve()
+    journal_path = config.with_name("cte-capacity.json")
+    try:
+        text = config.read_text(encoding="utf-8")
+    except OSError:
+        return
+    total = _file_tier_bytes(text)
+    if _growth_enabled(config):
+        if journal_path.is_file() and _journal_owns(journal_path, text):
+            return
+        if not journal_path.is_file() and _managed_config(config, text) is not None:
+            _persist_journal(journal_path, {"schema": 1, "config_sha256": _digest(text)})
+            logger.warning(
+                "reason=clio_core_store_adopted config=%s file_capacity_bytes=%s: CLIO's "
+                "generated store had no capacity journal; it now grows when full",
+                config,
+                total,
+            )
+            return
+    if total is None or total >= _UNDERSIZED_BYTES or config in _WARNED_UNDERSIZED:
+        return
+    _WARNED_UNDERSIZED.add(config)
+    from clio_agent.arc.clio_core_file_capacity import seeded_file_capacity  # noqa: PLC0415
+
+    seed = seeded_file_capacity(config.parent)
+    growth = "off (arc.cte.auto_expand=false)" if not _auto_expand() else "unavailable"
+    logger.warning(
+        "reason=clio_core_store_undersized config=%s file_capacity_bytes=%d growth=%s: this "
+        "store refuses agent data once full (clio-core code 12/13). Fix: in %s set the file "
+        'tier\'s capacity_limit to "%s" (its storage file and data are kept), then restart '
+        "clio-core%s",
+        config,
+        total,
+        growth,
+        config,
+        seed,
+        "; or set arc.cte.auto_expand: true" if not _auto_expand() else "",
+    )
+
+
+def _auto_expand() -> bool:
+    return conf.resolve(
+        "arc.cte.auto_expand", env="CLIO_ARC_CTE_AUTO_EXPAND", default=True, cast=conf.as_bool
+    )

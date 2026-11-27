@@ -1,0 +1,169 @@
+---
+title: Guardrails
+description: What a Secure endpoint lets the agent do, how a package is reviewed before it runs, when relay asks before spending an allocation, and how to tune each endpoint.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import Capture from '../../../../components/overview/Capture';
+import { captureImage } from '../../../../lib/captures';
+import approveRun from '../../../../assets/captures/relay/convo-approve-run.png';
+import approveRunPhone from '../../../../assets/captures/relay/convo-approve-run-phone.png';
+
+Every endpoint has a security setting. On the [Compute page](/docs/compute/) it is
+**Secure** or **Open**; in relay's own files and CLI it is `guarded` or `open`.
+
+| | Secure (`guarded`) | Open (`open`) |
+| --- | --- | --- |
+| `run` a command or a script | Refused. The agent is told to write or pick a package instead. | Runs |
+| `run` a package | Runs once you have reviewed it on this endpoint | Runs |
+| `exec` | Commands that only read | Any command |
+| Spending | Asks according to **Ask before spending** | Asks according to **Ask before spending** |
+
+Use Secure for machines where your account and allocation are on the line, such as
+national lab systems. New endpoints are Secure unless you choose otherwise. The
+catalog's Ares endpoints are Open, since Ares is a lab cluster.
+
+## CLIO's approvals
+
+CLIO adds its own check in front of relay. `describe` only reads, so the agent calls
+it freely. Before the agent first calls `exec`, `files`, `run` or `serve`, CLIO
+shows what the call is for and asks you: **Allow once**, **This session**, **This
+workspace** or **Deny**. **Technical details** shows the exact arguments.
+
+This happens on Open endpoints too. Relay's own guardrails, below, come after it.
+
+<Capture client:visible image={await captureImage(approveRun)}
+  alt="CLIO's approval card titled 'Run a job on a site', with the reason 'Run a one-minute Slurm job reporting its compute hostname and allocated CPU count' and the buttons Allow once, This session, This workspace and Deny"
+  caption="CLIO asks before the agent's first job on a site."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(approveRunPhone)}
+  alt="The same approval card on a phone, with the four choices stacked"
+  sizes="(min-width: 50rem) 24rem, 100vw" />
+
+## Packages
+
+On a Secure endpoint, work runs as a package: one
+[JARVIS](https://github.com/grc-iit/jarvis-cd) package, such as
+`clio_jarvis.gray_scott`, packed into an archive with a fixed SHA-256. The agent
+builds the archive on the computer relay runs on:
+
+```sh
+python -m clio_relay.jarvis_site archive ~/src/clio-jarvis/clio_jarvis clio_jarvis.gray_scott --stage
+```
+
+It prints the archive's hash, size and file count, and where it came from: the
+repository, tag and commit, and whether the checkout had uncommitted changes.
+Building it twice from the same files gives the same hash. The agent then calls
+`run` with the package instead of a command:
+
+```json
+{
+  "site": "polaris",
+  "spec": {
+    "package": {
+      "name": "clio_jarvis.gray_scott",
+      "version": "0.1.0",
+      "sha256": "<the printed hash>",
+      "parameters": {"nprocs": 4}
+    },
+    "attributes": {"queue_name": "debug", "account": "myproject"}
+  }
+}
+```
+
+On the machine, a small runner checks the hash again, unpacks the archive into the
+job's folder, sets up a JARVIS environment for that job only and runs the package.
+Your own JARVIS setup on the machine is not touched.
+
+## Reviewing a package
+
+The first time a package runs on a Secure endpoint, relay
+[asks you](/docs/relay/asks/) to review it. The question shows:
+
+- the package's name and version, and the archive's SHA-256;
+- where it came from: repository, tag, commit and path;
+- every file, with its own hash, size and whether it is executable;
+- the parameters of this run.
+
+A yes records the review for that endpoint and that hash, and the same archive runs
+again without a question. An edited package has a new hash and is reviewed again. A
+review on one endpoint does not count on another.
+
+Reviews are files in relay's state folder, under `guard/reviews/<endpoint>/`, one per
+package name, version and hash. Delete a file to withdraw that review.
+
+## What exec may run on a Secure endpoint
+
+`exec` takes a list of arguments, never a shell string. On a Secure endpoint it runs
+only commands that read:
+
+- files: `ls`, `cat`, `head`, `tail`, `grep`, `wc`, `stat`, `du`, `df`,
+  `sha256sum`, and `find` without `-exec`, `-delete` or other actions;
+- the scheduler: `squeue`, `sinfo`, `sacct`, `sprio`, `sshare`, `scontrol show`,
+  `sacctmgr show`, `qstat`, `pbsnodes` without the options that change a node;
+- the machine: `hostname`, `uname`, `nproc`, `whoami`, `id`;
+- modules and quotas: `module avail`, `module list`, `module spider`, `quota`,
+  `lfs quota`;
+- JARVIS reads, such as `jarvis ppl list` and `jarvis ppl status`.
+
+The program must be named bare, so `/tmp/x/ls` does not pass as `ls`. Anything else,
+such as `rm`, `sh -c` or `scancel`, is refused with `policy_refused`, and the refusal
+lists what is allowed.
+
+## Ask before spending
+
+Each endpoint's **Ask before spending** setting (`spend` in the CLI) decides when
+relay asks before it submits a job:
+
+| Setting | Relay asks |
+| --- | --- |
+| Always (`always`) | Before every job |
+| Never (`never`) | Never |
+| Above N node-hours (a number) | When a job may use more than N node-hours |
+
+The question shows the queue, the account, the nodes, the walltime and the most the
+job may use. On SkyPilot the cost is in US dollars.
+
+Relay never sets a walltime itself. A job with none uses the endpoint's
+**Default duration**, or else the scheduler's own limit. Its cost is then unknown, so
+relay asks unless the setting is Never.
+
+A no submits nothing. An unanswered question leaves the job waiting, with nothing
+submitted. An approval covers exactly the job you saw; a changed job needs a new one.
+
+## Warm allocations
+
+For a few quick checks on compute nodes, the agent can hold an allocation instead of
+queuing a job for each check. It runs `clio-relay-warm`:
+
+```json
+{"site": "polaris", "spec": {"executable": "clio-relay-warm", "resources": {"node_count": 1}, "attributes": {"queue_name": "debug"}}}
+```
+
+It goes through the spend question like any job. Then `exec` reaches it with
+`srun --jobid=<job id> --overlap <command>`; on a Secure endpoint the command must
+itself be one that reads. The allocation releases itself 10 minutes after the last
+command in it ends. It never stops a command that is running. The agent can cancel it
+sooner with `run`.
+
+## Per-endpoint settings
+
+`guard.yaml` in relay's config folder holds settings for each endpoint. It is optional
+and read on every check, so an edit takes effect at once.
+
+```yaml
+sites:
+  polaris:
+    jarvis: ~/venvs/jarvis/bin/jarvis   # the jarvis command on the machine
+    read_only: [myquota]                # more read-only programs, by exact name
+    warm_idle_s: 600                    # idle seconds before a warm allocation is released
+```
+
+<Aside type="caution" title="The approval page on your own computer">
+When relay runs on your own computer over stdio, its approval page is on
+`127.0.0.1`. An agent with a shell on that computer could reach it. For Secure
+endpoints, use an MCP client that asks you directly, as CLIO does, or a relay
+[served over HTTPS](/docs/relay/install/#over-http), where the page needs the operator
+token.
+</Aside>

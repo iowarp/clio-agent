@@ -554,6 +554,32 @@ def test_transport_for_applies_valid_plan(tmp_path, monkeypatch) -> None:
     assert transport.env["CLIO_KIT_ARTIFACTS"] == str(tmp_path), "workspace pinning survives"
 
 
+def test_an_applied_plan_is_reported_once_not_per_call(tmp_path, monkeypatch) -> None:
+    shim, entry = _fake_env(tmp_path)
+    environment = shim.parent.parent
+    (environment / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    interpreter = interpreter_path(environment)
+    interpreter.parent.mkdir(exist_ok=True)
+    if not interpreter.exists():
+        interpreter.write_text("stub")
+    launcher = tmp_path / "clio-kit.exe"
+    launcher.write_text("launcher")
+    monkeypatch.setattr("shutil.which", lambda cmd: str(launcher))
+    _store_plan(str(launcher), [str(shim), str(entry)])
+    events: list[str] = []
+    monkeypatch.setattr(spawn_diet.trace, "event", lambda _kind, fmt, *a: events.append(fmt))
+
+    spec = MCPServerSpec(
+        name="pandas", transport="stdio", command="clio-kit", args=("mcp-server", "pandas")
+    )
+    for _ in range(3):
+        assert transport_for(spec, cwd=str(tmp_path)).command == str(shim)
+
+    assert [e for e in events if e.startswith("mcp_spawn_diet applied")] == [
+        "mcp_spawn_diet applied server=%s argv0=%s"
+    ]
+
+
 def test_transport_for_ineligible_spec_untouched(tmp_path, monkeypatch) -> None:
     launcher = tmp_path / "othertool.exe"
     launcher.write_text("launcher")

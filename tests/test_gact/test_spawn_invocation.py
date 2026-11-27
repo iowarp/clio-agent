@@ -132,10 +132,12 @@ async def test_an_external_mcp_task_is_linked_to_the_model_call(monkeypatch) -> 
     monkeypatch.setattr(external_tasks, "SubmissionContext", submission)
     monkeypatch.setattr(external_tasks, "permission_snapshot", lambda *_args: {})
     assignment = SimpleNamespace(handle="task_parent", owner=SimpleNamespace(human_id="h"))
+    history = SimpleNamespace(latest_assignment=lambda _sid: assignment)
     owner = SimpleNamespace(
-        history=SimpleNamespace(latest_assignment=lambda _sid: assignment),
+        history=history,
         app=SimpleNamespace(
             state=SimpleNamespace(
+                task_history=history,
                 sessions=SimpleNamespace(get=lambda _sid: SimpleNamespace(workspace_id="w")),
                 workspaces=SimpleNamespace(get=lambda _w: SimpleNamespace(root_path="/w")),
             )

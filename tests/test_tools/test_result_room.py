@@ -124,3 +124,21 @@ def test_a_share_outside_zero_to_one_is_refused() -> None:
     set_config("tools.result_share", 1.5)
     with pytest.raises(ValueError, match="tools.result_share"):
         result_room.result_share()
+
+
+def test_a_text_within_the_room_in_bytes_fits_without_being_counted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    counted: list[str] = []
+
+    def count(text: str) -> int:
+        counted.append(text)
+        return len(text)
+
+    monkeypatch.setattr(context_tokens, "_estimate_text_tokens", count)
+    room = result_room.ResultRoom(tokens=10, chars=40, reason="window_share")
+
+    assert room.fits("ascii text")
+    assert counted == []
+    assert room.fits("é" * 6)  # 6 characters but 12 bytes: counted
+    assert counted == ["é" * 6]

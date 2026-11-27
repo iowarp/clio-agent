@@ -355,7 +355,10 @@ the one caller of `select_catalog`:
   given explicitly. An explicit id is a preference, not an assertion that
   bypasses the client-preference gate: "preferred wins only when it is
   itself in both the client-supported and the producible set" applies to
-  every caller uniformly. A non-selection becomes the typed refusal
+  every caller uniformly. The id may be the full `catalogId` or the short
+  name of one of this session's catalogs (the `<slug>` of its
+  `a2ui-catalog-<slug>` skill), which names exactly that catalog; the
+  surface always records the full id. A non-selection becomes the typed refusal
   `{"ok": false, "reason": <CatalogSelection.reason>, "detail": ...}` — the
   model reads the SAME reason codes this document defines, never a bare
   exception, and a caller-preferred-but-unselectable id refuses with

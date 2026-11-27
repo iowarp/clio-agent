@@ -70,6 +70,42 @@ def _finish(answer: str) -> str:
     return answer
 
 
+def _mcp_failed_structured(job: str) -> str:
+    """Stands in for an MCP call whose error result carries structured content."""
+    sink = RESULT_SINK.get()
+    if sink is not None:
+        sink.append(
+            (
+                f"job {job} failed",  # what the gateway names an MCP error: its first text
+                {
+                    "content": [{"type": "text", "text": f"job {job} failed"}],
+                    "structuredContent": {"code": "job_failed", "phase": "run", "job": job},
+                    "isError": True,
+                },
+            )
+        )
+    return f"job {job} failed"
+
+
+def _mcp_failed_exec(command: str) -> str:
+    """Stands in for a relay `exec_read` that timed out with no output: its text is
+    `"\n[exit None, timed out]"`, which the gateway names (stripped) as its error."""
+    sink = RESULT_SINK.get()
+    text = "\n[exit None, timed out]"
+    if sink is not None:
+        sink.append(
+            (
+                text.strip(),
+                {
+                    "content": [{"type": "text", "text": text}],
+                    "structuredContent": {"exit_code": None, "timed_out": True},
+                    "isError": True,
+                },
+            )
+        )
+    return text
+
+
 setattr(_finish, CALLERS_ATTR, "direct")  # as core's submit declares itself
 
 
@@ -83,6 +119,8 @@ def _agent() -> Any:
         ),
         "fs_stat": dspy.Tool(_mcp_shaped, name="fs_stat", desc="Stat a file."),
         "fs_touch": dspy.Tool(_mcp_failed, name="fs_touch", desc="Touch a file."),
+        "fs_poll": dspy.Tool(_mcp_failed_structured, name="fs_poll", desc="Poll a job."),
+        "fs_exec": dspy.Tool(_mcp_failed_exec, name="fs_exec", desc="Run a command."),
         "submit": dspy.Tool(_finish, name="submit", desc="Finish."),
     }
     agent = SimpleNamespace(
@@ -172,6 +210,33 @@ class TestKernel:
         outcome = _run("(await tools.fs.stat(path='a.txt'))['lines']")
         assert outcome["value"] == "3"
 
+    def test_a_failed_mcp_call_keeps_its_structured_error(self, workspace: Path) -> None:
+        """An ``isError`` result's structured content reaches the script as
+        ``ToolError.structured``, so a watcher can end on it instead of polling on.
+        SABOTAGE: return ``None`` as a failed call's value in ``Dispatcher._run`` -> red."""
+        outcome = _run(
+            "try:\n    await tools.fs.poll(job='7')\n"
+            "except ToolError as exc:\n    print(exc.structured['code'], exc.structured['job'])\n"
+            "    print(str(exc))\n"
+            "try:\n    await tools.fs.touch(path='a.txt')\n"
+            "except ToolError as exc:\n    print('plain', exc.structured)"
+        )
+        assert outcome["output"].splitlines()[:3] == [
+            "job_failed 7",
+            "job 7 failed",  # said once, not "job 7 failed: job 7 failed"
+            "plain None",
+        ], outcome
+
+    def test_an_error_whose_text_is_its_code_is_said_once(self, workspace: Path) -> None:
+        """W17 take 1o: a timed-out relay read ended a stream with "[exit None, timed
+        out]: [exit None, timed out]". SABOTAGE: drop the `strip()` of the detail in
+        `Dispatcher._run` and this fails."""
+        outcome = _run(
+            "try:\n    await tools.fs.exec(command='squeue')\n"
+            "except ToolError as exc:\n    print(repr(str(exc)), exc.structured['timed_out'])"
+        )
+        assert outcome["output"].splitlines()[0] == "'[exit None, timed out]' True", outcome
+
     def test_direct_only_blocked_and_unknown_names_are_refused_apart(self, workspace: Path) -> None:
         """A5: a direct-only tool says to call it directly, a blocked one gives the typed
         permission refusal, and only an unknown name is "No tool named". SABOTAGE: drop
@@ -239,12 +304,13 @@ class TestKernel:
         assert not hasattr(tool_module, "call_timeout_s")
         assert not hasattr(dispatch_module, "max_nested_calls")
 
-    def test_the_output_limit_reaches_the_kernel(self, workspace: Path, monkeypatch: Any) -> None:
-        # code.max_output_bytes is resolved where the kernel starts and passed to it.
-        monkeypatch.setenv("CLIO_CODE_MAX_OUTPUT_BYTES", "10")
-        outcome = _run("print('x' * 100)", scope="limited")
+    def test_the_kernel_returns_the_whole_output(self, workspace: Path) -> None:
+        """All of a script's output reaches the host (and clio-core), past the old 2 MB cut.
+        SABOTAGE: read only the capture's first 2 MB -> red."""
+        assert not hasattr(kernels, "max_output_bytes")
+        outcome = _run("print('x' * 2_500_000)", scope="whole")
         assert outcome["status"] == "completed", outcome
-        assert outcome["output"].startswith("x" * 10 + "\n[output cut at 10 of 101 bytes]")
+        assert outcome["output"].rstrip("\r\n") == "x" * 2_500_000
 
     def test_a_replaced_kernel_tells_the_model_its_variables_are_gone(
         self, workspace: Path

@@ -47,7 +47,7 @@ SCOPE = "openid profile email offline_access"
 JWT_AUTH_CLAIM = "https://api.openai.com/auth"
 
 # ---------------------------------------------------------------------------
-# Device code (headless / clio-relay on HPC login nodes)
+# Device code (headless, such as an HPC login node)
 # ---------------------------------------------------------------------------
 DEVICE_USERCODE_URL = f"{AUTH_BASE}/api/accounts/deviceauth/usercode"
 DEVICE_TOKEN_URL = f"{AUTH_BASE}/api/accounts/deviceauth/token"

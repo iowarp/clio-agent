@@ -1,0 +1,94 @@
+---
+title: IRI
+description: Run jobs and move files through a facility's IRI API, the common REST interface NERSC, ALCF, OLCF and ESnet serve. Relay needs the API's address and a token; nothing is installed on the machine.
+---
+
+import Capture from '../../../../components/overview/Capture';
+import { captureImage } from '../../../../lib/captures';
+import iriSkipped from '../../../../assets/captures/relay/iri-skipped.png';
+import iriSkippedPhone from '../../../../assets/captures/relay/iri-skipped-phone.png';
+
+The **IRI** protocol uses the IRI Facility API, the common REST interface that NERSC,
+ALCF, OLCF and ESnet serve for compute and files. Its job description follows PSI/J,
+like relay's, so a relay job maps onto it field by field. Relay needs the facility's
+address and a token. Nothing is installed on the machine.
+
+It takes `describe`, `run` and `files`. It needs no extra.
+
+## Add an IRI endpoint
+
+On the [Compute page](/docs/compute/), choose **Add endpoint**, fill in **Your own**,
+and choose the **IRI** tab. Set **base_url**, **api_version** and **resource_id**.
+
+```yaml
+- id: perlmutter-iri
+  name: NERSC Perlmutter through IRI
+  adapter: iri
+  identity: globus
+  config:
+    base_url: https://api.iri.nersc.gov
+    api_version: v2
+    resource_id: <compute resource id>
+    scope: https://auth.globus.org/scopes/ed3e577d-f7f3-4639-b96e-ff5a8445d699/iri_api
+  defaults: {account: <your project>}
+```
+
+The facility lists its resources at `GET /api/v2/compute/resources`. Once you are
+signed in, `describe` prints that list, so you can pick `resource_id` from it. If files
+live on another resource, set `filesystem_resource_id`.
+
+In the catalog, ALCF Polaris lists IRI as a second protocol beside Globus. Its IRI
+settings have no `resource_id`, so after `clio-relay site switch polaris iri`, set one
+with `site edit` (see the [command line reference](/docs/relay/cli/#site)). Until
+then, relay skips IRI and keeps using Globus:
+<Capture client:visible image={await captureImage(iriSkipped)}
+  alt="The output of clio-relay site show polaris after switching to IRI: describe and run go to globus, and iri is listed as skipped with invalid_config"
+  caption="After site switch polaris iri, without a resource_id. Relay skips IRI, says why, and keeps using Globus."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(iriSkippedPhone)}
+  alt="The output of clio-relay site show polaris after switching to IRI: describe and run go to globus, and iri is listed as skipped with invalid_config, on a phone-width terminal"
+  sizes="(min-width: 50rem) 24rem, 100vw" />
+
+## Sign in
+
+The API takes a bearer token.
+
+- Where the facility accepts Globus tokens, as NERSC does, relay uses its `globus`
+  identity with the facility's `scope`. In CLIO that is CLIO's own Globus sign-in.
+- Where a facility issues its own tokens, set `token_command` to a command that prints
+  one, such as the facility's own command-line tool.
+
+With no token, the endpoint reads **Needs a sign-in**.
+
+## Settings
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `base_url` | required | The facility's IRI API, such as `https://api.iri.nersc.gov` |
+| `api_version` | `v2` | `v1` or `v2` |
+| `resource_id` | required | The compute resource jobs go to |
+| `filesystem_resource_id` | `resource_id` | The resource `files` uses |
+| `identity` | `globus` | The relay identity that holds the token |
+| `resource_server`, `scope` | none | The facility's Globus scope |
+| `token_command` | none | A command that prints an access token instead |
+| `root` | none | Where relative paths start. Needed for relative paths. |
+| `job_root` | `.clio-relay/jobs` | Where job folders go, under `root` |
+| `content_dir` | `.clio-relay/content` | Where staged inputs go |
+| `poll_s` | 1 | The first wait between polls of a file operation |
+| `stall_s` | 600 | How long a file operation may stay unchanged before relay stops waiting |
+
+## How a job runs
+
+1. Relay writes the job's inputs into `<job_root>/<operation id>/` through the files
+   API.
+2. It submits the job. On v2 the request carries an idempotency key made from the
+   operation id, so a retried `run` returns the same job instead of a second one. On
+   v1 relay keeps its own record of the job.
+3. Relay reads the job's status from the API, and `cancel` deletes the job.
+
+## Files
+
+Each file call is a task on the facility that relay follows until it ends. The API
+moves files of up to 5 MiB. For anything larger, use the facility's Globus collection
+with the [Globus](/docs/relay/globus/) protocol.

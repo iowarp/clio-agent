@@ -11,8 +11,10 @@ newline-delimited JSON over stdin and the original stdout:
   ``{"type": "result", "id": k, "ok": bool, "value": ..., "error": "..."}`` answering a
   call;
 - kernel to host: ``{"type": "ready"}``, ``{"type": "bound", "failed": {name: error}}``,
-  ``{"type": "call", "id": k, "tool": name, "args": {...}}`` and ``{"type": "done", "id":
-  n, "ok": bool, "output": "...", "value": "...", "error": "..."}``.
+  ``{"type": "call", "id": k, "tool": name, "args": {...}, "binding"?: name}`` (``binding``:
+  the plugin binding whose code made the call), ``{"type": "started", "id": n, "threads":
+  k}`` (the threads earlier scripts left running, as a script starts) and ``{"type":
+  "done", "id": n, "ok": bool, "output": "...", "value": "...", "error": "..."}``.
 
 The script's names come from one binding registry: ``tools`` is its first entry, generated
 from the stubs; each plugin binding is its source run in a module that holds ``tools`` and
@@ -48,14 +50,20 @@ import traceback
 import types
 from typing import Any, cast
 
-#: How much of one script's output the kernel returns (the host bounds it further) when
-#: the host passes no limit; the host passes ``code.max_output_bytes`` as the first argument.
-OUTPUT_LIMIT = 2_000_000
 _FLAGS = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
 
 
 class ToolError(Exception):
-    """A tool call made by the script failed; the message is the tool's error."""
+    """A tool call made by the script failed; the message is the tool's error.
+
+    ``structured`` is the failed result's structured content when the tool returned one
+    (an MCP ``isError`` result's ``structuredContent``: its code, phase, retry hint), else
+    ``None``.
+    """
+
+    def __init__(self, message: str = "", structured: Any = None) -> None:
+        super().__init__(message)
+        self.structured = structured
 
 
 def _wire(value: Any) -> Any:
@@ -91,9 +99,10 @@ class _Host:
             self.out.write(line + "\n")
             self.out.flush()
 
-    def call(self, tool: str, args: dict[str, Any]) -> asyncio.Future[Any]:
+    def call(self, tool: str, args: dict[str, Any], binding: str = "") -> asyncio.Future[Any]:
         """Send the call now; the future settles with its answer. A call is made when the
-        script makes it, so one it does not await still happens (and is waited for)."""
+        script makes it, so one it does not await still happens (and is waited for).
+        ``binding`` names the plugin binding whose code made the call."""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:  # a script with no await runs outside the loop; the kernel's
@@ -104,7 +113,8 @@ class _Host:
             call_id = self.next_id
             self.pending[call_id] = (loop, future)
         try:
-            self.send({"type": "call", "id": call_id, "tool": tool, "args": args})
+            message = {"type": "call", "id": call_id, "tool": tool, "args": args}
+            self.send(message | ({"binding": binding} if binding else {}))
         except TypeError:  # an argument JSON cannot hold: the script's error, nothing sent
             with self.lock:
                 self.pending.pop(call_id, None)
@@ -124,7 +134,9 @@ class _Host:
             if message.get("ok"):
                 future.set_result(message.get("value"))
             else:
-                future.set_exception(ToolError(str(message.get("error") or "tool call failed")))
+                future.set_exception(
+                    ToolError(str(message.get("error") or "tool call failed"), message.get("value"))
+                )
 
         loop.call_soon_threadsafe(settle)
 
@@ -135,11 +147,11 @@ class _Host:
                 del self.pending[call_id]
 
 
-def _function(host: _Host, tool: str, spec: dict[str, Any]) -> Any:
+def _function(host: _Host, tool: str, spec: dict[str, Any], binding: str = "") -> Any:
     """One callable tool: ``await tools.fs.read_file(path=...)``."""
 
     def stub(**kwargs: Any) -> asyncio.Future[Any]:
-        return host.call(tool, kwargs)
+        return host.call(tool, kwargs, binding)
 
     stub.__name__ = stub.__qualname__ = str(spec.get("function") or tool)
     stub.__doc__ = f"{spec.get('signature') or tool}\n\n{spec.get('doc') or ''}".strip()
@@ -159,25 +171,31 @@ class _Namespace:
 
 
 class _Tools(_Namespace):
-    """Every tool this agent may call from a script, grouped by server."""
+    """Every tool this agent may call from a script, grouped by server.
 
-    def __init__(self, host: _Host, stubs: dict[str, Any]) -> None:
+    A plugin binding's module holds its own ``tools`` (``binding`` is its name), so the
+    host knows a call came from that binding's code: from ``page.goto(url)`` on a page an
+    earlier script opened, too, where the script's text never names the binding.
+    """
+
+    def __init__(self, host: _Host, stubs: dict[str, Any], binding: str = "") -> None:
         super().__init__("tools", "Tools callable from this script; help(tools.<group>).")
         self._host = host
+        self._binding = binding
         for group, functions in (stubs.get("groups") or {}).items():
             target: _Namespace = self if group == "" else _Namespace(group)
             for function, spec in functions.items():
-                setattr(target, function, _function(host, str(spec["tool"]), spec))
+                setattr(target, function, _function(host, str(spec["tool"]), spec, binding))
             if group:
                 setattr(self, group, target)
 
     def search(self, query: str, limit: int = 5) -> asyncio.Future[Any]:
         """Find tools by name or keywords (the same catalog as search_tools)."""
-        return self._host.call("__search__", {"query": query, "limit": limit})
+        return self._host.call("__search__", {"query": query, "limit": limit}, self._binding)
 
     def call(self, name: str, /, **args: Any) -> asyncio.Future[Any]:
         """Call a tool by its full name, for names found with tools.search."""
-        return self._host.call(name, args)
+        return self._host.call(name, args, self._binding)
 
 
 class _Bindings:
@@ -187,13 +205,11 @@ class _Bindings:
         self.host = host
         self.namespace = namespace
         self.modules: dict[str, types.ModuleType] = {}
-
-    def _tools(self, stubs: dict[str, Any]) -> Any:
-        return _Tools(self.host, stubs)
+        self.stubs: dict[str, Any] = {}
 
     def _plugin(self, name: str, spec: dict[str, Any]) -> Any:
         module = types.ModuleType(f"clio_binding_{name}")
-        module.__dict__.update(tools=self.namespace.get("tools"), ToolError=ToolError)
+        module.__dict__.update(tools=_Tools(self.host, self.stubs, name), ToolError=ToolError)
         code = compile(str(spec.get("source") or ""), f"<binding {name}>", "exec")
         exec(code, module.__dict__)  # noqa: S102 - a trusted plugin's binding (plugin check)
         if "export" not in module.__dict__:
@@ -204,9 +220,10 @@ class _Bindings:
     def bind(self, message: dict[str, Any]) -> dict[str, str]:
         """Apply one ``bind`` message; the bindings that failed, with their errors."""
         if "stubs" in message:
-            self.namespace["tools"] = self._tools(message.get("stubs") or {})
-            for module in self.modules.values():  # bindings call the current tools
-                module.__dict__["tools"] = self.namespace["tools"]
+            self.stubs = message.get("stubs") or {}
+            self.namespace["tools"] = _Tools(self.host, self.stubs)
+            for name, module in self.modules.items():  # bindings call the current tools
+                module.__dict__["tools"] = _Tools(self.host, self.stubs, name)
         for name in message.get("unbind") or ():
             self.modules.pop(str(name), None)
             self.namespace.pop(str(name), None)
@@ -273,20 +290,17 @@ def _restore(saved: tuple[int, int]) -> None:
     os.close(saved[1])
 
 
-def _read_output(capture: Any, limit: int = OUTPUT_LIMIT, *, keep: bool = False) -> str:
-    """The script's output, its first ``limit`` bytes; a kept file (a background script's
-    output file) is left whole for the person and the agent to read."""
+def _read_output(capture: Any, *, keep: bool = False) -> str:
+    """The script's whole output (the model is shown a bounded view of it by the host,
+    and clio-core records it whole); a kept file (a background script's output file) is
+    left in place for the person and the agent to read."""
     capture.flush()
-    size = capture.seek(0, os.SEEK_END)
     capture.seek(0)
-    data = capture.read(limit)
+    data = capture.read()
     if not keep:
         capture.seek(0)
         capture.truncate()
-    text = data.decode("utf-8", errors="replace")
-    if size > limit:
-        text += f"\n[output cut at {limit:,} of {size:,} bytes]"
-    return text
+    return data.decode("utf-8", errors="replace")
 
 
 def _script_traceback(exc: BaseException) -> str:
@@ -305,7 +319,6 @@ def _execute(
     code: str,
     capture: Any,
     host: _Host | None = None,
-    output_limit: int = OUTPUT_LIMIT,
     *,
     keep: bool = False,
 ) -> dict[str, Any]:
@@ -329,7 +342,7 @@ def _execute(
         if host is not None:
             host.forget_settled()
         _restore(saved)
-    output = _read_output(capture, output_limit, keep=keep)
+    output = _read_output(capture, keep=keep)
     if stopped:
         output += (
             f"\n[{stopped} task{'s' if stopped != 1 else ''} this script started "
@@ -340,7 +353,6 @@ def _execute(
 
 def main() -> None:
     """Serve scripts until stdin closes."""
-    output_limit = int(sys.argv[1]) if len(sys.argv) > 1 else OUTPUT_LIMIT
     protocol = io.TextIOWrapper(os.fdopen(os.dup(1), "wb"), encoding="utf-8")
     host = _Host(protocol)
     requests = os.fdopen(os.dup(0), "r", encoding="utf-8")
@@ -364,6 +376,8 @@ def main() -> None:
         work.put(None)
 
     threading.Thread(target=read, name="kernel-stdin", daemon=True).start()
+    #: The kernel's own threads; any other was started by a script and may still be running.
+    own_threads = set(threading.enumerate())
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     namespace: dict[str, Any] = {"__name__": "__main__", "ToolError": ToolError}
@@ -376,11 +390,13 @@ def main() -> None:
         elif message.get("type") == "exec":
             code = str(message.get("code") or "")
             path = str(message.get("output_path") or "")
+            earlier = [t for t in threading.enumerate() if t not in own_threads]
+            host.send({"type": "started", "id": message.get("id"), "threads": len(earlier)})
             if path:  # a background script: output goes to its file as it is written
                 with open(path, "ab+") as written:
-                    done = _execute(loop, namespace, code, written, host, output_limit, keep=True)
+                    done = _execute(loop, namespace, code, written, host, keep=True)
             else:
-                done = _execute(loop, namespace, code, capture, host, output_limit)
+                done = _execute(loop, namespace, code, capture, host)
             host.send({"type": "done", "id": message.get("id"), **done})
 
 

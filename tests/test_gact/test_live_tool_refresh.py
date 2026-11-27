@@ -13,7 +13,6 @@ from typing import Any
 import dspy
 import pytest
 
-from clio_agent.gact.agents.always_load_tools import attach_always_load_tools
 from clio_agent.gact.agents.clio_react import ClioReAct
 from clio_agent.gact.agents.live_tool_refresh import (
     LiveToolRefresher,
@@ -21,6 +20,7 @@ from clio_agent.gact.agents.live_tool_refresh import (
     live_tool_refresher,
     refresh_executor_tools,
 )
+from clio_agent.gact.agents.person_servers import attach_person_servers, executor_person_servers
 from tests._scripted_engine import calls, scripted_lm
 
 
@@ -121,23 +121,33 @@ def test_a_failing_executor_refresh_is_typed_not_raised(monkeypatch: pytest.Monk
     assert events and events[0].startswith("mcp_tools_refresh_failed")
 
 
-def test_always_load_attach_reports_the_namespaces_it_takes_whole() -> None:
+def test_person_servers_are_taken_whole_and_a_when_asked_one_is_deferred() -> None:
     class _Spec:
-        always_load = True
+        def __init__(self, source: str, always_load: bool) -> None:
+            self.source, self.always_load = source, always_load
 
     class _Executor:
-        _clio_namespace_specs = {"nb": _Spec()}
+        _clio_namespace_specs = {
+            "nb": _Spec("user", True),
+            "notes": _Spec("workspace", False),
+            "pack": _Spec("plugin:p", False),
+        }
 
         def to_dspy_tools(self) -> list[dspy.Tool]:
-            return [dspy.Tool(lambda: "true", name="nb_open")]
+            return [
+                dspy.Tool(lambda: "true", name=name)
+                for name in ("nb_open", "notes_add", "pack_run")
+            ]
 
     picked: dict[str, Any] = {}
     requested: list[str] = []
 
-    whole = attach_always_load_tools(_Executor(), picked, {}, requested)
+    whole = attach_person_servers(_Executor(), picked, {}, requested)
 
-    assert whole == {"nb"}
-    assert set(picked) == {"nb_open"}
+    assert whole == {"nb", "notes"}
+    assert set(picked) == {"nb_open", "notes_add"}
+    rows = executor_person_servers(_Executor())
+    assert {name: row["defer"] for name, row in rows.items()} == {"nb": None, "notes": True}
 
 
 @pytest.mark.usefixtures("clio_core_plane")

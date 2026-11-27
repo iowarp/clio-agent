@@ -34,6 +34,17 @@ def _tree_root(app: Any, sid: str) -> str:
     return task.owner.session_id if task is not None else sid
 
 
+def _rootless_lease_target(server_set: str) -> str:
+    """The fleet key a rootless turn leases: its server set's fleet, or "" (none to pin).
+
+    A workspace without a root folder runs on the default executor, which is never
+    reaped, only while its session has no plugin servers (``fleet_own_set``).
+    """
+    from clio_agent.tools.fleet_serving import serving_fleet_key  # noqa: PLC0415
+
+    return serving_fleet_key("", server_set)
+
+
 async def _finish_fleet_lease_change(change: asyncio.Task[Any]) -> bool:
     """Join an off-loop lease change even when cancellation arrives during it."""
     cancelled = False
@@ -49,8 +60,13 @@ async def _finish_fleet_lease_change(change: asyncio.Task[Any]) -> bool:
 @asynccontextmanager
 async def _async_tool_session_context(sid: str) -> AsyncIterator[None]:
     """Pin the existing fleet off-loop, keeping tool ContextVars on the caller."""
-    root = _tool_workspace_root(sid)
-    agent = getattr(getattr(_ctx.active_app(), "state", None), "agent", None)
+    from clio_agent.gact.agents.resolution import session_server_set  # noqa: PLC0415
+
+    app = _ctx.active_app()
+    root = _tool_workspace_root(sid) or _rootless_lease_target(
+        session_server_set(app, sid) if app is not None else ""
+    )
+    agent = getattr(getattr(app, "state", None), "agent", None)
     lease: Callable[[str], AbstractContextManager[None]] | None = getattr(
         agent, "lease_workspace_fleet", None
     )
@@ -118,10 +134,11 @@ def _tool_session_context(sid: str, *, lease_fleet: bool = True) -> Iterator[Non
     lease: Callable[[str], AbstractContextManager[None]] | None = getattr(
         agent, "lease_workspace_fleet", None
     )
+    lease_target = workspace_root or _rootless_lease_target(server_set)
     try:
-        if lease_fleet and workspace_root and callable(lease):
+        if lease_fleet and lease_target and callable(lease):
             with (
-                lease(workspace_root),
+                lease(lease_target),
                 tool_workspace_context(workspace_root),
                 tool_write_root_context(node_folder),
                 tool_read_only_context(read_only),
@@ -130,14 +147,14 @@ def _tool_session_context(sid: str, *, lease_fleet: bool = True) -> Iterator[Non
             ):
                 yield
         else:
-            if lease_fleet and workspace_root:
+            if lease_fleet and lease_target:
                 # A rooted turn without a leasable agent runs UNPROTECTED from
                 # the #933 reaper — degraded path, so the reason is typed.
                 trace.event(
                     "TOOLS",
                     "workspace_lease_unavailable session=%s root=%s reason=agent_has_no_lease_hook",
                     sid,
-                    workspace_root,
+                    lease_target,
                 )
             with (
                 tool_workspace_context(workspace_root),

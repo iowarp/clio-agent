@@ -283,12 +283,20 @@ from clio_agent.gact.app import build_app
 # (routes/session_usage.py, from routes/session_creation.py) and the attached-client
 # count, POST/GET /v1/server/clients and DELETE .../{client_id} (gact/attached_clients.py,
 # from routes/lifecycle.py).
-# 490 -> 493: grids as maps and sections (routes/artifact_grid_views.py, 57760bcda):
+# 490 -> 494: plugin tabs (routes/plugin_tabs.py, docs/design/host-semantics-contract.md):
+# GET /v1/sessions/{sid}/plugin-tabs and POST .../plugin-tabs/{plugin}/{tab}/open, .../close
+# and .../actions.
+# 494 -> 498: plugin pages, a plugin's entry in the primary navigation
+# (routes/plugin_pages.py): GET /v1/plugin-pages and POST
+# /v1/plugin-pages/{plugin}/{page}/open, .../close and .../actions.
+# 498 -> 499: GET /v1/plugin-pages/{plugin}/{page}/status, the steps of a page's
+# latest open (routes/plugin_pages.py, gact/plugin_page_startup.py).
+# 499 -> 502: grids as maps and sections (routes/artifact_grid_views.py, 57760bcda):
 # GET /v1/artifacts/{artifact_id}/tiles/{z}/{x}/{y}.png, GET .../grid-info and
 # POST .../section-query.
-# 493 -> 495: a moved run_code script (routes/foreground_scripts.py, #2394):
+# 502 -> 504: a moved run_code script (routes/foreground_scripts.py, #2394):
 # GET /v1/sessions/{sid}/scripts/foreground and POST .../foreground/background.
-EXPECTED_ROUTE_METHOD_PAIRS = 495
+EXPECTED_ROUTE_METHOD_PAIRS = 504
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

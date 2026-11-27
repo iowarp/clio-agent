@@ -264,6 +264,11 @@ KEY_NOTES: dict[str, str] = {
         "Worker slots for background run_code scripts; each running script holds one for its "
         "life. Default 10000: nothing bounds how many scripts run, the person stops them."
     ),
+    "plugins.join_set_up": (
+        "Whether a plugin the person has set up (its manifest setup.files hold a value) joins "
+        "new conversations by default, unless the person left it out of the plugin list in "
+        "Settings or the request removes it."
+    ),
     "plugins.offer_listed": (
         "How many plugins and connectors not in a conversation the session facts name, so the "
         "agent can offer one; the total is always given and offer_plugin with no plugin lists "
@@ -360,11 +365,14 @@ KEY_NOTES: dict[str, str] = {
     ),
     "arc.cte.auto_expand": (
         "Allow bounded live capacity additions when CLIO's generated file store is full; "
-        "disable to retain a fixed capacity. Explicit file_capacity settings disable growth."
+        "disable to retain a fixed capacity. An explicit file_capacity is the seed size, not a "
+        "ceiling: that store grows too."
     ),
     "arc.cte.file_capacity": (
         'Capacity (e.g. "20GB") of clio-core\'s disk file tier; unset, a fresh install sizes it '
-        "to 10% of the disk's free space (2-50 GB). Windows allocates it up front."
+        "to 10% of the disk's free space (2-50 GB). The file grows in 1 GiB chunks up to that "
+        "limit on every OS. A full tier grows unless arc.cte.auto_expand is off; a store CLIO "
+        "cannot grow that is under 2 GB is warned at boot with the fix."
     ),
     "arc.cte.ram_capacity": (
         'Hard byte ceiling (e.g. "1GB") for clio-core\'s RAM working arena; raise for more '
@@ -867,13 +875,10 @@ KEY_NOTES: dict[str, str] = {
         "ceiling. When set, a call without a timeout runs up to this ceiling."
     ),
     "limits.tool_structured_bytes": (
-        "Byte bound on a tool result's structured content in the transcript and trace (a "
-        "script still receives the whole value); larger payloads are recorded as an envelope "
-        "with reason structured_content_over_wire_cap."
-    ),
-    "limits.tool_result_record_bytes": (
-        "Largest tool result, in JSON bytes, a call's record keeps inline (at least 1024); "
-        "past it the record keeps the result's head and the whole result in a file."
+        "Byte bound on the preview of a tool result's structured content on the wire and in "
+        "the transcript row (a script still receives the whole value); larger payloads show "
+        "an envelope with reason structured_content_over_wire_cap. The call's "
+        "tool.call.completed event in clio-core keeps the whole value."
     ),
     "limits.tool_result_chars": (
         "Character bound on the transcript/evidence-metadata preview of a tool result; raise to "
@@ -1303,6 +1308,10 @@ KEY_NOTES: dict[str, str] = {
         "Whether tool-execution sandboxing/confinement is applied; disable only for trusted local "
         "dev where sandbox setup gets in the way."
     ),
+    "sandbox.forward_tcp": (
+        "Raw TCP host:port endpoints (a Slurm controller) that Linux-fenced children reach "
+        "through CLIO's proxy, which records them and asks the person; empty forwards nothing."
+    ),
     "scheduler.jitter_window_s": (
         "Seconds-wide window a schedule's fire time is deterministically jittered within; raise to "
         "spread schedules sharing one provider quota."
@@ -1366,6 +1375,10 @@ KEY_NOTES: dict[str, str] = {
     "sessions.cache_records": (
         "How many conversation-list rows stay in memory; older rows are read from clio-core "
         "when the list pages to them."
+    ),
+    "sessions.delete_settle_s": (
+        "Seconds deleting a conversation waits for the turn and tasks it stopped to settle "
+        "before refusing with 409; raise for servers that take long to cancel."
     ),
     "spotter.clearance_progress_timeout_s": (
         "No-progress window (seconds) between observable SPOTTER watcher signals before a "
@@ -1516,16 +1529,18 @@ KEY_NOTES: dict[str, str] = {
         "the prompt entry names them all."
     ),
     "tools.instructions_chars": (
-        "Characters of an MCP server's own instructions used to describe a deferred server in "
-        "the prompt's listing, when its plugin gives no description; a shortened entry says "
-        "so, and search_tools returns the whole instructions with the server's tools."
+        "Characters of each MCP server's own instructions that the prompt carries, for a "
+        "listed or a deferred server; a shortened excerpt says so, and search_tools returns "
+        "the whole instructions with a deferred server's tools."
+    ),
+    "tools.instructions_refresh_s": (
+        "Seconds a turn waits, before its prompt is built, for each kept-alive MCP server to "
+        "say again what it says about itself (server/discover on its open connection), so a "
+        "server whose instructions change while it runs is described as it is now; 0 turns "
+        "the refresh off."
     ),
     "code.max_script_chars": (
         "Characters of a run_code script that a permission question shows the person."
-    ),
-    "code.max_output_bytes": (
-        "Bytes of one run_code script's printed output the kernel returns; the rest is cut "
-        "with a note. Read when a kernel starts."
     ),
     "code.start_timeout_s": (
         "Seconds a run_code kernel has to start, or to take its tools, before it counts as failed."
@@ -1577,8 +1592,9 @@ KEY_NOTES: dict[str, str] = {
         "legitimately relies on symlinked paths."
     ),
     "tools.file_policy.allowed_roots": (
-        "Root directories every tool file read/write must resolve inside (default: cwd + system "
-        "temp dir); add a root to grant access."
+        "Root directories every tool file read/write must resolve inside (default: system "
+        "temp dir, plus the session's workspace, or cwd when no workspace is bound); add a "
+        "root to grant access."
     ),
     "tools.file_policy.max_file_size_bytes": (
         "Byte-size cap (accepts K/M/G/T suffixes) on a file a tool loads whole into memory "
@@ -1602,11 +1618,11 @@ KEY_NOTES: dict[str, str] = {
         "recover faster, raise to cut retry noise."
     ),
     "tools.mcp.elicitation.agent_audience.default_unhinted": (
-        "Whether an UNHINTED form-mode elicitation defaults to the agent. fastmcp drops the "
-        "nested _meta on the InputRequiredResult round-trip, so an explicit "
-        "x-clio-agent/audience tag cannot survive MRTR; on = route by the negotiated "
-        "agent-driven-elicitation extension contract, off = strict explicit-tag routing "
-        "(unhinted questions go to the human)."
+        "Whether an UNHINTED form-mode elicitation goes to the agent. Off: only an explicit "
+        "x-clio-agent/audience=agent tag routes to the agent, and an untagged question (a "
+        "spend approval, a review) reaches the person while the turn waits. fastmcp drops the "
+        "nested _meta on the InputRequiredResult round-trip, so turn on only when your "
+        "servers need agent answers over MRTR."
     ),
     "tools.mcp.elicitation.agent_audience.denied_servers": (
         "CSV of declared MCP server names whose agent-audience elicitations always fall back to "
@@ -1654,6 +1670,17 @@ KEY_NOTES: dict[str, str] = {
     "tools.mcp.provision_max_wait_s": (
         "Ceiling (seconds) on building one MCP server's environment before it starts (uv sync, "
         "clio-kit --prepare); a build that stops making progress fails sooner, typed."
+    ),
+    "tools.mcp.install_prebuild": (
+        "Build a trusted page plugin's MCP server environments (byte-compiled) in the background "
+        "when its marketplace is installed, updated or trusted and when the app first lists its "
+        "pages, so opening the page does not wait; set false to build them only when a server "
+        "first starts."
+    ),
+    "tools.mcp.page_prestart_s": (
+        "Seconds a page plugin that built cleanly keeps its servers after CLIO starts them in "
+        "the background (at install and when the app first lists its pages), so the first open "
+        "of the page finds its server running; 0 turns prestarting off."
     ),
     "tools.mcp.probe_timeout_retries": (
         "Retries of the era-negotiation probe after a client-side timeout before giving up; raise "

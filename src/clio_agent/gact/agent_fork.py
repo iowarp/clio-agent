@@ -267,7 +267,7 @@ async def _approved(app: Any, session: Any, plan: dict[str, Any], invocation: st
 
     await history.io.run(post)
     waited = await app.state.task_operations.wait(caller, handle, "all")
-    if waited.get("pending"):
+    if waited.get("unfinished"):
         return None
 
     def collect() -> None:

@@ -211,6 +211,9 @@ _WINDOWS_MCP_BUILD_DIR = "clio-m"
 #: marketplace sits about 140 characters below the store root (snapshot + digest + repo).
 WINDOWS_PLUGIN_STORE_ROOT_MAX = 80
 _WINDOWS_PLUGIN_STORE_DIR = "clio-p"
+_WINDOWS_UV_CACHE_DIR = "clio-u"
+#: The ``%LOCALAPPDATA%`` folders holding short roots, each ``<tag>\\<hash>\\owner.txt``.
+WINDOWS_SHORT_ROOT_TAGS = ("clio-m", "clio-p", "clio-s", "clio-u")
 
 
 def _windows_short_path(long_root: Path, tag: str, env: Mapping[str, str] | None) -> Path:
@@ -332,8 +335,15 @@ def shared_uv_cache_dir() -> Path:
 
     A sibling of the per-workspace ``sandbox`` caches, never the cache root itself: a
     shell's write fence grants this folder alone, so CLIO's own caches stay out of reach.
+    On Windows a ``<cache>\\uv-shared`` deeper than :data:`WINDOWS_MCP_BUILD_ROOT_MAX` is
+    ``%LOCALAPPDATA%\\clio-u\\<hash>`` instead: its packages' DLLs load by real path, so a
+    link cannot shorten it. ``owner.txt`` there names the home's folder, and the home's
+    cleanup (``runtime.short_root_sweep``) removes it once that home is gone.
     """
-    return user_cache_dir() / "uv-shared"
+    shared = user_cache_dir() / "uv-shared"
+    if _platform() != "windows" or len(str(shared)) <= WINDOWS_MCP_BUILD_ROOT_MAX:
+        return shared
+    return _windows_short_root(shared, _WINDOWS_UV_CACHE_DIR) or shared
 
 
 def workspace_shared_dir(root: str | Path) -> Path:

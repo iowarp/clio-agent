@@ -169,11 +169,11 @@ def test_document_tool_refuses_outside_workspace_before_preparing_runtime(
         document_tools.build_prepare_document_tool().func(path=str(outside))
 
 
-def test_document_tool_accepts_the_workspaces_uploaded_inputs_only(
+def test_document_tool_accepts_the_workspaces_inputs_and_tool_output_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An attachment's working copy lives in workspace state, outside the project root."""
+    """Attachments and CLIO's own tool outputs live in workspace state, outside the root."""
     from clio_agent import paths
 
     root = tmp_path / "workspace"
@@ -182,6 +182,9 @@ def test_document_tool_accepts_the_workspaces_uploaded_inputs_only(
     upload = state / "inputs" / "res_abc123" / "report.docx"
     upload.parent.mkdir(parents=True)
     upload.write_bytes(b"docx")
+    fetched = state / "tool-output" / "sess_abc" / "search" / "note.pdf"
+    fetched.parent.mkdir(parents=True)
+    fetched.write_bytes(b"%PDF")
     sibling = state / "sessions" / "notes.docx"
     sibling.parent.mkdir(parents=True)
     sibling.write_bytes(b"docx")
@@ -206,6 +209,8 @@ def test_document_tool_accepts_the_workspaces_uploaded_inputs_only(
     tool = document_tools.build_prepare_document_tool()
     assert tool.func(path=str(upload), action="render")["status"] == "ready"
     assert seen[0][:2] == ["render", str(upload.resolve())]
+    assert tool.func(path=str(fetched), action="render")["status"] == "ready"
+    assert seen[1][:2] == ["render", str(fetched.resolve())]
     with pytest.raises(ValueError, match="inside the active workspace"):
         tool.func(path=str(sibling))
     with pytest.raises(ValueError, match="inside the active workspace"):

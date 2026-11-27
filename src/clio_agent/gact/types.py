@@ -168,7 +168,6 @@ class Capabilities(BaseModel):
     transports: TransportFlags = Field(default_factory=TransportFlags)
     auth: AuthInfo = Field(default_factory=AuthInfo)
     extensions: list[Extension] = Field(default_factory=list)
-    relay: dict[str, Any] = Field(default_factory=dict)
     versions: Optional[VersionInfo] = None  # additive (#A5)
 
 

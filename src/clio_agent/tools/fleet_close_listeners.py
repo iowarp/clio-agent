@@ -49,10 +49,18 @@ def fleet_proxies(executor: Any) -> tuple[Any, ...]:
     return tuple(servers.values()) if isinstance(servers, dict) else ()
 
 
-def proxies_dropped(root: str, proxies: Iterable[Any], reason: str) -> None:
-    """Notify every listener that ``proxies`` of fleet ``root`` are no longer routed to."""
+def proxies_dropped(root: str, proxies: Iterable[Any], reason: str, *, by: Any = None) -> None:
+    """Notify every listener that ``proxies`` of fleet ``root`` are no longer routed to.
+
+    With ``by`` (the executor that dropped them), a proxy another open fleet still
+    routes to is left out: that fleet shares its server (MI1) and keeps it.
+    """
 
     dropped = tuple(proxy for proxy in proxies if proxy is not None)
+    if by is not None:
+        from clio_agent.tools import namespace_instances  # noqa: PLC0415
+
+        dropped = namespace_instances.unshared(dropped, by)
     if not dropped:
         return
     with _LOCK:
@@ -73,4 +81,4 @@ def proxies_dropped(root: str, proxies: Iterable[Any], reason: str) -> None:
 def fleet_closed(root: str, executor: Any, reason: str) -> None:
     """:func:`proxies_dropped` for every proxy of a fleet that was just closed."""
 
-    proxies_dropped(root, fleet_proxies(executor), reason)
+    proxies_dropped(root, fleet_proxies(executor), reason, by=executor)

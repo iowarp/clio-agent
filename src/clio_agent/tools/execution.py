@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextvars
+import hashlib
 import inspect
 import json
 import logging
@@ -20,11 +21,20 @@ from typing import TYPE_CHECKING, Any, Iterator, Optional, Protocol, cast
 from clio_agent import conf, injections
 from clio_agent.errors import ClioError
 from clio_agent.runtime import commitment_activity
+from clio_agent.runtime.cancellation import with_scope_stop
 from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools import foreground_cancellation as foreground_cancel
-from clio_agent.tools import harness_notes, mcp_result_media, task_descriptions, tool_presentation
+from clio_agent.tools import (
+    harness_notes,
+    mcp_result_media,
+    server_confirm,
+    stall_watch,
+    task_descriptions,
+    tool_presentation,
+)
 from clio_agent.tools import task_call_context as task_calls
 from clio_agent.tools import tool_path_contract as tool_paths
+from clio_agent.tools.mcp_a2ui_result import model_result
 from clio_agent.tools.mcp_executor import (
     SYNC_TOOL_RESULT_GRACE_SECONDS,
     AsyncMCPToolExecutor,
@@ -37,9 +47,8 @@ from clio_agent.tools.mcp_executor import (
     _tool_visible_to_model,
 )
 from clio_agent.tools.mcp_namespace_executor import SyncNamespacePreparationMixin
-from clio_agent.tools.mcp_result_projection import bounded_model_tool_result
 from clio_agent.tools.path_hints import missing_path_hint
-from clio_agent.tools.result_errors import structured_tool_result_error
+from clio_agent.tools.result_errors import FailedObservation, structured_tool_result_error
 from clio_agent.tools.tool_hooks import InterceptDecision, PostToolHook, assemble_model_observation
 from clio_agent.tools.tool_observation import (
     LegacyToolObserver,
@@ -227,6 +236,16 @@ def recorded_tool_runtime_reasons() -> list[dict[str, Any]]:
         return list(_TOOL_RUNTIME_REASONS)
 
 
+def resolved_tool_runtime() -> ToolRuntimeHooks | None:
+    """The live turn's hooks when an app resolves them, else ``None`` (no fallback, no reason).
+
+    For a probe that only reads a hook when one is bound (a wait that ends on Stop).
+    """
+
+    resolver = _TOOL_RUNTIME_RESOLVER
+    return resolver() if resolver is not None else None
+
+
 def current_tool_runtime() -> ToolRuntimeHooks:
     """Resolve the live tool-runtime hook bundle for THIS tool call (#735 seam).
 
@@ -366,7 +385,13 @@ def _declared_mcp_permission_context(
     if not separator or namespace not in namespace_servers:
         return None
     title = tool.get("title") if isinstance(tool, Mapping) else getattr(tool, "title", None)
-    context = {"kind": "external_mcp", "annotations": dict(_tool_annotations(tool))}
+    context: dict[str, Any] = {
+        "kind": "external_mcp",
+        "annotations": dict(_tool_annotations(tool)),
+        "server": namespace,
+    }
+    if server_confirm.declares(tool):  # its server asks the person itself (one card)
+        context["server_confirm"] = True
     return {**context, "title": title} if title else context  # a view-only tool's own title
 
 
@@ -501,7 +526,11 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             self.close()
             raise
         except Exception as exc:
+            from clio_agent.errors import CancellationError  # noqa: PLC0415
+
             self.close()
+            if isinstance(exc, CancellationError):
+                raise  # the person stopped the turn; it is not a setup failure
             raise RuntimeError(f"SyncMCPToolExecutor setup failed: {exc}") from exc
 
     @property
@@ -567,7 +596,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             self._inflight += 1
             self._last_activity = time.monotonic()
         try:
-            with call_identity_scope():
+            with call_identity_scope(), stall_watch.watch("tool_call_before_started", name):
                 return self._call_tool_inner(name, args, return_raw=False)
         finally:
             with self._inflight_lock:
@@ -587,12 +616,33 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             self._inflight += 1
             self._last_activity = time.monotonic()
         try:
-            with call_identity_scope():
+            with call_identity_scope(), stall_watch.watch("tool_call_before_started", name):
                 return self._call_tool_inner(name, args, return_raw=True)
         finally:
             with self._inflight_lock:
                 self._inflight -= 1
                 self._last_activity = time.monotonic()
+
+    def _server_cwd(self, name: str) -> str:
+        """The working directory tool ``name``'s server resolves a relative path in.
+
+        A stdio server's is the folder CLIO started it in; CLIO's in-process built-ins
+        resolve one as its file policy does. ``""`` when the server's files are not on
+        this machine (a remote one) or its directory is unknown.
+        """
+
+        from clio_agent.tools import namespace_instances  # noqa: PLC0415
+        from clio_agent.tools.builtin_gateway import builtin_servers  # noqa: PLC0415
+        from clio_agent.tools.file_policy import relative_base  # noqa: PLC0415
+
+        namespace = name.partition("_")[0]
+        proxy = self._async_executor._namespace_servers.get(namespace)
+        if proxy is not None:
+            return namespace_instances.server_cwd(proxy)
+        if namespace in {builtin for builtin, _server in builtin_servers()}:
+            base = relative_base()
+            return str(base) if base is not None else ""
+        return ""
 
     def _call_tool_inner(
         self,
@@ -605,22 +655,21 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
         permission_gate = self._permission_gate or hooks.permission_gate
         tool_observer = self._tool_observer or hooks.tool_observer
         mcp_app_observer = hooks.mcp_app_observer
-        cancellation_checker = hooks.cancellation_checker
+        cancellation_checker = with_scope_stop(hooks.cancellation_checker)
 
         def raise_if_cancelled(stage: str) -> None:
             if cancellation_checker is not None and cancellation_checker():
                 raise foreground_cancel._tool_cancellation_error(name, stage)
 
-        # The call runs exactly as the agent asked (relative paths resolve against the
-        # workspace root); a failed call gets a "did you mean" hint, never a rewrite.
-        definition = tool_paths.bind_call(name, self._mcp_tools.get(name))  # its paths
-        effective_args = _ground_output_paths(  # fastmcp-4 snake-case-aware schema read
-            dict(args), _tool_input_schema(definition), get_active_tool_workspace_root()
-        )
-        if refusal := _node_output_refusal(effective_args):  # outside an isolated node's folder
-            raise notify_refused_call(tool_observer, name, effective_args, refusal)
+        # The call runs exactly as the agent asked: a relative path is the server's to
+        # resolve, against its working directory; a failed call gets a "did you mean"
+        # hint, never a rewrite.
+        tool_paths.bind_call(name, self._mcp_tools.get(name))  # its paths
+        effective_args = dict(args)
+        _bind_server_cwd(name, self._server_cwd(name))
 
         approval = task_calls.capture_approval(name, effective_args) if permission_gate else None
+        decision_seen: Any = None
         if permission_gate is not None:
             permission_context = _declared_mcp_permission_context(
                 name,
@@ -642,6 +691,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
                 deny_message = getattr(decision, "deny_message", "")
                 message = deny_message or f"tool call {name!r} denied by permission gate"
                 raise notify_refused_call(tool_observer, name, effective_args, message, decision)
+            decision_seen = decision
 
         raise_if_cancelled("tool_call_before")
 
@@ -680,6 +730,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             )
             return f"{synthesized}\n\n{observation}"
 
+        stall_watch.passed()
         observer_handle = notify_tool_observer(tool_observer, name, effective_args, "started", None)
         presentation_snapshot = tool_presentation.capture_tool_presentation(name, effective_args)
         forward_progress = observer_progress_handler(
@@ -688,7 +739,9 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
 
         app_loop = task_calls.application_loop()
         timeout = foreground_cancel.inline_timeout(self._async_executor, name, effective_args)
-        task_call_token = task_calls.begin_invocation(approval=approval)
+        task_call_token = task_calls.begin_invocation(
+            approval=approval, server_confirm=bool(getattr(decision_seen, "server_confirm", False))
+        )
         try:
             with commitment_activity.track(timeout is None):
                 outcome = foreground_cancel._run_foreground_coroutine(
@@ -741,7 +794,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             raise
         finally:
             task_calls.TASK_CALL.reset(task_call_token)
-        result = bounded_model_tool_result(outcome.model_text)  # caller's thread: workspace custody
+        result = model_result(name, outcome, return_raw=return_raw)  # caller's thread: custody
         mcp_result_media.show_to_model(outcome.raw_result, name)  # its images reach the model
         observer_result = tool_presentation.observe_mcp_result(
             name, outcome.raw_result, effective_args, presentation_snapshot
@@ -749,7 +802,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
         structured_error = structured_tool_result_error(outcome.raw_result)
         breaker_warning = ""
         if structured_error:
-            breaker_warning = self._record_tool_failure(name, structured_error)
+            breaker_warning = self._record_tool_failure(name, structured_error, effective_args)
             notify_tool_observer(
                 tool_observer,
                 name,
@@ -792,8 +845,8 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
         if breaker_warning:
             result = f"{breaker_warning}\n\n{result}"
             injections.note("circuit_breaker", breaker_warning)
-        if hook_note:
-            result = f"{hook_note}\n\n{result}"
+        if hook_note := "\n\n".join(filter(None, (getattr(decision_seen, "note", ""), hook_note))):
+            result = f"{hook_note}\n\n{result}"  # a person's comment on their Allow comes first
         # The model-visible observation (minted artifact identity, then P2.3 PostToolUse),
         # assembled AFTER the observer recorded the real effect (the trace keeps the result).
         result = assemble_model_observation(
@@ -804,6 +857,9 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             is_error=structured_error is not None,
             synthetic=False,
         )
+        if structured_error is not None and isinstance(result, str):
+            # The transport's isError reaches the calling loop with the text (gap 2).
+            result = FailedObservation(result)
         return result
 
     def read_resource(self, namespace: str | None, uri: str) -> Any:
@@ -817,15 +873,28 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             action=f"MCP resource {uri!r}",
         )
 
-    def _record_tool_failure(self, name: str, error_text: str) -> str:
+    def _record_tool_failure(
+        self, name: str, error_text: str, arguments: Mapping[str, Any] | None = None
+    ) -> str:
         """Count a failure; at the reminder's ``after``, return the fact the agent gets.
 
-        Nothing is blocked: the next call runs and returns its own result or error.
+        Nothing is blocked: the next call runs and returns its own result or error. A
+        call that raised (the tool did not answer) counts against the tool. A call the
+        tool answered with an error (``arguments`` given) counts against that same call
+        only: a read-only command that exits non-zero, polled beside others, is not
+        the tool failing (W17 take 1o: ``relay_exec_read`` warned after a missing
+        result file and a disabled ``sacct``). Any success of the tool resets both.
         """
         del error_text  # every failure counts; its wording is not classified
+        key = name
+        if arguments is not None:
+            digest = hashlib.sha256(
+                json.dumps(arguments, sort_keys=True, default=str).encode()
+            ).hexdigest()[:16]
+            key = f"{name}\x00{digest}"
         with self._failure_lock:
-            count = self._consecutive_failures.get(name, 0) + 1
-            self._consecutive_failures[name] = count
+            count = self._consecutive_failures.get(key, 0) + 1
+            self._consecutive_failures[key] = count
         if count != harness_notes.failure_warning_after():
             return ""
         return harness_notes.circuit_warning_note(name, count)
@@ -833,8 +902,11 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
     def _record_tool_success(self, name: str) -> None:
         """Clear repeated-failure state after a successful tool call."""
 
+        prefix = f"{name}\x00"
         with self._failure_lock:
             self._consecutive_failures.pop(name, None)
+            for key in [key for key in self._consecutive_failures if key.startswith(prefix)]:
+                del self._consecutive_failures[key]
 
     def _timeout_for_tool(self, name: str) -> float:
         """Return the effective timeout for a single tool invocation."""
@@ -885,9 +957,11 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             self._thread.join(timeout=5)
 
     def _run_coroutine(self, coro: Any, *, timeout: float, action: str) -> Any:
+        from clio_agent.tools.loop_wait import loop_result  # noqa: PLC0415
+
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
         try:
-            return future.result(timeout=timeout)
+            return loop_result(future, timeout)
         except concurrent.futures.TimeoutError as exc:
             if future.done():
                 raise
@@ -899,24 +973,14 @@ class MCPToolBridge(SyncMCPToolExecutor):
     """Backward-compatible name for the sync MCP tool executor."""
 
 
-# Output-path grounding lives in the artifacts designation module (#966); imported
-# LAZILY because execution.py loads during ``clio_agent.gact`` package init.
+# The designation module owns where an output path lands (#966); imported LAZILY
+# because execution.py loads during ``clio_agent.gact`` package init.
 
 
-def _ground_output_paths(
-    args: "Mapping[str, Any]",
-    input_schema: Any,
-    workspace_root: str,
-) -> dict[str, Any]:
-    from clio_agent.gact.artifacts.designation import ground_output_paths  # noqa: PLC0415
+def _bind_server_cwd(name: str, cwd: str) -> None:
+    from clio_agent.gact.artifacts.designation import bind_server_cwd  # noqa: PLC0415
 
-    return ground_output_paths(args, input_schema, workspace_root)
-
-
-def _node_output_refusal(args: "Mapping[str, Any]") -> str:
-    from clio_agent.gact.artifacts.designation import node_output_refusal  # noqa: PLC0415
-
-    return node_output_refusal(args)
+    bind_server_cwd(name, cwd)
 
 
 def _make_dspy_tools(

@@ -221,6 +221,7 @@ class NamespaceRouteDecision:
 #: never the unreachable intent (#1281 F4).
 _ROUTE_DECISIONS: "deque[tuple[str, NamespaceRouteDecision]]" = deque(maxlen=256)
 _ROUTE_DECISIONS_LOCK = Lock()
+_LAST_REPORTED_ROUTE: dict[str, NamespaceRouteDecision] = {}
 
 
 def resolve_namespace_route(namespace: str) -> NamespaceRouteDecision:
@@ -322,7 +323,10 @@ def record_namespace_route_decision(namespace: str, decision: NamespaceRouteDeci
 
     with _ROUTE_DECISIONS_LOCK:
         _ROUTE_DECISIONS.append((namespace, decision))
-    if decision.reason is None:
+        unchanged = _LAST_REPORTED_ROUTE.get(namespace) == decision
+        _LAST_REPORTED_ROUTE[namespace] = decision
+    if decision.reason is None or unchanged:
+        # Every routed call records its route; only a change is a new fact to report.
         return
     from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
 
@@ -419,12 +423,17 @@ def direct_client_factory(
     """
 
     def _factory() -> Any:
+        from clio_agent.plugins.host_semantics import spec_a2ui_catalogs  # noqa: PLC0415
         from clio_agent.tools.mcp_config import transport_for  # noqa: PLC0415
         from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
 
         transport = transport_for(spec, cwd=cwd)
         return make_mcp_client(
-            transport, handlers=handlers, capabilities=capabilities, server_id=namespace
+            transport,
+            handlers=handlers,
+            capabilities=capabilities,
+            server_id=namespace,
+            a2ui_catalogs=spec_a2ui_catalogs(spec),
         )
 
     return _factory

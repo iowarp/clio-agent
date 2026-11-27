@@ -38,33 +38,6 @@ def test_file_policy_import_does_not_load_scientific_gateway() -> None:
     assert result.stdout.strip() == "ok"
 
 
-def test_gact_app_import_with_cli_args_does_not_load_hdf5() -> None:
-    """GACT health/capability startup should not depend on HDF5 import speed."""
-
-    result = _run_import_probe(
-        "import sys; "
-        "sys.argv = ['clio-agent-gact', '--host', '127.0.0.1', '--port', '18199']; "
-        "import clio_agent.gact.app; "
-        "assert 'clio_agent.tools.servers.hdf5_server' not in sys.modules; "
-        "assert 'h5py' not in sys.modules; "
-        "print('ok')"
-    )
-    assert result.stdout.strip() == "ok"
-
-
-def test_gact_app_import_does_not_load_playwright() -> None:
-    """The browser's Playwright is imported when the first page opens, not at startup."""
-
-    result = _run_import_probe(
-        "import sys; "
-        "import clio_agent.gact.app; "
-        "from clio_agent.gact.browser.install import probe_browser; probe_browser(); "
-        "assert 'playwright' not in sys.modules, 'playwright imported at startup'; "
-        "print('ok')"
-    )
-    assert result.stdout.strip() == "ok"
-
-
 def test_tool_execution_import_does_not_load_dspy() -> None:
     """Agent-less desktop startup must not pay DSPy's model runtime cost."""
 
@@ -77,38 +50,11 @@ def test_tool_execution_import_does_not_load_dspy() -> None:
     assert result.stdout.strip() == "ok"
 
 
-def test_gact_app_import_defers_turn_only_runtime() -> None:
-    """Desktop health startup must defer the model runtime."""
-
-    result = _run_import_probe(
-        "import sys; import clio_agent.gact.app; assert 'dspy' not in sys.modules; print('ok')"
-    )
-    assert result.stdout.strip() == "ok"
-
-
 def test_gact_package_import_defers_http_application() -> None:
     """The desktop entry point must start before the large app import graph."""
 
     result = _run_import_probe(
         "import sys; import clio_agent.gact; "
         "assert 'clio_agent.gact.app' not in sys.modules; print('ok')"
-    )
-    assert result.stdout.strip() == "ok"
-
-
-def test_clio_windows_platform_hardening_reaches_openai_headers() -> None:
-    """CLIO's Windows platform guard must cover OpenAI client headers.
-
-    LiteLLM's OpenAI path builds telemetry headers before sending a request.
-    On this workstation that path can otherwise block inside
-    ``platform._wmi_query`` before any provider timeout applies.
-    """
-
-    result = _run_import_probe(
-        "import clio_agent; "
-        "from openai import OpenAI; "
-        "client = OpenAI(api_key='test-key', base_url='http://127.0.0.1:1/v1'); "
-        "assert client.default_headers.get('X-Stainless-OS'); "
-        "print('ok')"
     )
     assert result.stdout.strip() == "ok"

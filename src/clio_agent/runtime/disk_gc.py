@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import subprocess
 import time
 import warnings
@@ -43,6 +42,7 @@ from typing import Any
 from clio_agent import conf
 from clio_agent import paths as agent_paths
 from clio_agent.runtime import trace
+from clio_agent.runtime.fenced_removal import remove_tree
 from clio_agent.tools import mcp_cache
 
 __all__ = [
@@ -390,7 +390,7 @@ def _prune_clio_kit_environments(kit_cache: Path | None, *, dry_run: bool) -> GC
             freed += size
             removed += 1
             if not dry_run:
-                shutil.rmtree(victim, ignore_errors=True)
+                remove_tree(victim, why="disk_gc_clio_kit_env")
             trace.event(
                 "DISK-GC",
                 "%sclio_kit_env_evicted path=%s freed=%d",
@@ -435,6 +435,13 @@ def _parse_uv_freed(text: str) -> int | None:
     return int(magnitude * _UV_UNIT.get(match.group(2), 1))
 
 
+def _uv_launcher() -> str | None:
+    """CLIO's own ``uv`` when its environment ships one, else the one on PATH."""
+    from clio_agent.runtime.managed_launchers import resolve_launcher  # noqa: PLC0415
+
+    return resolve_launcher("uv")
+
+
 def _uv_cache_prune(
     label: str, cache_dir: Path, *, env: Mapping[str, str], dry_run: bool
 ) -> GCLocationResult:
@@ -447,13 +454,14 @@ def _uv_cache_prune(
             bytes_freed=None,
             detail="cache directory does not exist; skipped.",
         )
-    if shutil.which("uv") is None:
+    uv = _uv_launcher()
+    if uv is None:
         return GCLocationResult(
             location=f"uv cache prune ({label})",
             path=str(cache_dir),
             reason="uv_not_on_path",
             bytes_freed=None,
-            detail="uv is not on PATH; skipped.",
+            detail="uv is not available; skipped.",
         )
     if dry_run:
         return GCLocationResult(
@@ -466,7 +474,7 @@ def _uv_cache_prune(
     run_env = {**os.environ, **dict(env.items()), "UV_CACHE_DIR": str(cache_dir)}
     try:
         proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
-            ["uv", "cache", "prune"],
+            [uv, "cache", "prune"],
             env=run_env,
             capture_output=True,
             text=True,
@@ -559,7 +567,7 @@ def _prune_stale_temp(env: Mapping[str, str], *, now: float, dry_run: bool) -> G
                 freed += size
                 removed += 1
                 if not dry_run:
-                    shutil.rmtree(victim, ignore_errors=True)
+                    remove_tree(victim, why="disk_gc_stale_temp")
                 trace.event(
                     "DISK-GC",
                     "%sstale_temp_evicted path=%s freed=%d age_days=%.1f",
@@ -722,11 +730,12 @@ def _collect_marketplace_snapshots(*, now: float, dry_run: bool) -> GCLocationRe
 
 def _ambient_uv_cache_dir() -> Path | None:
     """Resolve the ambient uv cache dir (``uv cache dir``), tolerating uv absent."""
-    if shutil.which("uv") is None:
+    uv = _uv_launcher()
+    if uv is None:
         return None
     try:
         proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
-            ["uv", "cache", "dir"],
+            [uv, "cache", "dir"],
             capture_output=True,
             text=True,
             timeout=30,

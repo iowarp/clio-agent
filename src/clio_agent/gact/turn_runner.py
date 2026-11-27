@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import threading
 import time
@@ -105,11 +106,19 @@ class TurnRunner:
         self.app, self.admit = app, admit
         self.revision_gate = TurnRevisionGate()
         self._loop: asyncio.AbstractEventLoop | None = None
+        # The application's own context, captured where the loop is bound. Every turn
+        # starts from a copy of it, never from the producer that signalled: a task's
+        # settlement wakes the next turn from inside that task's call, and its
+        # call-scoped state (``TASK_CALL``, the observer call id, grants, write scope)
+        # would otherwise become the ambient state of every tool the new turn runs.
+        self._baseline: contextvars.Context | None = None
         self._lock = threading.RLock()
         self._turns: dict[str, _TurnResources] = {}
         self._pumps: dict[str, asyncio.Task[None]] = {}
         self._signals: dict[str, int] = {}
         self._closing = False
+        #: Sessions being deleted: nothing admits a turn for them (a wake, an outcome).
+        self._retired: set[str] = set()
         self._released: dict[str, list[Callable[[], None]]] = {}
 
     @property
@@ -117,10 +126,31 @@ class TurnRunner:
         """Whether shutdown has closed admission (its cancellations are the server's)."""
         return self._closing
 
+    def retire_admission(self, sid: str) -> None:
+        """Admit no more turns for ``sid`` (it is being deleted); a running one stops."""
+        with self._lock:
+            self._retired.add(sid)
+
+    def reopen_admission(self, sid: str) -> None:
+        """Undo :meth:`retire_admission` (the deletion did not go ahead)."""
+        with self._lock:
+            if sid not in self._retired:
+                return
+            self._retired.discard(sid)
+        if self._loop is not None:  # what arrived meanwhile is admitted now
+            self._loop.call_soon_threadsafe(self._signal, sid)
+
+    def retired(self, sid: str) -> bool:
+        """Whether ``sid``'s admission is closed for its deletion."""
+        with self._lock:
+            return sid in self._retired
+
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Bind application-owned admission before producers can signal work."""
         if self._loop is not None and self._loop is not loop:
             raise RuntimeError("TurnRunner cannot move to another event loop")
+        if self._baseline is None:
+            self._baseline = contextvars.copy_context()
         self._loop = loop
 
     def signal(self, sid: str) -> None:
@@ -131,11 +161,13 @@ class TurnRunner:
 
     def _signal(self, sid: str) -> None:
         self._signals[sid] = self._signals.get(sid, 0) + 1
-        if self._closing or self.busy(sid):
+        if self._closing or self.busy(sid) or self.retired(sid):
             return
         pump = self._pumps.get(sid)
         if pump is None or pump.done():
-            self._pumps[sid] = asyncio.create_task(self._pump(sid))
+            # ``call_soon_threadsafe`` runs this callback in the signalling thread's context.
+            baseline = self._baseline.copy() if self._baseline is not None else None
+            self._pumps[sid] = asyncio.create_task(self._pump(sid), context=baseline)
 
     async def run_pending(self, sid: str) -> None:
         """Admit ``sid``'s pending input now and wait until its turns settle (app loop only).
@@ -153,7 +185,7 @@ class TurnRunner:
             while not self._closing:
                 sequence = self._signals.get(sid, 0)
                 with self._lock:
-                    if sid in self._turns:
+                    if sid in self._turns or sid in self._retired:
                         return
                     resources = _TurnResources(TurnHandle(sid, "", time.time()), probing=True)
                     self._turns[sid] = resources  # reserve before any await
@@ -168,7 +200,7 @@ class TurnRunner:
                             continue
                         return  # policy-vetoed input stays pending; no spin
                     turn_id, coroutine = admitted
-                    if resources.stop.is_set() or self._closing:
+                    if resources.stop.is_set() or self._closing or self.retired(sid):
                         coroutine.close()
                         continue  # Retirement holds this trigger; buffered work is rechecked next.
                     resources.handle = TurnHandle(sid, turn_id, resources.handle.started_at)
@@ -328,6 +360,11 @@ class TurnRunner:
         """Reservation spans the whole segment, including waits and worker retirement."""
         with self._lock:
             return sid in self._turns
+
+    def active_sessions(self) -> tuple[str, ...]:
+        """Every session holding a reserved segment now."""
+        with self._lock:
+            return tuple(self._turns)
 
     def working(self, sid: str) -> bool:
         """Reserved for real work: a turn, its retirement or a runtime change.

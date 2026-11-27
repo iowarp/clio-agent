@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextvars import ContextVar, Token
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -22,6 +23,7 @@ class InvocationApproval:
     tool: str
     arguments_digest: str
     permissions_digest: str
+    permissions: dict[str, Any] = field(default_factory=dict)
     _consumed: bool = field(default=False, init=False, repr=False)
     _lock: Any = field(default_factory=Lock, init=False, repr=False)
 
@@ -63,8 +65,16 @@ class InvocationApproval:
             and invocation_id == self.invocation_id
             and tool == self.tool
             and argument_digest(arguments) == self.arguments_digest
-            and argument_digest(permission_snapshot(app, session_id)) == self.permissions_digest
+            and self._permissions_hold(app, session_id)
         )
+
+    def _permissions_hold(self, app: Any, session_id: str) -> bool:
+        from clio_agent.arc.task_types import argument_digest
+
+        current = permission_snapshot(app, session_id)
+        if self.permissions:
+            return permissions_only_widened(self.permissions, current)
+        return argument_digest(current) == self.permissions_digest
 
 
 @dataclass(frozen=True)
@@ -78,6 +88,9 @@ class TaskCall:
     session_id: str = ""
     submission_handle: str = ""
     approval: InvocationApproval | None = None
+    # The host skipped its own ask: the tool's server confirms this call itself
+    # (tools/server_confirm.py), so its tools/call carries the request flag.
+    server_confirm: bool = False
 
 
 _EMPTY_CALL = TaskCall()
@@ -111,6 +124,28 @@ def permission_snapshot(app: Any, sid: str) -> dict[str, Any]:
     )
 
 
+_POSTURE_KEYS = ("mode", "approval_mode", "approval_profile", "playbook_allowed")
+
+
+def permissions_only_widened(before: Mapping[str, Any], after: Mapping[str, Any]) -> bool:
+    """Report whether ``after`` keeps every rule of ``before`` and only adds allow rules.
+
+    An approved call stays valid while the person grants other things (an "allow for this
+    session" on a parallel card); any posture change, removed rule or added non-allow rule
+    could narrow what the call may do, so it needs a fresh approval.
+    """
+    if before == after:
+        return True
+    if any(before.get(key) != after.get(key) for key in _POSTURE_KEYS):
+        return False
+    added = list(after.get("policies") or [])
+    for row in before.get("policies") or []:
+        if row not in added:
+            return False
+        added.remove(row)
+    return all(isinstance(row, Mapping) and row.get("action") == "allow" for row in added)
+
+
 def begin_backend_call(
     executor: Any, name: str, args: dict[str, Any]
 ) -> tuple[dict[str, Any], Token[TaskCall]]:
@@ -130,6 +165,7 @@ def begin_backend_call(
             owner_agent=inherited.owner_agent,
             session_id=inherited.session_id or active_session_id(),
             approval=inherited.approval,
+            server_confirm=inherited.server_confirm,
         )
     )
     return forwarded, token
@@ -148,6 +184,7 @@ def capture_approval(tool: str, arguments: dict[str, Any]) -> InvocationApproval
     if turn.assignment_handle and session is not None and workspace is not None:
         public = dict(arguments)
         public.pop("_clio_task_description", None)
+        permissions = permission_snapshot(app, sid)
         return InvocationApproval(
             app=app,
             session_id=sid,
@@ -157,12 +194,15 @@ def capture_approval(tool: str, arguments: dict[str, Any]) -> InvocationApproval
             invocation_id="",
             tool=tool,
             arguments_digest=argument_digest(public),
-            permissions_digest=argument_digest(permission_snapshot(app, sid)),
+            permissions_digest=argument_digest(permissions),
+            permissions=permissions,
         )
     return None
 
 
-def begin_invocation(*, approval: InvocationApproval | None = None) -> Token[TaskCall]:
+def begin_invocation(
+    *, approval: InvocationApproval | None = None, server_confirm: bool = False
+) -> Token[TaskCall]:
     """Bind an optional resolved approval to the actual observer invocation once."""
     from clio_agent.gact import context
     from clio_agent.gact.artifacts.observer_bridge import observer_call_id
@@ -175,6 +215,7 @@ def begin_invocation(*, approval: InvocationApproval | None = None) -> Token[Tas
             owner_agent=context.active_react_scope(),
             session_id=context.active_session_id(),
             approval=bound,
+            server_confirm=server_confirm,
         )
     )
 

@@ -1,0 +1,122 @@
+---
+title: Troubleshooting
+description: What relay's refusals mean, and fixes for the problems people hit most often with endpoints, sign-ins, packages and served ports.
+---
+
+When relay says no, it says why: every refusal carries a reason, a message you can act
+on and sometimes more details. The agent reads the reason and usually tells you what
+to do. This page lists the reasons and the common fixes.
+
+Start with `describe`. Ask the agent to describe relay, or call `describe` with an
+endpoint's id. It reports whether the endpoint answers, what it needs from you, which
+tools it takes and where its sign-ins are kept. On the
+[Compute page](/docs/compute/), **Probe** in a row's menu runs the same check.
+
+## Common problems
+
+### The endpoint is Unavailable
+
+Relay cannot reach the machine. Check that you can reach it yourself:
+
+- **SSH**: run `ssh <ssh_profile> hostname` from the same computer. Ares needs the
+  IIT network or the IIT VPN.
+- **Tapis, Globus, IRI**: check the facility's status page; these go through its web
+  API.
+- **Worker**: check that the worker is running on the cluster
+  (`clio-relay worker status` there) and that the rendezvous is up.
+
+Then choose **Probe** on the row again.
+
+### The endpoint Needs a sign-in
+
+Choose **Connect** from the row's menu and finish the sign-in page. From a terminal,
+`clio-relay asks sign-in <provider>`. If a Globus sign-in in CLIO keeps expiring,
+sign in to Globus in CLIO again: relay uses CLIO's sign-in.
+
+### An SSH login asks for a code every time
+
+Relay runs SSH in batch mode, so a login that asks for a password or a one-time code
+on every connection is refused with `interactive_auth_required`. You have two
+choices:
+
+- Set `interactive_sign_in: true` on the endpoint. It then shows **Needs a sign-in**;
+  **Connect** opens a page where you type the code once, and relay keeps that
+  connection open for its later calls. See
+  [Machines that ask for a code](/docs/relay/ssh/#machines-that-ask-for-a-code).
+- Use the [Worker](/docs/relay/worker/) protocol for that machine: you sign in once,
+  and relay places a worker there that it reaches afterwards.
+
+### A protocol is not installed
+
+`adapter_unavailable` with a message such as "the tapis adapter needs tapipy" means
+the protocol's extra is missing. Install relay with it:
+
+```sh
+uv tool install --python 3.12 --no-config "clio-relay[tapis,globus]"
+```
+
+SkyPilot needs its own Python environment; see [SkyPilot](/docs/relay/skypilot/).
+
+### The agent's job is refused on a Secure endpoint
+
+`policy_refused` on `run` means the endpoint is Secure and the job is a command, not a
+package. The agent should build a package and run it; see
+[Guardrails](/docs/relay/guardrails/). If the endpoint does not need that protection,
+set its **Security** to **Open** on the Compute page.
+
+`policy_refused` on `exec` means the command does not only read. The refusal lists
+what is allowed. Add a site's own read-only tools under `read_only` in `guard.yaml`.
+
+### Sign-ins are not kept
+
+On a server with no keyring, relay keeps sign-ins in `credentials.json` in its config
+folder. If the keyring is there but refuses, set `CLIO_RELAY_KEYRING=file` to use the
+file instead. `describe` says which one relay is using.
+
+### A served port does not come up
+
+- On the machine, the job's folder has `serve/launch.log` and `serve/frpc.log`. Exit
+  code 98 in `launch.log` means the port was already in use on the node.
+- On your computer, relay's state folder has
+  `serve/forwards/<operation id>/forward.log`.
+- With a rendezvous over `wss`, a certificate error in `forward.log` means `ca_file`
+  or `server_name` is wrong.
+
+See [Serve a service](/docs/relay/serve/).
+
+### A file operation is refused
+
+`verb_not_implemented` on `files` means this protocol does not take that operation
+yet, such as `delete` over SSH. [Files](/docs/relay/files/) has the table.
+
+## Refusal reasons
+
+| Reason | Means |
+| --- | --- |
+| `site_not_found` | No endpoint has that id. `describe` lists them. |
+| `site_exists` | An endpoint with that id already exists |
+| `unknown_adapter` | No protocol has that name. `clio-relay adapters` lists them. |
+| `adapter_unavailable` | The protocol is not installed, or cannot run here. The message says what is missing. |
+| `verb_not_implemented` | This endpoint does not take this tool or operation |
+| `invalid_config` | The endpoint's settings are wrong. The message names the setting. |
+| `invalid_spec` | The job or service description is wrong |
+| `invalid_arguments` | An argument is wrong, such as a path that leaves the work folder or a chunk at the wrong offset |
+| `policy_refused` | A Secure endpoint does not allow this. See [Guardrails](/docs/relay/guardrails/). |
+| `guard_unavailable` | The endpoint is Secure but relay has no package guard installed, so it runs nothing there |
+| `needs_approval` | A person must approve this first. See [Asks and sign-in](/docs/relay/asks/). |
+| `needs_sign_in` | A person must sign in first |
+| `declined` | A person said no |
+| `interactive_auth_required` | The login needs a person on every connection. Use the Worker protocol. |
+| `approval_mismatch` | The job changed after it was approved. It needs a new approval. |
+| `ask_not_found` | No open ask has that id |
+| `operation_not_found` | No operation has that id |
+| `input_missing` | A job input names content that is not staged. Stage it with `files` first. |
+| `path_not_found` | The path does not exist |
+| `path_exists` | The file exists and `overwrite` was not set |
+| `not_cancellable` | The scheduler or service would not cancel the job |
+| `submit_failed` | The scheduler refused the job. The message has its answer. |
+| `unreachable` | Relay could not reach the endpoint |
+| `timeout` | The endpoint did not answer in time. Relay tries again. |
+
+A client without MCP tasks or elicitation gets an ask as a refusal too, naming the
+ask and the page where it can be answered.

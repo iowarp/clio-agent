@@ -34,6 +34,15 @@ that port is the child's ``httpProxyPort`` (srt tier: reached via srt's socat br
 child's ``HTTP(S)_PROXY`` env (floor/Landlock tier), so the listener a connection ARRIVES on
 deterministically names the child. No timing heuristic.
 
+**Relay tunnel (Linux fence).** Codex's managed proxy forwards only public hosts upstream, so
+a fenced child's CONNECT helper (:mod:`net_connect`) reaches private, link-local and loopback
+hosts by first opening ``CONNECT [2001:db8::c110]:443``. That documentation address leads
+nowhere else; this proxy answers it itself, reads the real ``CONNECT`` inside the tunnel,
+resolves the host once and dials the addresses it classified. A non-public target carries its
+``network`` kind to the gate, which asks the person unless a workspace host policy decides,
+and is refused when no gate is wired. A relayed connection that lands on a port this process
+listens on (CLIO's own server or proxy) is refused.
+
 NO SILENT FALLBACK: a bind/listen failure raises a typed :class:`ChokepointStartError`
 (``chokepoint_start_failed``); the ladder degrades the RUNG (srt → landlock/floor) rather
 than starting srt children that would silently lose all network. Threads are daemon +
@@ -52,12 +61,26 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
+from clio_agent.runtime import net_refusals as _refusals
 from clio_agent.runtime.net_child_hosts import (  # re-exported for callers
     _child_host_allowed,
     release_child_hosts,
     restrict_child_hosts,
 )
+from clio_agent.runtime.net_targets import (
+    NETWORK_LINK_LOCAL,
+    NETWORK_LOOPBACK,
+    NETWORK_PRIVATE,
+    _dial_addresses,
+    _is_relay,
+    _parse_absolute_form,
+    _parse_connect_target,
+    _reaches_clio_listener,
+    _resolve_target,
+)
 from clio_agent.runtime.net_upstream import _dial_tunnel, _upstream_proxy
+
+_refused = _refusals.refused
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +128,11 @@ class EgressRecord:
     of the absolute-form request head — the ONLY write-classification signal clio has (N2). For
     a ``CONNECT`` tunnel it is ``""`` (opaque: clio sees ``host:port`` only, never the verb), so
     an HTTPS write can never be over-claimed as write-shaped (honesty caveat, codex-net design).
+
+    ``network`` is ``""`` for a public (or unclassified) host. For a host reached through the
+    Linux fence's relay tunnel it names a non-public address the host resolved to
+    (:data:`NETWORK_LOOPBACK`, :data:`NETWORK_LINK_LOCAL`, :data:`NETWORK_PRIVATE`), which the
+    gate allows only with the person's approval.
     """
 
     child_id: str
@@ -116,6 +144,7 @@ class EgressRecord:
     workspace_root: str
     at: str
     method: str = ""
+    network: str = ""
 
 
 #: The registered egress recorder (set from the gact lifespan once ARC is live). ``None``
@@ -153,11 +182,30 @@ def set_egress_gate(gate: Optional[Callable[[EgressRecord], str]]) -> None:
     god app). Consulted at connection OPEN, before the upstream dial: a workspace NOT in deny
     mode returns ``"allow"`` (the B4 default), so wiring the gate is inert until a workspace
     opts in. A gate that raises is treated as allow (fail-open on a wiring bug — the deny
-    decision itself is the only thing that blocks).
+    decision itself is the only thing that blocks), except for a relayed private, link-local
+    or loopback target, which is refused.
     """
     global _GATE
     with _GATE_LOCK:
         _GATE = gate
+
+
+def clear_egress_hooks(
+    gate: Optional[Callable[[EgressRecord], str]],
+    recorder: Optional[Callable[[EgressRecord], None]],
+) -> None:
+    """Clear the gate/recorder only while they are still the given ones (app shutdown).
+
+    A server that stops must not leave a closure over its closed stores consulting later
+    egress, yet must not clear hooks a newer app in the same process has since installed.
+    """
+    global _GATE, _RECORDER
+    with _GATE_LOCK:
+        if gate is not None and _GATE is gate:
+            _GATE = None
+    with _RECORDER_LOCK:
+        if recorder is not None and _RECORDER is recorder:
+            _RECORDER = None
 
 
 class ChokepointStartError(RuntimeError):
@@ -294,6 +342,7 @@ class Chokepoint:
         """Close + drop a per-child channel (idempotent; called when the child is reaped)."""
         with self._channels_lock:
             channel = self._channels.pop(child_id, None)
+        _refusals.forget(child_id)
         if channel is not None:
             _close_listener(channel.listener)
             channel.thread.join(timeout=1.0)
@@ -325,17 +374,44 @@ class Chokepoint:
             client.settimeout(_CONNECT_READ_TIMEOUT_S)
             header = self._read_request_head(client)
             target = _parse_connect_target(header)
+            network = ""
+            addresses: list[tuple[int, tuple]] = []
+            relayed = target is not None and _is_relay(target)
+            if relayed:
+                # The Linux fence's proxy passes only public hosts on, so the child's helper
+                # tunnels to the relay sentinel and sends the real CONNECT inside that tunnel.
+                client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                header = self._read_request_head(client)
+                target = _parse_connect_target(header)
+                if target is None or _is_relay(target):
+                    client.sendall(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+                    return
+                addresses, network = _resolve_target(*target)
             if target is not None:
                 # HTTPS: open the tunnel, then pump opaque TLS bytes (domain-level only).
                 host, port = target
                 # Deny-mode gate (B5 #979.5): consult BEFORE dialing so a blocked domain never
                 # opens an upstream socket. Allow-all when no gate is wired (B4 default).
-                if not self._gate_allows(child_id, host, port, "connect"):
+                if not self._gate_allows(child_id, host, port, "connect", network=network):
                     client.sendall(b"HTTP/1.1 403 Forbidden\r\n\r\n")
                     return
-                upstream = _dial_tunnel(host, port, _CONNECT_READ_TIMEOUT_S)
+                if relayed and addresses and _upstream_proxy(host.strip("[]"), "https") is None:
+                    # Dial the addresses just classified, so a second lookup cannot swap them.
+                    upstream = _dial_addresses(addresses, _CONNECT_READ_TIMEOUT_S)
+                else:
+                    upstream = _dial_tunnel(host, port, _CONNECT_READ_TIMEOUT_S)
+                if relayed and _reaches_clio_listener(upstream):
+                    logger.warning(
+                        "net egress refused reason=egress_target_is_clio child=%s host=%s port=%d",
+                        child_id,
+                        host,
+                        port,
+                    )
+                    _refusals.record(child_id, host, port, _refusals.TARGET_IS_CLIO)
+                    client.sendall(b"HTTP/1.1 403 Forbidden\r\n\r\n")
+                    return
                 upstream.settimeout(None)  # the dial is bounded; the tunnel waits on the peers
-                self._record_open(child_id, host, port, upstream, "connect")
+                self._record_open(child_id, host, port, upstream, "connect", network=network)
                 client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
                 client.settimeout(None)
                 self._track(client)
@@ -388,6 +464,8 @@ class Chokepoint:
         upstream: socket.socket,
         transport: str,
         method: str = "",
+        *,
+        network: str = "",
     ) -> None:
         """Mint ONE ``net.egress`` record at connection OPEN — off the pump, fully guarded.
 
@@ -417,6 +495,7 @@ class Chokepoint:
                     workspace_root=workspace_root,
                     at=_utcnow_iso(),
                     method=method,
+                    network=network,
                 )
             )
         except Exception as exc:  # noqa: BLE001 — a record must never wedge the pump/egress
@@ -428,7 +507,14 @@ class Chokepoint:
             )
 
     def _gate_allows(
-        self, child_id: str, host: str, port: int, transport: str, method: str = ""
+        self,
+        child_id: str,
+        host: str,
+        port: int,
+        transport: str,
+        method: str = "",
+        *,
+        network: str = "",
     ) -> bool:
         """Consult the deny-mode / write gate for one egress (B5 #979.5, N2). ``True`` = allow.
 
@@ -439,16 +525,18 @@ class Chokepoint:
         workspace whose decision errors returns ``"deny"`` with a typed reason, never reaching
         this catch. This residual ``except`` is the last resort for a gate that crashes ENTIRELY
         (an unrecognised/foreign gate, or record construction) — equivalent to unwired — so a
-        total wiring failure degrades to the B4 default rather than severing all egress.
+        total wiring failure degrades to the B4 default rather than severing all egress. A
+        relayed non-public target (``network`` set) is refused in both cases instead.
         """
         if not _child_host_allowed(child_id, host):
             logger.info(
                 "net egress refused reason=child_host_not_allowed child=%s host=%s", child_id, host
             )
-            return False
+            return _refused(child_id, host, port, _refusals.CHILD_HOST_NOT_ALLOWED)
         gate = _GATE
         if gate is None:
-            return True
+            # Nobody can approve a private, link-local or loopback host, so it stays closed.
+            return not network or _refused(child_id, host, port, _refusals.PRIVATE_ADDRESS)
         mechanism, workspace_root = self._channel_attribution(child_id)
         try:
             decision = gate(
@@ -462,16 +550,21 @@ class Chokepoint:
                     workspace_root=workspace_root,
                     at=_utcnow_iso(),
                     method=method,
+                    network=network,
                 )
             )
         except Exception as exc:  # noqa: BLE001 — a gate wiring bug must never sever egress
             logger.debug(
-                "net egress gate errored (allowing) reason=egress_gate_failed host=%s error=%r",
+                "net egress gate errored reason=egress_gate_failed host=%s network=%s error=%r",
                 host,
+                network,
                 exc,
             )
+            return not network or _refused(child_id, host, port, _refusals.PRIVATE_ADDRESS)
+        if decision != "deny":
             return True
-        return decision != "deny"
+        reason = str(getattr(decision, "reason", "") or _refusals.GATE_DENY)
+        return _refused(child_id, host, port, reason, str(getattr(decision, "rule", "")))
 
     def _channel_attribution(self, child_id: str) -> tuple[str, str]:
         """The ``(mechanism, workspace_root)`` recorded for ``child_id`` (``("","")`` if none)."""
@@ -608,71 +701,6 @@ def _safe_close(sock: socket.socket) -> None:
         pass
 
 
-def _parse_connect_target(header: bytes) -> Optional[tuple[str, int]]:
-    """Parse ``CONNECT host:port HTTP/1.1`` → ``(host, port)``; ``None`` when not a CONNECT.
-
-    CONNECT is the tunnel every HTTPS client opens through a proxy — the domain-level
-    visibility tier (no MITM). A malformed target or a non-CONNECT verb returns ``None``.
-    """
-    try:
-        line = header.split(b"\r\n", 1)[0].decode("latin-1")
-    except (IndexError, UnicodeDecodeError):
-        return None
-    parts = line.split()
-    if len(parts) < 2 or parts[0].upper() != "CONNECT":
-        return None
-    authority = parts[1]
-    host, _, port_s = authority.rpartition(":")
-    if not host or not port_s.isdigit():
-        return None
-    port = int(port_s)
-    if not (0 < port < 65536):
-        return None
-    return host, port
-
-
-def _parse_absolute_form(header: bytes) -> Optional[tuple[str, int, bytes, str]]:
-    """Parse a proxied plain-HTTP request → ``(host, port, origin_head, method)``; ``None`` if not.
-
-    A client configured with ``HTTP_PROXY`` sends the request line in absolute form —
-    ``GET http://host:port/path HTTP/1.1`` — to the proxy. This rewrites the head to the
-    origin form the target server expects (``GET /path HTTP/1.1``), preserving the method,
-    the rest of the path/query, the HTTP version and every header (incl. ``Host``), so the
-    proxy is a transparent passthrough. Non-HTTP-URL targets (or a malformed head) → ``None``.
-    Only the request HEAD is rewritten; any body streams verbatim through :meth:`_pump`.
-
-    ``method`` is returned UPPERCASED (the write-gate classification token, N2) while the
-    rewritten ``origin_head`` keeps the verb VERBATIM — the passthrough never mutates the wire.
-    """
-    try:
-        head_text = header.decode("latin-1")
-    except UnicodeDecodeError:
-        return None
-    line, sep, rest = head_text.partition("\r\n")
-    if not sep:
-        return None
-    parts = line.split(" ")
-    if len(parts) != 3:
-        return None
-    method, target, version = parts
-    if not target.lower().startswith("http://"):
-        return None
-    without_scheme = target[len("http://") :]
-    authority, slash, path = without_scheme.partition("/")
-    origin_path = f"/{path}" if slash else "/"
-    host, _, port_s = authority.partition(":")
-    if not host:
-        return None
-    if port_s:
-        if not port_s.isdigit() or not (0 < int(port_s) < 65536):
-            return None
-        port = int(port_s)
-    else:
-        port = 80
-    origin_head = f"{method} {origin_path} {version}\r\n{rest}".encode("latin-1")
-    return host, port, origin_head, method.upper()
-
-
 # Process-lifetime singleton (same pattern as the child reaper / sandbox state).           #
 _CHOKEPOINT: Optional[Chokepoint] = None
 _LOCK = threading.Lock()
@@ -750,6 +778,9 @@ def shutdown_chokepoint() -> None:
 __all__ = [
     "MECHANISM_ENV_COOPERATIVE",
     "MECHANISM_PROXY_ENFORCED",
+    "NETWORK_LINK_LOCAL",
+    "NETWORK_LOOPBACK",
+    "NETWORK_PRIVATE",
     "REASON_CHOKEPOINT_START_FAILED",
     "Chokepoint",
     "ChokepointStartError",

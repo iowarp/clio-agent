@@ -49,6 +49,7 @@ from clio_agent.gact.a2ui import (
     A2UIEventContextInvalidError,
     A2UIFunctionNotInCatalogError,
     A2UIValidationError,
+    owner_key,
     validate_client_action,
 )
 from clio_agent.gact.a2ui_actions.client_state import (
@@ -73,6 +74,12 @@ from clio_agent.gact.events import Event
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.permission_gate import GRANTOR_USER, resolve_permission
 from clio_agent.gact.runtime.permission_actions import STANDARD_ANSWERS
+from clio_agent.gact.server_actions import (
+    ServerActionError,
+    deliver_server_action,
+    login_context,
+    login_provider,
+)
 from clio_agent.gact.session_descendants import descendant_session_ids
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, RetryTurnRequest
 
@@ -297,12 +304,23 @@ async def dispatch_action(
         # unknown/expired is untouched by this check and still reaches
         # ``_deliver_permission``'s existing typed 404 (no silent reroute).
         destination = "agent"
+    server_owned = owner_key(surface.owner) is not None
+    if server_owned:
+        # HS2: a server's surface sends its actions to that server; the catalog's
+        # declared lanes are the agent's, not the server's.
+        provider = login_provider(name)
+        destination = "client" if provider else "server"
+        if provider:
+            try:
+                context = login_context(app, sid)
+            except ServerActionError as exc:
+                raise _error(exc.status, exc.reason, str(exc)) from exc
     route = action.get("route")
-    if not action.get("declared"):
+    if not action.get("declared") and not server_owned:
         app.state.a2ui_catalogs.record_session_reason(
             sid, "a2ui_event_destination_undeclared", action=name
         )
-    if not narration_declared(route):
+    if not narration_declared(route) and not server_owned:
         # S5b: dedupes on (session, event name) -- see
         # ``CatalogRegistry.record_narration_undeclared_once`` -- unlike the
         # per-action reason above, this one is once-per-name-per-session.
@@ -323,7 +341,7 @@ async def dispatch_action(
         if (
             retry is not None
             and retry.state == "received"
-            and destination not in {"permission", "run", "client"}
+            and destination not in {"permission", "run", "client", "server"}
         ):
             delivered_retry = await deliver_to_agent(
                 app, sid, retry, narration=retry.narration, context=context
@@ -338,7 +356,7 @@ async def dispatch_action(
     )
 
     correlation_fields = dict(correlation or {})
-    if destination not in {"permission", "run", "client"} and not correlation_fields.get(
+    if destination not in {"permission", "run", "client", "server"} and not correlation_fields.get(
         "question_id"
     ):
         question = await asyncio.to_thread(
@@ -373,7 +391,7 @@ async def dispatch_action(
         if (
             retry is not None
             and retry.state == "received"
-            and destination not in {"permission", "run", "client"}
+            and destination not in {"permission", "run", "client", "server"}
         ):
             delivered_retry = await deliver_to_agent(
                 app, sid, retry, narration=retry.narration, context=context
@@ -395,6 +413,8 @@ async def dispatch_action(
         delivered = await run_off_loop(
             lambda: deliver_source_login(app, sid, record, context, publish=_publish)
         )
+    elif destination == "server":
+        return await _deliver_server(app, sid, record, surface, name, context)
     else:
         delivered = await deliver_to_agent(
             app, sid, record, narration=record.narration, context=context
@@ -425,6 +445,51 @@ async def dispatch_action(
     if action_data_model is not None:
         result["a2ui_client_data_model"] = record.client_data_model
     return result
+
+
+async def _deliver_server(
+    app: "FastAPI",
+    sid: str,
+    record: ActionRecord,
+    surface: Any,
+    name: str,
+    context: Mapping[str, Any],
+) -> dict[str, Any]:
+    """HS2: send the action to the server that owns the surface, as a view call."""
+
+    from clio_agent.gact import server_surfaces  # noqa: PLC0415
+
+    owner = surface.owner or {}
+    namespace = str(owner.get("namespace") or "")
+    try:
+        scope = server_surfaces.server_scope(app, sid, namespace)
+        if scope is None or owner_key(scope.owner) != owner_key(owner):
+            raise ServerActionError(
+                503,
+                "a2ui_server_unavailable",
+                f"the server that owns surface {surface.id!r} is not mounted in this session",
+            )
+        outcome = await deliver_server_action(
+            app,
+            sid,
+            scope,
+            name,
+            context,
+            apply=lambda raw: server_surfaces.apply_result(
+                app, sid, namespace, name, raw, part_prefix=f"a2ui_{record.id}"
+            ),
+        )
+    except ServerActionError as exc:
+        error = _error(exc.status, exc.reason, str(exc), recoverable=exc.status == 503)
+        await run_off_loop(fail_and_publish, app, sid, record, error)
+        raise error from exc
+    except Exception as exc:
+        await run_off_loop(fail_and_publish, app, sid, record, exc)
+        raise
+    delivered = record.transition(state="consumed", delivery="server")
+    await run_off_loop(persist_transition, app, delivered)
+    _publish(app, sid, delivered)
+    return outcome.wire(delivered.id)
 
 
 async def _deliver_permission(

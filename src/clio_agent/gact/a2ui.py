@@ -30,6 +30,14 @@ from clio_agent.gact.a2ui_component_fold import (
     is_structural_message,
     materialize_update_components,
 )
+from clio_agent.gact.a2ui_errors import (
+    A2UICatalogNotProducibleError,
+    A2UICatalogUnknownError,
+    A2UISurfaceOwnerError,
+    A2UITranscriptFrozenError,
+    check_surface_owner,
+    owner_key,
+)
 from clio_agent.gact.protocol.constants import A2UI_V091, A2UI_V091_WIRE, A2UI_WIRE_VERSIONS
 
 
@@ -97,37 +105,6 @@ def max_a2ui_messages() -> int:
     )
 
 
-class A2UITranscriptFrozenError(A2UIValidationError):
-    """Raised when a settled transcript can no longer accept an A2UI part.
-
-    Distinct from a payload rejection: the batch was valid, but the ledger it
-    would land in is closed, so the producer is told ``transcript_frozen``
-    rather than being handed a validation message it cannot act on.
-    """
-
-
-class A2UICatalogUnknownError(A2UIValidationError):
-    """Raised when a ``catalogId`` does not resolve in the installed registry.
-
-    Carries ``catalog_id`` so a caller can attach the typed
-    ``a2ui_catalog_unknown`` reason (production) — or, on transcript replay
-    (``project_a2ui_parts``), fold the surface to ``state="unknown"`` with
-    ``a2ui_catalog_unavailable`` instead of quarantining it.
-    """
-
-    def __init__(self, catalog_id: str) -> None:
-        self.catalog_id = catalog_id
-        super().__init__(f"A2UI catalog is not known: {catalog_id or '<empty>'}")
-
-
-class A2UICatalogNotProducibleError(A2UIValidationError):
-    """Raised when a catalog is installed but not producible in this session."""
-
-    def __init__(self, catalog_id: str) -> None:
-        self.catalog_id = catalog_id
-        super().__init__(f"A2UI catalog is not producible in this session: {catalog_id}")
-
-
 class _MemoizedCatalogResolver:
     """Wraps a ``CatalogResolver``, resolving each distinct id ONCE per instance.
 
@@ -183,6 +160,9 @@ class A2UISurfaceRecord:
     # ``gact/a2ui_actions/record.py::fold_action_records``). Populated by
     # ``A2UIStore._project``, never written here.
     actions: list[dict[str, Any]] = field(default_factory=list)
+    #: The MCP server that created this surface (``{kind: "server", plugin, server,
+    #: namespace}``), fixed at create; ``None`` for the agent's own surfaces.
+    owner: dict[str, Any] | None = None
 
     def to_wire(self) -> dict[str, Any]:
         """Return the normalized frontend surface representation."""
@@ -387,6 +367,7 @@ def _apply_staged_message(
     part_id: str,
     observed_at: str,
     created_surface_ids: "set[str] | None" = None,
+    owner: Mapping[str, Any] | None = None,
 ) -> tuple[str, str, A2UISurfaceRecord]:
     """Apply one validated message to an uncommitted projection.
 
@@ -395,6 +376,9 @@ def _apply_staged_message(
     ``A2UIStore``'s incremental fold know which surfaces need their action
     history re-attached (``record.py::fold_action_records``'s
     ``reattach_surface_ids``) even with no new action part this call.
+
+    ``owner`` is the producer of the batch (``None`` for the agent). A live
+    surface accepts messages only from the owner that created it.
     """
 
     _, peek_payload = _message_operation(message)
@@ -403,6 +387,7 @@ def _apply_staged_message(
     surface = surfaces.get(key)
     catalog_entry: CatalogEntry | None = None
     if surface is not None and surface.state != "deleted":
+        check_surface_owner(surface.owner, owner, message, peek_surface_id)
         catalog_entry = catalogs.get(surface.catalog_id, A2UI_V091)
         if catalog_entry is None:
             raise A2UICatalogUnknownError(surface.catalog_id)
@@ -423,6 +408,7 @@ def _apply_staged_message(
             part_id=part_id,
             created_at=observed_at,
             updated_at=observed_at,
+            owner=dict(owner) if owner else None,
         )
         surfaces[key] = surface
         if created_surface_ids is not None:
@@ -516,6 +502,7 @@ def _fold_batch(
     observed_at: str,
     capture: bool,
     created_surface_ids: "set[str] | None" = None,
+    owner: Mapping[str, Any] | None = None,
 ) -> list[tuple[str, str, A2UISurfaceRecord]]:
     """Fold one ordered batch into ``surfaces`` in place.
 
@@ -557,6 +544,7 @@ def _fold_batch(
             part_id=part_id,
             observed_at=observed_at,
             created_surface_ids=created_surface_ids,
+            owner=owner,
         )
         applied.append((operation, surface_id, _copy_record(record) if capture else record))
     return applied
@@ -573,6 +561,7 @@ def apply_batch(
     message_id: str = "",
     part_id: str = "",
     observed_at: str | None = None,
+    owner: Mapping[str, Any] | None = None,
 ) -> tuple[
     dict[tuple[str, str], A2UISurfaceRecord],
     list[tuple[str, str, A2UISurfaceRecord]],
@@ -603,6 +592,7 @@ def apply_batch(
         part_id=part_id,
         observed_at=observed_at or utcnow_iso(),
         capture=True,
+        owner=owner,
     )
     return staged, applied
 
@@ -733,6 +723,7 @@ def project_a2ui_parts(
                 observed_at=recorded_at,
                 capture=False,
                 created_surface_ids=created_surface_ids,
+                owner=metadata.get("owner") if isinstance(metadata.get("owner"), Mapping) else None,
             )
         except A2UICatalogUnknownError as exc:
             for key, record in snapshot.items():
@@ -781,6 +772,7 @@ __all__ = [
     "A2UICatalogUnknownError",
     "A2UIEventContextInvalidError",
     "A2UIFunctionNotInCatalogError",
+    "A2UISurfaceOwnerError",
     "A2UISurfaceRecord",
     "A2UITranscriptFrozenError",
     "A2UIValidationError",
@@ -788,6 +780,7 @@ __all__ = [
     "max_a2ui_message_bytes",
     "max_a2ui_messages",
     "max_a2ui_string_chars",
+    "owner_key",
     "project_a2ui_parts",
     "validate_client_action",
     "validate_server_message",

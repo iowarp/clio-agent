@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from clio_agent.arc.task_types import (
@@ -103,6 +103,42 @@ def _restore_input_projections(self: Conversations) -> None:
 
 
 _ASSIGNMENT_KINDS = frozenset({"Session", "Subagent"})
+#: Activities of an assignment the restart's recovery continues (:func:`_restore_assignment`).
+_RESUMED_ACTIVITIES = frozenset({"busy", "executing", "stopping", "interrupted", "recovering"})
+
+
+def resumes_after_restart(app: Any, session_id: str) -> bool:
+    """Whether the restart's recovery continues ``session_id``'s interrupted turn itself.
+
+    The same conditions :func:`_restore_assignment` acts on, read from the records
+    alone, so the interrupted turn's row says it is continuing instead of offering a
+    Retry that would ask for the same work again (CC-O1). ``False`` when unsure.
+    """
+    history = getattr(app.state, "task_history", None)
+    sessions = getattr(app.state, "sessions", None)
+    if history is None or sessions is None:
+        return False
+    try:
+        task = history.latest_assignment(session_id)
+        if (
+            task is None
+            or task.kind not in _ASSIGNMENT_KINDS
+            or task.terminal_at is not None
+            or task.cancellation_requested_at is not None
+            or task.activity == "paused"
+            or task.activity not in _RESUMED_ACTIVITIES
+        ):
+            return False
+        backend = task.backend
+        if backend is not None and (backend.owner, backend.placement) != ("conversation", "local"):
+            return False
+        session = sessions.get(session_id)
+        if session is not None and session.metadata.get("agent_paused"):
+            return False
+        return not sessions.startup_retirement_error(session_id)
+    except (OSError, ClioError, RecordingUnconfirmed, ValueError):
+        logger.exception("Restart resume check unavailable session=%s", session_id)
+        return False
 
 
 def open_work_sessions(history: TaskHistory) -> list[str]:

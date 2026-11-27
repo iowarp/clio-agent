@@ -69,6 +69,40 @@ def test_results_are_capped_with_more_and_marked() -> None:
     )
 
 
+def test_a_plugins_server_instructions_are_searched_and_quoted() -> None:
+    rows = [
+        _row(
+            "Remote",
+            summary="Run work on remote machines",
+            instructions="Use describe first.\nCompute sites configured: lab (ssh, slurm).\n"
+            "Packages staged: fluids 0.2.1 (solver).",
+        ),
+        _row("Fluids", summary="Fluid dynamics notes"),
+    ]
+    assert [r["name"] for r in offer_search.matching(rows, ["lab"])] == ["Remote"]
+    # A name hit still ranks first; the instructions widen what is found, not the order.
+    assert [r["name"] for r in offer_search.matching(rows, ["fluids"])] == ["Fluids", "Remote"]
+    found = offer_search.search_result(rows, [], set(), 20, search="fluids lab")
+    assert [m["name"] for m in found["matches"]] == ["Remote"]
+    assert found["matches"][0]["mentions"] == "Compute sites configured: lab (ssh, slurm)."
+    assert "instructions" not in found["matches"][0]
+    # A match on the row's own words quotes nothing.
+    own = offer_search.search_result(rows, [], set(), 20, search="remote")
+    assert "mentions" not in own["matches"][0]
+    long_line = _row("Wide", instructions="x " * 300 + "needle")
+    said = offer_search.mention(long_line, ["x"])
+    assert len(said) <= offer_search.MENTION_CHARS and said.endswith("…")
+    far = offer_search.mention(long_line, ["needle"])
+    assert len(far) <= offer_search.MENTION_CHARS and far.startswith("…")
+    assert far.endswith("needle")
+    one_line = _row("Flat", instructions="Call describe first. Sites: lab (ssh). Then run.")
+    assert offer_search.mention(one_line, ["lab"]) == "Sites: lab (ssh)."
+    shown = present({"search": "lab"}, None, {"search": "lab", "count": 1, "matches": [
+        {"kind": "plugin", "name": "Remote", "mentions": "Sites: lab (ssh)."}]})  # fmt: skip
+    blocks = {block["id"]: block for block in shown["blocks"]}
+    assert blocks["matches"]["text"] == "Remote (Plugin)\n  Its server says: Sites: lab (ssh)."
+
+
 @pytest.fixture
 def grouped(app: Any, monkeypatch: pytest.MonkeyPatch) -> Any:  # noqa: F811
     """The fixture connectors in Discover groups; a plugin with keywords and a category."""
@@ -245,3 +279,149 @@ def test_the_agent_is_told_where_the_list_is_chosen() -> None:
         f"2 of these are not in your plugin list (the person's choice in "
         f"{offer_list.SETTINGS_PLACE}); offer_plugin offers them the same way"
     )
+
+
+def test_a_search_names_what_is_already_here_and_why_it_did_not_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dry 17: a search for a joined plugin whose server never mounted said "Nothing the
+    person can add matches", so the agent worked around it with the shell."""
+
+    from types import SimpleNamespace
+
+    from clio_agent.gact.agents import resolution
+    from clio_agent.plugins import recorded_instructions
+    from clio_agent.tools import mount_failures
+
+    joined = SimpleNamespace(
+        plugins=[
+            {"id": "core", "description": "remote sites", "provenance": {"source": "core"}},
+            {"id": "compute", "description": "Run packages on remote sites.", "provenance": {}},
+            {"id": "notes", "description": "Notebooks.", "provenance": {}},
+        ],
+        mcp_servers={"runner": {"plugin": "compute"}, "nb": {"plugin": "notes"}},
+    )
+    monkeypatch.setattr(resolution, "session_resolution", lambda _app, _sid: joined)
+    told = {"compute": "Sites configured: lab (ssh). Packages: solver 1.0."}
+    monkeypatch.setattr(recorded_instructions, "plugin_instructions", lambda p: told.get(p, ""))
+    monkeypatch.setattr(mount_failures, "_FAILED", {})
+    monkeypatch.setattr(
+        "clio_agent.tools.execution.get_active_tool_workspace_root", lambda: "/w/root"
+    )
+    monkeypatch.setattr("clio_agent.gact.skill_commands.plugin_skills", lambda *_a: [])
+
+    assert plugin_offer._here_matching(None, "s", "remote sites") == [
+        {"id": "compute", "servers": ["runner"], "skills": []}
+    ]
+    here = plugin_offer._here_matching(None, "s", "SOLVER lab")
+    assert [row["id"] for row in here] == ["compute"]
+    assert plugin_offer._here_matching(None, "s", "zebra") == []
+    assert plugin_offer._here_note(here).startswith(
+        "Already in this conversation, so not offered: compute."
+    )
+    # A declared keyword finds it as offer_plugin's search does: "ssh" for a relay that
+    # is already here must not read as "there is none".
+    monkeypatch.setattr(
+        plugin_offer,
+        "library",
+        lambda _app: [SimpleNamespace(id="compute", keywords=("cluster", "remote compute"))],
+    )
+    assert [row["id"] for row in plugin_offer._here_matching(None, "s", "cluster")] == ["compute"]
+    assert [
+        row["id"] for row in plugin_offer._here_matching(None, "s", "remote compute on ares")
+    ] == ["compute"]
+    mount_failures.record("/w/root", "runner", RuntimeError("working directory gone"))
+    note = plugin_offer._here_note(here)
+    assert "The runner server is in this conversation but did not start" in note
+    assert "working directory gone" in note
+    shown = present({"search": "solver"}, None, {"search": "solver", "count": 0, "matches": [],
+                    "in_this_conversation": ["compute"], "message": note})  # fmt: skip
+    blocks = {block["id"]: block for block in shown["blocks"]}
+    assert blocks["here"]["text"] == "compute" and shown["summary"] == note
+
+
+def test_a_plugin_found_here_hands_over_its_skill(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run 3 of the RF trial: a plugin already in the conversation was found but its how-to
+    skill never loaded, so the agent went to the shell. A search that finds it names its
+    skills and loads the one the search points to (else its only one)."""
+
+    from types import SimpleNamespace
+
+    from clio_agent.gact import skill_commands
+    from clio_agent.gact.agents import resolution
+    from clio_agent.plugins import recorded_instructions
+
+    joined = SimpleNamespace(
+        plugins=[{"id": "compute", "description": "Run jobs on remote sites.", "provenance": {}}],
+        mcp_servers={"runner": {"plugin": "compute"}},
+    )
+    monkeypatch.setattr(resolution, "session_resolution", lambda _app, _sid: joined)
+    monkeypatch.setattr(recorded_instructions, "plugin_instructions", lambda _p: "")
+    monkeypatch.setattr(plugin_offer, "library", lambda _app: [])
+
+    def skill(sid: str, title: str, description: str) -> Any:
+        return SimpleNamespace(id=sid, title=title, description=description)
+
+    two = [
+        skill("use-compute", "Use compute", "Reach a cluster and run work there."),
+        skill("tune-jobs", "Tune jobs", "Pick wall time."),
+    ]
+    monkeypatch.setattr(skill_commands, "plugin_skills", lambda *_a: two)
+    here = plugin_offer._here_matching(None, "s", "remote sites cluster")
+    assert here[0]["skill"] == "use-compute"
+    assert [row["id"] for row in here[0]["skills"]] == ["use-compute", "tune-jobs"]
+    # Two skills and none named by the search: both are named, none is chosen.
+    assert "skill" not in plugin_offer._here_matching(None, "s", "remote sites")[0]
+    monkeypatch.setattr(skill_commands, "plugin_skills", lambda *_a: two[:1])
+    only = plugin_offer._here_matching(None, "s", "remote sites")
+    assert only[0]["skill"] == "use-compute"
+
+    loads: list[str] = []
+    monkeypatch.setattr(
+        skill_commands,
+        "load_skill_for_agent",
+        lambda _app, _sid, skill_id: loads.append(skill_id) or f"# {skill_id} body",
+    )
+    loaded = plugin_offer._load_here_skill(None, "s", only)
+    assert loaded == {"plugin": "compute", "id": "use-compute", "content": "# use-compute body"}
+    assert loads == ["use-compute"]
+    note = plugin_offer._here_note(only, loaded)
+    assert "compute (skills: use-compute)" in note
+    assert "Its skill use-compute is loaded below (skill_loaded): follow it." in note
+
+    def broken(*_a: Any) -> str:
+        raise ValueError("unknown skill")
+
+    monkeypatch.setattr(skill_commands, "load_skill_for_agent", broken)
+    assert plugin_offer._load_here_skill(None, "s", only) == {}
+
+
+def test_a_search_that_finds_nothing_says_to_search_by_kind() -> None:
+    """A name only the person uses ("Ares") matched nothing; the miss says how to search."""
+
+    assert "the kind of thing it is" in plugin_offer.MISS_HINT
+    assert "ares" not in plugin_offer.MISS_HINT.casefold()
+
+
+@pytest.mark.marketplace
+@pytest.mark.parametrize(
+    "search", ["ssh", "cluster", "HPC", "Slurm", "remote compute", "an ssh cluster called ares"]
+)
+def test_a_remote_compute_search_finds_relay(search: str) -> None:
+    """Run 2 of the RF trial: with the ssh plugin retired, "ssh" found nothing, so the
+    agent ran raw ssh through the shell instead of offering relay."""
+
+    import json
+
+    from tests._marketplace import MARKETPLACE_ROOT
+
+    manifest = json.loads(
+        (MARKETPLACE_ROOT / "plugins" / "clio-relay" / "plugin.json").read_text("utf-8")
+    )
+    row = {
+        "id": manifest["name"],
+        "name": manifest["name"],
+        "about": manifest["description"],
+        "keywords": manifest["keywords"],
+    }
+    assert offer_search.found_by(row, offer_search.words_of(search))

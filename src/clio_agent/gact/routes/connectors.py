@@ -15,6 +15,9 @@
 * ``POST /v1/connectors`` ``{url}`` or ``{command, args}`` (and an optional
   ``name``) adds a custom connector (AQ11); ``DELETE /v1/connectors/{id}`` removes
   a custom one.
+* ``DELETE /v1/connectors/{id}/outside-sandbox`` takes back the person's allow (or deny)
+  for the connector's server to run outside CLIO's sandbox: it runs fenced again, and
+  the person is asked again at its next use (``connectors/outside_sandbox.py``).
 
 A sign-in need uses ``/v1/mcp/configuration/{id}/sign-in``: the connection's name
 is the connector's id.
@@ -132,6 +135,13 @@ def register_connector_routes(app: FastAPI) -> None:
         body = await json_body(request, route="POST /v1/connectors")
         try:
             return await service.create_custom(app, body)
+        except service.ConnectorError as exc:
+            raise _error(exc) from None
+
+    @app.delete("/v1/connectors/{connector_id}/outside-sandbox")
+    async def take_back_outside_sandbox(connector_id: str) -> dict[str, Any]:
+        try:
+            return await service.take_back_outside_sandbox(app, connector_id)
         except service.ConnectorError as exc:
             raise _error(exc) from None
 

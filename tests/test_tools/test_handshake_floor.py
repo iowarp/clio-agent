@@ -54,9 +54,9 @@ PROTOCOL_KEY = "io.modelcontextprotocol/protocolVersion"
 
 
 def _reap(needle: str) -> None:
-    for proc in psutil.process_iter(["cmdline"]):
+    for proc in psutil.Process().children(recursive=True):
         try:
-            if needle in " ".join(proc.info["cmdline"] or []):
+            if any(needle in arg for arg in proc.cmdline()):
                 proc.kill()
         except psutil.Error:
             continue

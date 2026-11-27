@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextlib
 import contextvars
 import itertools
 import os
@@ -75,6 +76,8 @@ class Inflight:
     denied_host: str = ""
     #: The call only navigates (goto, back, open): it may leave a page the agent may not use.
     navigates: bool = False
+    #: Hosts the person allowed once during this call (a call outside a script).
+    allowed_hosts: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -91,6 +94,7 @@ class PageRecord:
     inflight: Inflight | None = None
     person_acted: bool = False
     last_person_input: float = float("-inf")  # never, until the person acts
+    admitted_host: str = ""  # whose document the person let the agent load (host_gate)
     #: The host the page was last refused; shown by the panel until the page loads again.
     navigation_blocked: dict[str, Any] | None = None
     #: Whether the agent's results already reported that refusal (it is told once).
@@ -512,6 +516,9 @@ class BrowserService:
                 if inflight.navigated:
                     await record.page.wait_for_load_state("load")
                 await self._settle_downloads(record)
+                # The page as it is now: the load event's retitle lands after the result.
+                with contextlib.suppress(*page_errors()):  # an action that closed the page
+                    record.title = await record.page.title()
                 return result
             except BrowserError:
                 raise

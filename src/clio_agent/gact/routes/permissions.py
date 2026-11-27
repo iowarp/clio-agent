@@ -188,6 +188,7 @@ def register_permissions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     action,
                     grantor=GRANTOR_USER,
                     intercept=intercept,
+                    comment=str(body.get("answer") or ""),  # the person's comment, as above
                 )
             )
         except (ValueError, PermissionError) as error:

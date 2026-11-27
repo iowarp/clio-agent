@@ -159,9 +159,11 @@ def observe_child_lifecycle(self: Conversations, task: TaskSnapshot, *, started:
     if task.kind != "Subagent":
         return
     if not started:  # a settled child's pages close with it, or with its last script (BR6)
+        from clio_agent.gact.child_servers import close_child_servers  # noqa: PLC0415
         from clio_agent.gact.session_processes import close_child_pages  # noqa: PLC0415
 
         close_child_pages(task.owner.session_id)  # this runs off the event loop
+        close_child_servers(self.app, task.owner.session_id)  # its own servers close too
     from clio_agent.gact.hooks.dispatcher import (
         dispatch_subagent_start,
         dispatch_subagent_stop,

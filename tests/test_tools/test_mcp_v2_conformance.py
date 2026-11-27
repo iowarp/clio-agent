@@ -75,11 +75,14 @@ from clio_agent.tools.mcp_errors import typed_mcp_protocol_error
 from clio_agent.tools.mcp_executor import AsyncMCPToolExecutor
 from clio_agent.tools.mcp_extension_registry import (
     AGENT_ELICITATION_EXTENSION_ID,
+    RELAY_ASK_EXTENSION_ID,
+    RELAY_CHOICE_EXTENSION_ID,
     UI_EXTENSION_ID,
     extensions_declaration,
 )
 from clio_agent.tools.mcp_runtime import MCPClientCapabilities, MCPClientHandlers, make_mcp_client
 from clio_agent.tools.mcp_task_routing import (
+    NamespaceRouteDecision,
     record_definitive_capability,
     record_namespace_route_decision,
     recorded_route_heals,
@@ -687,6 +690,23 @@ def test_capability_unknown_default_keeps_the_proxy_path() -> None:
     assert (namespace, decision) in recorded_task_route_decisions()
 
 
+def test_a_repeated_route_decision_is_reported_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every routed call records its route; only a change is logged and audited."""
+
+    from clio_agent.runtime import stream_audit as audit_module
+
+    audited: list[dict[str, Any]] = []
+    monkeypatch.setattr(audit_module, "stream_audit", lambda _e, **kw: audited.append(kw))
+    namespace = "unit-route-decision-dedupe"
+    direct = NamespaceRouteDecision(use_direct=True, reason=MCP_TASKS_DIRECT_ROUTE_SELECTED)
+    unknown = NamespaceRouteDecision(use_direct=False, reason=MCP_TASK_CAPABILITY_UNKNOWN)
+    for decision in (direct, direct, direct, unknown, unknown, direct):
+        record_namespace_route_decision(namespace, decision)
+
+    assert sum(1 for name, _ in recorded_task_route_decisions() if name == namespace) == 6
+    assert [entry["use_direct"] for entry in audited] == [True, False, True]
+
+
 def test_known_task_capable_namespace_with_factory_builds_direct_client() -> None:
     """A namespace with a recorded True verdict AND a mounted direct factory
     actually builds a client (not just an intent) -- ``resolve_and_build_
@@ -878,7 +898,12 @@ def test_clio_extension_registry_composes_apps_and_agent_elicitation() -> None:
     """CLIO adds Apps/input declarations; native SDK owns Tasks negotiation."""
     declaration = extensions_declaration(Client, object())
     by_id = {entry.identifier: entry for entry in declaration.entries}
-    assert set(by_id) == {UI_EXTENSION_ID, AGENT_ELICITATION_EXTENSION_ID}
+    assert set(by_id) == {
+        UI_EXTENSION_ID,
+        AGENT_ELICITATION_EXTENSION_ID,
+        RELAY_ASK_EXTENSION_ID,
+        RELAY_CHOICE_EXTENSION_ID,
+    }
     assert all(entry.extension is not None and entry.reason is None for entry in by_id.values())
     assert {ext.identifier for ext in declaration.extensions} == set(by_id)
 
@@ -887,7 +912,12 @@ def test_clio_proxy_extensions_preserve_apps_and_agent_elicitation() -> None:
     """Proxy clients keep Apps/input declarations without a custom Tasks owner."""
     declaration = extensions_declaration(ProxyClient, object())
     by_id = {entry.identifier: entry for entry in declaration.entries}
-    assert set(by_id) == {UI_EXTENSION_ID, AGENT_ELICITATION_EXTENSION_ID}
+    assert set(by_id) == {
+        UI_EXTENSION_ID,
+        AGENT_ELICITATION_EXTENSION_ID,
+        RELAY_ASK_EXTENSION_ID,
+        RELAY_CHOICE_EXTENSION_ID,
+    }
     assert all(entry.extension is not None and entry.reason is None for entry in by_id.values())
     assert {ext.identifier for ext in declaration.extensions} == set(by_id)
 
@@ -1196,6 +1226,10 @@ async def test_plain_guarded_input_completes_mrtr_through_the_sync_executor_forc
         gw = build_gateway({namespace: spec})
         executor = SyncMCPToolExecutor(
             gw,
+            # The call also cold-starts the backend through the proxy; on a loaded host
+            # that alone outlasts the 30 s default. The MRTR round trip is under test,
+            # not the call budget.
+            timeout=120.0,
             namespace_servers=namespace_proxies(gw),
             preloaded_tools=_preloaded_tools_from_listing(namespace, listed),
             client_factory=_elicit_client,

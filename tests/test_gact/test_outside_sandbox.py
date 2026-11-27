@@ -75,6 +75,7 @@ def test_the_person_is_asked_even_in_bypass_and_the_allow_is_for_that_command(
         assert row["tool_call"]["input"]["access_reason"].endswith("the sandbox blocks apt.")
         assert row["tool_call"]["input"]["command"] == command
         assert row["actions"] == ["allow", "deny"]  # once, never a standing rule
+        assert "consent" not in row  # an allow used once: the card says "Allow once"
         refused = client.post(f"/v1/permissions/{row['id']}", json={"action": "allow_session"})
         assert refused.status_code == 422
         assert client.post(f"/v1/permissions/{row['id']}", json={"action": action}).is_success
@@ -130,3 +131,13 @@ def test_a_denial_inside_the_territory_the_account_may_write_is_privilege_denied
     assert str(target) in diagnosis.paths
     assert "outside_sandbox=true" in diagnosis.message
     assert sd.BoundaryDiagnosis.from_payload(diagnosis.to_payload()) == diagnosis
+
+
+def test_a_lasting_allow_rides_on_the_row_so_the_card_does_not_say_once() -> None:
+    from clio_agent.gact.permission_outside_sandbox import answer_fields
+
+    consent = {"scope": "connector_outside_sandbox", "connector": "kicad", "lasting": True}
+    fields = answer_fields({"answers": ["allow", "deny"], "consent": consent})
+    assert fields["actions"] == ["allow", "deny"]
+    assert fields["consent"] == consent
+    assert "consent" not in answer_fields({"answers": ["allow", "deny"]})

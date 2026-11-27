@@ -232,7 +232,7 @@ def test_wait_reports_lifecycle_without_repeating_child_output(status: str) -> N
             "result": {"output": "FULL CHILD ANSWER"},
         }
     )
-    payload = {"outcomes": [outcome], "pending": [], "timed_out": False}
+    payload = {"outcomes": [outcome], "unfinished": [], "timed_out": False}
     before = json.dumps(payload)
     view = native_presentation(
         "wait",

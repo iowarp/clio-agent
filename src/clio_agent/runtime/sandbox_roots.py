@@ -13,6 +13,8 @@ confinement never false-positives on a legitimate ``uv``/``npm`` cache write.
 from __future__ import annotations
 
 import logging
+import os
+import sys
 import threading
 from collections.abc import Mapping
 from pathlib import Path
@@ -168,15 +170,60 @@ def _platform_tool_cache_dirs() -> list[Path]:
             home / ".npm",
         ]
     )
-    # A fence rules only on existing paths, and clio-kit servers create their data folder
-    # on first use (the ParaView node half lives there): create clio-kit's own folders so
-    # the first launch on a fresh machine can write them.
-    for owned in (
+    # A fence rules only on existing paths, and the launchers that start MCP servers create
+    # their homes on first use (uvx takes ``<uv-data>/tools/.lock``, npx fills the npm cache):
+    # create those homes, and clio-kit's own folders, so the first launch on a fresh machine
+    # (or a fresh ``XDG_DATA_HOME``) can write them.
+    for owned in _launcher_homes():
+        _create_granted_root(owned)
+        dirs.append(owned)
+    return dirs
+
+
+def _launcher_homes() -> list[Path]:
+    """The folders an MCP server launcher writes on its first run, created before granting.
+
+    uv's cache and data folders (``platformdirs`` resolves both, ``XDG_*``-aware), uv's tool
+    folder when ``UV_TOOL_DIR`` moves it out of the data folder (Windows keeps it in Roaming
+    AppData), the npm cache ``npx`` writes, and clio-kit's own data and cache folders.
+    """
+    import platformdirs  # noqa: PLC0415 - cheap; only on this path
+
+    homes = [
+        Path(platformdirs.user_cache_dir("uv", appauthor=False)),
+        Path(platformdirs.user_data_dir("uv", appauthor=False)),
         Path(platformdirs.user_data_dir("clio-kit", appauthor=False)),
         Path(platformdirs.user_cache_dir("clio-kit", appauthor=False)),
-    ):
-        _create_granted_root(owned)
-    return dirs
+    ]
+    configured = os.environ.get("UV_TOOL_DIR")
+    if configured:
+        homes.append(Path(configured).expanduser())
+    else:
+        tools = _windows_uv_tool_dir()
+        if tools is not None:
+            homes.append(tools)
+    npm_cache = os.environ.get("npm_config_cache") or os.environ.get("NPM_CONFIG_CACHE")
+    if npm_cache:
+        homes.append(Path(npm_cache).expanduser())
+    elif sys.platform != "win32":
+        homes.append(Path.home() / ".npm")
+    return homes
+
+
+def _windows_uv_tool_dir() -> Path | None:
+    """uv's tool folder on Windows, which ``uvx`` locks (``tools/.lock``) on every run.
+
+    Windows uv keeps tools under Roaming AppData, outside the ``uv`` data folder above
+    (Local AppData), so a fenced plugin server started with ``uvx`` failed to take the lock.
+    On other platforms the folder already sits inside uv's granted data folder.
+    """
+    if sys.platform != "win32":
+        return None
+    configured = os.environ.get("UV_TOOL_DIR")
+    if configured:
+        return Path(configured).expanduser()
+    roaming = os.environ.get("APPDATA")
+    return Path(roaming) / "uv" / "tools" if roaming else None
 
 
 def read_only_write_roots() -> tuple[Path, ...]:
@@ -192,6 +239,16 @@ def read_only_write_roots() -> tuple[Path, ...]:
     roots = [scratch] if scratch is not None else []
     roots.extend(temp for temp in system_temp_roots() if temp not in roots)
     return tuple(roots)
+
+
+def _within_any(path: Path, roots: list[Path]) -> bool:
+    """Whether ``path`` is one of ``roots`` or inside one (case-insensitively on Windows)."""
+    key = os.path.normcase(os.path.abspath(path))
+    for root in roots:
+        base = os.path.normcase(os.path.abspath(root.expanduser()))
+        if key == base or key.startswith(base.rstrip("\\/") + os.sep):
+            return True
+    return False
 
 
 def effective_write_roots(
@@ -260,7 +317,10 @@ def effective_write_roots(
         _add(paths.shared_uv_cache_dir())  # the machine's one shell uv cache
         return tuple(roots)
 
-    if workspace_root:
+    if workspace_root and not _within_any(Path(workspace_root).expanduser(), roots):
+        # A folder inside a root is already writable through that root's inherited grant.
+        # Listing it as its own root makes Codex rewrite its access list, which fails on a
+        # folder the confined child itself created (it owns it, the person does not).
         _add(Path(workspace_root))
     # Mid-session root grants (B5 #979.3): a recorded workspace root grant takes effect on the
     # NEXT spawn — union the live registry so the fence territory widens without a restart.

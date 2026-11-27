@@ -8,6 +8,7 @@ import re
 import secrets
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -143,6 +144,52 @@ def bootstrap_test_runtime(checkout: Path) -> TestRuntime:
     elif _BOOTSTRAP_RUNTIME.parent != parent:
         raise RuntimeError("the test runtime belongs to a different checkout")
     return _BOOTSTRAP_RUNTIME
+
+
+# Every child Python inherits the run's empty PYTHONPYCACHEPREFIX, so a stdio MCP
+# fixture server compiles fastmcp, mcp and pydantic from source. Sixteen of them starting
+# at once take about 30 s instead of 7 s, which overruns the host's server/discover
+# budget under xdist. One server's startup compiled into the prefix first lets the rest
+# start warm.
+_BYTECODE_WARMUP_SOURCE = (
+    "import fastmcp.apps, fastmcp_tasks.extension, fastmcp.server.extensions, "
+    "fastmcp.utilities.tasks, mcp_types\n"
+    "from fastmcp import FastMCP\n"
+    "FastMCP('bytecode-warmup').run(transport='stdio', show_banner=False)\n"
+)
+_BYTECODE_WARMUP: subprocess.Popen[bytes] | None = None
+
+
+def start_bytecode_warmup() -> None:
+    """Compile a stdio MCP server's imports into this run's bytecode prefix, beside collection.
+
+    Nothing waits for it: a server that starts first compiles what it needs itself.
+    """
+    global _BYTECODE_WARMUP
+
+    if _BYTECODE_WARMUP is not None:
+        return
+    try:
+        _BYTECODE_WARMUP = subprocess.Popen(
+            [sys.executable, "-c", _BYTECODE_WARMUP_SOURCE],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        _BYTECODE_WARMUP = None
+
+
+def stop_bytecode_warmup() -> None:
+    """End the warm-up before the run root is removed; its bytecode writes are atomic."""
+    global _BYTECODE_WARMUP
+
+    warmup, _BYTECODE_WARMUP = _BYTECODE_WARMUP, None
+    if warmup is None:
+        return
+    if warmup.poll() is None:
+        warmup.kill()
+    warmup.wait()
 
 
 def _pid_is_live(pid: int) -> bool:

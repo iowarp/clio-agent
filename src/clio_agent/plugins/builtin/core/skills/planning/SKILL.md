@@ -1,7 +1,7 @@
 ---
 name: planning
 title: Plan for the person's approval before acting
-description: Use when the person wants to approve a plan before anything changes, or an unresolved decision needs their approval (Plan Mode with plan_enter, plan_update and plan_exit). A plan you write and carry out yourself needs only plan_update.
+description: Use when the person wants to approve a plan before anything changes, or an unresolved decision needs their approval (Plan Mode with plan_enter, plan_update and plan_exit). A list of steps you carry out yourself is not a plan; keep it with write_todos.
 ---
 
 # Planning
@@ -55,15 +55,15 @@ Write the plan with `plan_update(content=...)` and revise it as you learn
 only Changes and Verification. Larger or open-ended work:
 - **Objective**: the question, what a complete answer contains, what counts as done.
 - **Approach**: how you will get there.
-- **Threads**: one per line, each marked at the start `[open]`, `[active]`, `[closed]`
-  or `[dropped]` (`- [open] name: what it asks`), so CLIO can count what is left; a
-  one-line reason when it ends and the handles of any children working on it.
+- **Issues**: the questions and pieces of work the plan leaves to do, one per line,
+  with the handles of any children working on them. After approval, carry them into
+  todos with `write_todos` and track their progress there, not in the plan.
 - **Findings**: each a claim with its references (`call:` refs, paths and lines,
   handles); a corrected finding is marked superseded rather than deleted.
-- Checking your claims is the last thread.
+- Checking your claims is the last issue.
 
 Keep what you know apart from what you still must find out: findings carry their
-references, and an unknown stays an open thread until you look it up. If a plan
+references, and an unknown stays an open issue until you look it up. If a plan
 already exists, judge whether it still fits this task before editing; treat a
 genuinely new task as a fresh plan.
 
@@ -79,3 +79,18 @@ to miss. Then end your turn by handing it back: call `plan_exit` (with a short s
 and an optional recommended posture) when the plan is complete, or the ask-user
 question tool if you need a decision before finishing. Executing waits for the user's
 approval, after which you resume with authorization.
+
+The approval card preselects the approval mode the session had before planning and
+shows your recommended posture beside it, so choose the recommendation for the plan's
+real decisions:
+- `auto` (auto-execute): recommend it when every decision that needs the person is
+  already covered. Either the tools ask for it themselves when they reach it (a tool
+  that asks before spending, installing or submitting for review still asks under
+  auto-execute), or it is a step of this approved plan. File edits and other write
+  tools then run without a prompt for each one.
+- `interactive`: recommend it only when the person asked to review each action, or
+  the plan leaves a consequential decision that no tool will ask about.
+- `exit_only`: recommend it when the person wants to leave Plan Mode without executing
+  yet.
+Asking before every action does not make an approved plan safer. It stalls the run on
+decisions the person has already made.

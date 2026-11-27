@@ -34,7 +34,7 @@ import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from clio_agent.arc.clio_core_config import pin_core_child_env
+from clio_agent.arc.clio_core_config import ensure_core_memfd_dir, pin_core_child_env
 
 logger = logging.getLogger(__name__)
 
@@ -229,6 +229,7 @@ def preflight_native_client(
     env["CLIO_SERVER_CONF"] = config_path
     env["CLIO_WAIT_SERVER"] = "0"  # stop before contacting the daemon
     pin_core_child_env(env)
+    ensure_core_memfd_dir(env)
     env.setdefault("CTP_LOG_LEVEL", "error")
     source = _CHILD_SOURCE.format(module=module)
     code, output = (runner or _run_child)([sys.executable, "-c", source], env, no_progress_s)

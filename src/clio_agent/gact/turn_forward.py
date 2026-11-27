@@ -57,6 +57,19 @@ async def _run_turn_setup_off_loop(state: "TurnState", function: Callable[[], An
     return await join_off_loop(function)
 
 
+async def _refresh_server_instructions(app: Any) -> None:
+    """Read what each kept-alive MCP server says about itself now, for this turn's prompt
+    and ``search_tools`` (bounded by ``tools.instructions_refresh_s``)."""
+    from clio_agent.gact.external_task_connections import refresh_instructions
+    from clio_agent.tools.mcp_server_instructions import instructions_refresh_s
+
+    timeout = instructions_refresh_s()
+    tasks = getattr(app.state, "external_tasks", None)
+    if timeout <= 0 or tasks is None:
+        return
+    await refresh_instructions(tasks, timeout=timeout)
+
+
 async def _run_module(state: "TurnState", module: Any, cancel: Callable[[], bool]) -> Any:
     """Run the production module in this session's exclusively owned turn worker."""
     from clio_agent.agent import cancellation_checker
@@ -244,6 +257,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
     # whole turn, so no _gact_app_context wrapper is needed here.
     session_token = _ctx.set_session_id(state.sid)
     try:
+        await _refresh_server_instructions(state.app)
 
         def build_module() -> Any:
             with _cancellation_checker(cancel_cb):

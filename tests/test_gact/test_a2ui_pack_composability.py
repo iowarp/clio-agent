@@ -297,6 +297,7 @@ def test_generated_station_skill_states_the_catalog_json_catalog_id(
     from clio_agent.gact.skills import SkillCatalog
 
     _client, app, sid = _activated_session(tmp_path)
+    _advertise_pack_first(app, sid)
     catalog_id = json.loads((_CATALOG_DIR / "catalog.json").read_text(encoding="utf-8"))[
         "catalogId"
     ]
@@ -306,9 +307,10 @@ def test_generated_station_skill_states_the_catalog_json_catalog_id(
 
     assert catalog_id == PACK_CATALOG_ID
     assert f"Catalog id: `{catalog_id}`" in body
-    assert "This is not this agent's default catalog" in body
+    assert f"empty `catalog_id` uses `{WORKSPACE_CATALOG_ID}`" in body
+    assert f'catalog_id="{catalog_id}"' in body
     assert (
-        "This is this agent's default catalog"
+        "empty `catalog_id` uses in this session"
         in refs["a2ui-catalog-clio-workspace"].body_provider()
     )
 

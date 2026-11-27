@@ -108,6 +108,29 @@ def test_after_a_failed_dieted_spawn_the_next_spawn_is_declared(
     assert spawned[1] == (launcher, ["mcp-server", "pandas"])
 
 
-def test_a_transport_without_a_plan_is_the_plain_stdio_transport(tmp_path: Path) -> None:
-    assert spawn_diet_transport.stdio_transport(SPEC, str(tmp_path), False) is StdioTransport
+def test_a_transport_without_a_plan_is_the_rooted_stdio_transport(tmp_path: Path) -> None:
+    rooted = spawn_diet_transport.RootedStdioTransport
+    assert spawn_diet_transport.stdio_transport(SPEC, str(tmp_path), False) is rooted
     assert spawn_diet.environment_prepared("pandas", str(tmp_path)) is False  # no plan
+
+
+def test_a_spawn_recreates_a_workspace_root_deleted_after_mounting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SABOTAGE: drop ``recreate_root`` in ``RootedStdioTransport.connect`` and the spawn
+    runs in a folder that no longer exists (ENOENT, the whole turn fails)."""
+    root = tmp_path / "root"
+    root.mkdir()
+    transport = transport_for(
+        MCPServerSpec(name="plain", transport="stdio", command="sh"), cwd=str(root)
+    )
+    assert isinstance(transport, spawn_diet_transport.RootedStdioTransport)
+    root.rmdir()
+    seen: list[bool] = []
+
+    async def connect(self: StdioTransport, **_kwargs: Any) -> None:
+        seen.append(Path(str(self.cwd)).is_dir())
+
+    monkeypatch.setattr(StdioTransport, "connect", connect)
+    asyncio.run(transport.connect())
+    assert seen == [True]

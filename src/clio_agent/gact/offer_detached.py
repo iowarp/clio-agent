@@ -2,8 +2,11 @@
 
 ``offer_plugin`` waits for Add or Not now when the agent says the request cannot go on
 without the plugin (``required``). Otherwise the card stays on screen for the person and
-the tool returns at once, so the agent goes on with what it has (another source, a
-partial answer): the model decides which, CLIO does not.
+the tool returns at once, so the agent goes on with the work that does not need the
+plugin. The result says what the plugin is for (its description and the opening of the
+instructions its servers last sent) and that, while the offer waits, the agent does not
+do that work some other way (a shell command, a script, another tool): the person's
+answer decides how it is done.
 
 When the person answers such a card later, the answer itself is applied as for a waited
 card (Add puts the plugin or connector in this conversation; Not now changes nothing),
@@ -74,23 +77,67 @@ def show(app: Any, row: dict[str, Any]) -> dict[str, Any]:
     return shown_result(row, outcome=OFFER_SHOWN)
 
 
+#: How much of the offered plugin's recorded server instructions the result carries.
+INSTRUCTIONS_OPENING_CHARS = 1200
+
+
+def offered_instructions(row: Mapping[str, Any]) -> str:
+    """The opening of the instructions the offered plugin's servers last sent, else ""."""
+
+    from clio_agent.plugins.recorded_instructions import plugin_instructions  # noqa: PLC0415
+
+    texts: list[str] = []
+    for plugin in dict.fromkeys(str(v) for v in (row.get("plugin_id"), _target(row)) if v):
+        try:
+            text = plugin_instructions(plugin).strip()
+        except Exception as exc:  # noqa: BLE001 - the offer stands without them
+            trace.event("TOOLS", "plugin_offer_instructions_unread plugin=%s (%s)", plugin, exc)
+            continue
+        if text and text not in texts:
+            texts.append(text)
+    opening = "\n".join(texts)
+    if len(opening) <= INSTRUCTIONS_OPENING_CHARS:
+        return opening
+    return opening[:INSTRUCTIONS_OPENING_CHARS].rsplit(" ", 1)[0] + " ..."
+
+
 def shown_result(row: Mapping[str, Any], *, outcome: str) -> dict[str, Any]:
     """What the agent is told about a card on screen that the turn does not wait for."""
 
     name = str(row.get("connector_name") or _target(row))
     again = outcome == OFFER_PENDING
-    return {
+    description = str(row.get("description") or "").strip()
+    instructions = offered_instructions(row)
+    result: dict[str, Any] = {
         "outcome": outcome,
         "plugin": _target(row),
         "plugin_name": name,
         "reason": row.get("reason", ""),
         "offered": True,
-        "message": (
-            f"The offer of {name} is {'already ' if again else ''}on screen for the person. "
-            "Go on with what you can do without it; if they add it, you are told and its "
-            "tools join when you offer it again."
-        ),
     }
+    if description:
+        result["description"] = description
+    if instructions:
+        result["instructions"] = instructions
+    said = " and ".join(
+        part
+        for part, present in (("description", description), ("instructions", instructions))
+        if present
+    )
+    result["message"] = (
+        f"The offer of {name} is {'already ' if again else ''}on screen for the person. "
+        + (
+            f"Its {said} here {'say' if ' and ' in said else 'says'} what it is for and how "
+            "that work is done. "
+            if said
+            else ""
+        )
+        + f"While the offer waits, do not do {name}'s work some other way (a shell "
+        "command, a script, another tool or a substitute you make): the person's answer "
+        "decides how it is done. Go on only with the work that does not need it. If they "
+        "add it, you are told, and its tools join when you offer it again."
+    )
+    return result
 
 
 def answered_text(row: Mapping[str, Any]) -> str:

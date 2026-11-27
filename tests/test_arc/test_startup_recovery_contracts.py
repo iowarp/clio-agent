@@ -202,7 +202,7 @@ async def test_unknown_startup_settlement_prevents_a_restart_successor(
         assert (await asyncio.to_thread(owner.history.latest_assignment, sid)) == current
         assert len(await asyncio.to_thread(owner.history.task_handles, kind="Subagent")) == 1
         outcome = await operations.wait(caller, accepted["handle"], timeout_s=0)
-        assert accepted["handle"] in outcome["pending"]
+        assert accepted["handle"] in [row["handle"] for row in outcome["unfinished"]]
         assert not owner.runner.busy(sid)
         assert session.creation_hook_state == "started"
         assert not owner.history.acknowledged_notifications(caller.session_id)

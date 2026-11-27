@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import inspect
+import json
 from collections.abc import AsyncIterator, Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
@@ -666,15 +667,15 @@ class FlowContext:
         waited = await self.app.state.task_operations.wait(
             self.caller, handle, "all", settle_awaiting_input=True
         )
-        if not waited.get("pending"):
+        if not waited.get("unfinished"):
             await self.app.state.task_history.io.run(self._collect, handle)
         outcome = (waited.get("outcomes") or [{}])[0]
-        if waited.get("pending") and waited.get("interrupted") == "stopped":
+        if waited.get("unfinished") and waited.get("interrupted") == "stopped":
             # This run's own turn is being retired (server shutdown, a pause), not
             # cancelled: the member keeps running and nothing is known about it. The call
             # stays open in the journal, so the resumed run waits on the same handle.
             raise asyncio.CancelledError(f"the run stopped waiting for {kind} {name!r}")
-        if waited.get("pending"):
+        if waited.get("unfinished"):
             await self._settle(invocation, "task_state_uncertain")
             raise TaskStateUncertain(
                 f"the state of {kind} {name!r} cannot be confirmed", handle=handle
@@ -725,6 +726,10 @@ class FlowContext:
         if call.input is not None and not isinstance(call.input, Mapping):
             raise CallRefused(f"tool {call.name!r} takes a mapping of arguments", target=call.name)
         from clio_agent.gact.tool_observer import _OBSERVER_CALL_IDS  # noqa: PLC0415
+        from clio_agent.tools.result_errors import (  # noqa: PLC0415
+            declared_failure,
+            observed_value,
+        )
 
         token = _OBSERVER_CALL_IDS.set(call.invocation)
         try:
@@ -740,6 +745,17 @@ class FlowContext:
             raise CallFailed(f"tool {call.name!r} failed: {exc}", error=type(exc).__name__) from exc
         finally:
             _OBSERVER_CALL_IDS.reset(token)
+        # The call's own verdict, as the react loop reads it: a native ToolFailure or an
+        # MCP isError fails the call, and the flow sees the tool's own text.
+        failure = type(result).__name__ if declared_failure(result) else ""
+        result = observed_value(result)
+        if failure:
+            text = result if isinstance(result, str) else json.dumps(result, default=str)
+            raise CallFailed(
+                f"tool {call.name!r} failed: {text}",
+                error=failure,
+                result=_plain(result),
+            )
         if isinstance(result, Mapping) and result.get("accepted") and result.get("handle"):
             return await self._wait(
                 str(result["handle"]), call.invocation, kind="tool", name=call.name

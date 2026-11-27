@@ -31,6 +31,7 @@ MANIFEST_FIELDS = (
     "repository",
     "license",
     "keywords",
+    "category",
     "extensions",
 )
 _STRING_FIELDS = ("version", "description", "homepage", "repository", "license")
@@ -47,7 +48,22 @@ _EXTENSION_FIELDS = (
     "servers",
     "kernel_bindings",
     "follows",
+    "tabs",
+    "accounts",
+    "elicitation",
+    "title",
+    "navigation",
+    "setup",
 )
+#: Providers a plugin may ask account grants from (HS4); CLIO's own sign-in covers each.
+ACCOUNT_PROVIDERS = ("github", "google_drive", "globus", "ndp")
+_TAB_FIELDS = {"id", "title", "titles", "icon", "server", "resource"}
+#: The id of a plugin's ``navigation`` page when it names none.
+NAVIGATION_ID = "page"
+_TAB_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
+_HTTPS_ORIGIN = re.compile(r"^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$")
+#: ``elicitation.audience``: the plugin's servers ask the person, never an agent helper.
+ELICITATION_AUDIENCE = "person"
 #: What one ``servers.<name>`` entry may set.
 _SERVER_FIELDS = ("defer", "description", "callers", "permission", "tools")
 _STDIO_FIELDS = {"type", "command", "args", "env", "cwd"}
@@ -116,6 +132,18 @@ def validate_manifest(
             "start and end alphanumeric, with no '--' or '..'"
         )
     cleaned["name"] = name
+    if "category" in data:
+        if isinstance(data["category"], str):
+            cleaned["category"] = data["category"].strip()
+        else:
+            warnings.append(
+                Diagnostic(
+                    "warning",
+                    "manifest_invalid_category",
+                    "plugin.json category must be a string; ignored",
+                    plugin,
+                )
+            )
     for key in _STRING_FIELDS:
         if key in data:
             if not isinstance(data[key], str):
@@ -186,6 +214,189 @@ def _check_disclosure(ext: Mapping[str, Any], plugin: str) -> None:
             settings(entry, f"{where}.tools.{tool}")
 
 
+def _check_host_semantics(ext: Mapping[str, Any], plugin: str) -> None:
+    """Shape of ``title``, ``tabs``, ``navigation``, ``accounts`` and ``elicitation``.
+
+    ``navigation`` is one page in the host's primary navigation: a tab's fields, with
+    ``id`` defaulting to :data:`NAVIGATION_ID`, unique among the tabs. A tab's ``server``
+    is checked against ``mcp.json`` by :func:`host_semantics`.
+    """
+
+    title = ext.get("title")
+    if title is not None and (not isinstance(title, str) or not 1 <= len(title.strip()) <= 60):
+        raise ManifestError(f"{plugin}: {NAMESPACE}.title must be text of 1 to 60 characters")
+    tabs = ext.get("tabs", [])
+    if not isinstance(tabs, list):
+        raise ManifestError(f"{plugin}: {NAMESPACE}.tabs must be a list of objects")
+    navigation = ext.get("navigation")
+    if navigation is not None:
+        if not isinstance(navigation, dict):
+            raise ManifestError(f"{plugin}: {NAMESPACE}.navigation must be an object")
+        # A page is a tab the host shows in its primary navigation: same fields, same ids.
+        tabs = [*tabs, {"id": NAVIGATION_ID, **navigation}]
+    seen: set[str] = set()
+    for index, tab in enumerate(tabs):
+        where = (
+            f"{plugin}: {NAMESPACE}.navigation"
+            if navigation is not None and index == len(tabs) - 1
+            else f"{plugin}: {NAMESPACE}.tabs[{index}]"
+        )
+        if not isinstance(tab, dict) or set(tab) - _TAB_FIELDS:
+            raise ManifestError(f"{where} may set only {', '.join(sorted(_TAB_FIELDS))}")
+        tab_id = tab.get("id")
+        if not isinstance(tab_id, str) or not _TAB_ID.match(tab_id) or tab_id in seen:
+            raise ManifestError(f"{where}.id must be a unique id of a-z, 0-9 and '-'")
+        seen.add(tab_id)
+        title = tab.get("title")
+        if not isinstance(title, str) or not 1 <= len(title.strip()) <= 40:
+            raise ManifestError(f"{where}.title must be text of 1 to 40 characters")
+        _check_titles(tab.get("titles"), f"{where}.titles")
+        if "icon" in tab and not isinstance(tab["icon"], str):
+            raise ManifestError(f"{where}.icon must be an icon name")
+        if "server" in tab and (not isinstance(tab["server"], str) or not tab["server"]):
+            raise ManifestError(f"{where}.server must name a server in mcp.json")
+        resource = tab.get("resource")
+        if not isinstance(resource, str) or not resource.startswith("a2ui://"):
+            raise ManifestError(f"{where}.resource must be an a2ui:// URI")
+    accounts = ext.get("accounts", [])
+    if not isinstance(accounts, list):
+        raise ManifestError(f"{plugin}: {NAMESPACE}.accounts must be a list of objects")
+    providers: set[str] = set()
+    for index, account in enumerate(accounts):
+        where = f"{plugin}: {NAMESPACE}.accounts[{index}]"
+        if not isinstance(account, dict) or set(account) - {"provider", "scopes"}:
+            raise ManifestError(f"{where} may set only provider and scopes")
+        provider = account.get("provider")
+        if provider not in ACCOUNT_PROVIDERS or provider in providers:
+            raise ManifestError(
+                f"{where}.provider must be one of {', '.join(ACCOUNT_PROVIDERS)}, once each"
+            )
+        providers.add(provider)
+        scopes = account.get("scopes", [])
+        if not isinstance(scopes, list) or not all(isinstance(s, str) and s for s in scopes):
+            raise ManifestError(f"{where}.scopes must be a list of scope strings")
+    elicitation = ext.get("elicitation", {})
+    if not isinstance(elicitation, dict) or set(elicitation) - {"loopback", "origins", "audience"}:
+        raise ManifestError(
+            f"{plugin}: {NAMESPACE}.elicitation may set only loopback, origins and audience"
+        )
+    if "loopback" in elicitation and not isinstance(elicitation["loopback"], bool):
+        raise ManifestError(f"{plugin}: {NAMESPACE}.elicitation.loopback must be true or false")
+    if elicitation.get("audience", ELICITATION_AUDIENCE) != ELICITATION_AUDIENCE:
+        raise ManifestError(
+            f"{plugin}: {NAMESPACE}.elicitation.audience must be {ELICITATION_AUDIENCE!r}"
+        )
+    origins = elicitation.get("origins", [])
+    if not isinstance(origins, list) or not all(
+        isinstance(o, str) and _HTTPS_ORIGIN.match(o) for o in origins
+    ):
+        raise ManifestError(
+            f"{plugin}: {NAMESPACE}.elicitation.origins must list https://host[:port] origins"
+        )
+    setup = ext.get("setup", {})
+    files = setup.get("files", []) if isinstance(setup, dict) else None
+    if (
+        not isinstance(setup, dict)
+        or set(setup) - {"files"}
+        or not isinstance(files, list)
+        or not all(_data_relative(path) for path in files)
+    ):
+        raise ManifestError(
+            f"{plugin}: {NAMESPACE}.setup may set only files, a list of paths relative to "
+            "the plugin's data folder"
+        )
+
+
+def _check_titles(titles: Any, where: str) -> None:
+    """``titles``: optional, the ``title`` in other languages, ``{BCP 47 tag: text}``."""
+    from clio_agent.tools.request_locale import normalize  # noqa: PLC0415
+
+    if titles is None:
+        return
+    if not isinstance(titles, dict) or not all(
+        isinstance(tag, str)
+        and normalize(tag) == tag
+        and isinstance(text, str)
+        and 1 <= len(text.strip()) <= 40
+        for tag, text in titles.items()
+    ):
+        raise ManifestError(
+            f"{where} must map language tags (such as es or pt-BR) to text of 1 to 40 characters"
+        )
+
+
+def _data_relative(path: Any) -> bool:
+    """A relative path that stays inside ``PLUGIN_DATA`` (no root, drive or ``..``)."""
+
+    if not isinstance(path, str) or not path.strip() or "\\" in path:
+        return False
+    parts = path.split("/")
+    return not path.startswith("/") and ":" not in parts[0] and ".." not in parts
+
+
+def host_semantics(
+    ext: Mapping[str, Any], plugin: str, servers: Mapping[str, Any]
+) -> dict[str, Any]:
+    """The plugin's normalized ``title``, ``tabs``, ``navigation``, ``accounts``,
+    ``elicitation`` and ``setup``.
+
+    ({} for none.) Each tab, and the navigation page, names its server: the declared
+    one, or the plugin's only server. ``title`` is the plugin's readable name, for the
+    host's UI. ``setup.files`` are the plugin's own state files under ``PLUGIN_DATA``
+    that say the person has set it up (:mod:`clio_agent.plugins.setup_state`).
+    """
+
+    out: dict[str, Any] = {}
+    if ext.get("title"):
+        out["title"] = str(ext["title"]).strip()
+
+    def normalized(tab: Mapping[str, Any]) -> dict[str, Any]:
+        server = tab.get("server")
+        if server is None:
+            if len(servers) != 1:
+                raise ManifestError(
+                    f"{plugin}: tab {tab['id']!r} must name its server; mcp.json has "
+                    f"{len(servers)} servers"
+                )
+            server = next(iter(servers))
+        elif server not in servers:
+            raise ManifestError(f"{plugin}: tab {tab['id']!r} names unknown server {server!r}")
+        row = {
+            "id": tab["id"],
+            "title": tab["title"].strip(),
+            "icon": str(tab.get("icon") or ""),
+            "server": server,
+            "resource": tab["resource"],
+        }
+        if tab.get("titles"):
+            row["titles"] = {tag: text.strip() for tag, text in tab["titles"].items()}
+        return row
+
+    tabs = [normalized(tab) for tab in ext.get("tabs") or []]
+    if tabs:
+        out["tabs"] = tabs
+    if ext.get("navigation"):
+        out["navigation"] = normalized({"id": NAVIGATION_ID, **ext["navigation"]})
+    accounts = [
+        {"provider": row["provider"], "scopes": list(row.get("scopes") or [])}
+        for row in ext.get("accounts") or []
+    ]
+    if accounts:
+        out["accounts"] = accounts
+    elicitation = ext.get("elicitation") or {}
+    if elicitation.get("loopback") or elicitation.get("origins") or elicitation.get("audience"):
+        out["elicitation"] = {
+            "loopback": bool(elicitation.get("loopback")),
+            "origins": [origin.lower() for origin in elicitation.get("origins") or []],
+        }
+        if elicitation.get("audience"):
+            out["elicitation"]["audience"] = str(elicitation["audience"])
+    setup_files = [str(path) for path in (ext.get("setup") or {}).get("files") or []]
+    if setup_files:
+        out["setup"] = {"files": setup_files}
+    return out
+
+
 def clio_extension(manifest: Mapping[str, Any], plugin: str) -> dict[str, Any]:
     """Validate and return the ``ai.iowarp.clio`` extension object."""
 
@@ -235,6 +446,7 @@ def clio_extension(manifest: Mapping[str, Any], plugin: str) -> dict[str, Any]:
         if key in ext and not isinstance(ext[key], dict):
             raise ManifestError(f"{plugin}: {NAMESPACE}.{key} must be an object")
     _check_disclosure(ext, plugin)
+    _check_host_semantics(ext, plugin)
     if kind == "pack" and not ext.get("members"):
         raise ManifestError(f"{plugin}: a pack must list its members")
     return ext

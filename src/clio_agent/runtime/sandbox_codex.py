@@ -50,6 +50,7 @@ from typing import Any, Callable, Optional, Sequence
 # naming) lives in the sibling :mod:`sandbox_codex_profile` module (extracted to keep this file under
 # its size ratchet). Re-exported below so this module's public surface is unchanged — callers keep
 # importing these names from ``sandbox_codex``.
+from .sandbox_codex_layers import composed_layer, release_codex_layer, write_codex_layer
 from .sandbox_codex_probe import EnforcementVerdict, codex_home_dir
 from .sandbox_codex_profile import (
     CODEX_LAYER_GLOB,
@@ -57,7 +58,7 @@ from .sandbox_codex_profile import (
     CODEX_LAYER_PREFIX,
     REASON_CODEX_PROFILE_REJECTED,
     CodexProfileError,
-    _render_layer_toml,
+    _render_layer_toml,  # noqa: F401 - re-exported for callers and tests
     codex_layer_name,
     synthesize_codex_profile,
     validate_codex_profile,
@@ -325,65 +326,6 @@ def detect_codex(
     )
 
 
-def _prune_layers(codex_home: Path, *, keep: int = CODEX_LAYER_KEEP) -> None:
-    """Bound clio's layer files in the shared home to ``keep`` most-recent (no unbounded leak).
-
-    Reaps ONLY files matching :data:`CODEX_LAYER_GLOB` (clio's ``clio-sb-*`` prefix) — NEVER the
-    user's ``config.toml`` or any unrelated file. Best-effort + guarded: a prune failure must
-    never break a spawn, and a concurrent-unlink race is ignored.
-    """
-    try:
-        files = sorted(
-            (p for p in codex_home.glob(CODEX_LAYER_GLOB) if p.is_file()),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-    except OSError:
-        return
-    for old in files[keep:]:
-        try:
-            old.unlink()
-        except OSError:
-            pass  # a peer spawn may have pruned it already — benign
-
-
-def write_codex_layer(
-    profile_name: str,
-    profile: dict[str, Any],
-    *,
-    elevated: bool,
-    codex_home: Optional[Path | str] = None,
-    platform: str = sys.platform,
-    windows_sandbox: str = "",
-) -> str:
-    """Write the ``-p`` layer file into codex's DEFAULT home and return its layer name.
-
-    The layer lives at ``<codex_home>/<clio-sb-sha8>.config.toml`` inside the REAL ``~/.codex``
-    (resolved from ``codex_home`` arg, else ``$CODEX_HOME``, else ``~/.codex``) — a fresh/custom
-    home was proven to silently drop the write grant. The ``[windows] sandbox = "elevated"``
-    block is emitted ONLY when ``elevated`` on win32. Verified MXC uses its own
-    explicit backend, managed proxy and content-addressed layer (a no-op elsewhere).
-    Validation runs FIRST (:func:`validate_codex_profile`, typed) so a drift never reaches disk;
-    the file is UTF-8 **WITHOUT a BOM** (a BOM breaks codex's TOML parser — verified live). The
-    user's own ``config.toml`` is NEVER touched; only clio's ``clio-sb-*`` layers are pruned.
-    """
-    validate_codex_profile(profile)
-    home = Path(codex_home) if codex_home else codex_home_dir()
-    home.mkdir(parents=True, exist_ok=True)
-    mode = windows_sandbox if platform.startswith("win") else ""
-    layer = codex_layer_name(profile_name, profile, windows_sandbox=mode)
-    body = _render_layer_toml(
-        profile_name,
-        profile,
-        elevated=elevated and platform.startswith("win"),
-        windows_sandbox=mode,
-    )
-    # ``encoding="utf-8"`` writes NO BOM (unlike ``utf-8-sig``); a BOM breaks codex's TOML parse.
-    (home / f"{layer}.config.toml").write_text(body, encoding="utf-8")
-    _prune_layers(home)
-    return layer
-
-
 def codex_prefix(
     binary: str,
     profile_name: str,
@@ -507,6 +449,8 @@ REASON_CODEX_WINDOWS_UNPROVISIONED = "codex_windows_unprovisioned"
 REASON_CODEX_ENFORCEMENT_VERIFIED = "codex_enforcement_verified"
 REASON_CODEX_ENFORCEMENT_UNVERIFIED = "codex_enforcement_unverified"
 REASON_CODEX_ENFORCEMENT_ESCAPED = "codex_enforcement_escaped"
+#: The receipt proves enforcement for another Codex version; re-verifying needs no elevation.
+REASON_CODEX_SETUP_STALE_VERSION = "codex_setup_stale_version"
 #: Codex holds an existing account setup it no longer accepts (an older setup marker)
 #: and waits for its elevated setup instead of starting the command.
 REASON_CODEX_WINDOWS_SETUP_REQUIRED = "codex_windows_setup_required"
@@ -639,7 +583,10 @@ def _run_codex_enforcement_probe(binary: str, write_root: str) -> tuple[bool, st
         # Codex delegates ACL work to background helpers, so stderr goes to a file
         # (a pipe can outlive the command on Windows); file witnesses provide the proof.
         log_marks = _sandbox_log_marks()
-        run = run_probe(argv, timeout=_CODEX_PROBE_TIMEOUT_S)
+        try:
+            run = run_probe(argv, timeout=_CODEX_PROBE_TIMEOUT_S)
+        finally:
+            release_codex_layer(layer)
         if outside_target.exists():
             # The confined child wrote OUTSIDE its territory — the fence did not hold.
             return EnforcementVerdict(False, REASON_CODEX_ENFORCEMENT_ESCAPED, run.describe())
@@ -711,10 +658,8 @@ def _setup_required_since(marks: dict[Path, int]) -> str:
 def codex_setup_refresh_required(version: str, *, marker_reader: Any = None) -> bool:
     """Whether this Codex's last legacy check found its account setup out of date."""
     marker = (marker_reader if marker_reader is not None else _read_codex_marker)() or {}
-    return (
-        marker.get("enforcement_reason") == REASON_CODEX_WINDOWS_SETUP_REQUIRED
-        and marker.get("codex_version") == version
-    )
+    reason, recorded = marker.get("enforcement_reason"), marker.get("codex_version")
+    return reason == REASON_CODEX_WINDOWS_SETUP_REQUIRED and recorded == version
 
 
 def _codex_marker_path() -> Path:
@@ -746,11 +691,8 @@ def write_codex_provision_marker(
 ) -> Path:
     """Persist the codex Windows provisioning + enforcement verdict marker (written by setup).
 
-    Records the codex version + timestamp + accounts so a later boot reads an HONEST cached state
-    WITHOUT re-spawning codex. ``enforcement_verified`` is the result of the real behavioural check
-    (:func:`verify_codex_enforcement`) — ``True`` only when codex was observed to actually deny an
-    out-of-root write; anything else (``False``/``None``) leaves the fence unproven so the ladder
-    floors honestly rather than reporting a false ``active`` (#1026). Returns the written path.
+    A later boot reads this cached verdict without re-spawning codex. ``enforcement_verified`` is
+    ``True`` only when :func:`verify_codex_enforcement` observed a denied out-of-root write (#1026).
     """
     import json  # noqa: PLC0415 - only on this path
     from datetime import datetime, timezone  # noqa: PLC0415
@@ -778,12 +720,11 @@ def codex_windows_gate(
 ) -> tuple[bool, str]:
     """Accept a current MXC proof or provisioned accounts with a legacy enforcement marker.
 
-    The TODO-free typed default the ladder (:func:`clio_agent.runtime.sandbox._resolve_backend`)
-    reads at boot — it consults the CACHED marker, never a live probe every boot. Returns
-    ``(ready, reason)``: no ``codexsandboxoffline`` account → :data:`REASON_CODEX_WINDOWS_UNPROVISIONED`;
-    provisioned but the cached marker is not ``enforcement_verified`` (verify failed, or a marker
-    predating the check) → :data:`REASON_CODEX_ENFORCEMENT_UNVERIFIED` (#1026, no false-green);
-    else ``(True, codex_windows_provisioned)``. Sub-probes are injectable for unit tests.
+    The ladder reads this CACHED marker at boot, never a live probe. Returns ``(ready, reason)``:
+    no ``codexsandboxoffline`` account → :data:`REASON_CODEX_WINDOWS_UNPROVISIONED`; a marker
+    that is absent or not ``enforcement_verified`` → :data:`REASON_CODEX_ENFORCEMENT_UNVERIFIED`
+    (#1026, no false-green); verified for another Codex version →
+    :data:`REASON_CODEX_SETUP_STALE_VERSION`; else ``(True, codex_windows_provisioned)``.
     """
     if binary and platform.startswith("win"):
         from clio_agent.runtime.sandbox_codex_mxc import mxc_ready  # noqa: PLC0415
@@ -796,13 +737,16 @@ def codex_windows_gate(
         return False, _packaged_or(REASON_CODEX_WINDOWS_UNPROVISIONED, platform, version)
     read = marker_reader if marker_reader is not None else _read_codex_marker
     marker = read()
-    if (
-        marker is None
-        or marker.get("enforcement_verified") is not True
-        or (version and marker.get("codex_version") != version)
-    ):
+    if marker is None or marker.get("enforcement_verified") is not True:
         return False, _packaged_or(REASON_CODEX_ENFORCEMENT_UNVERIFIED, platform, version)
+    if version and marker.get("codex_version") != version:
+        return False, _packaged_or(REASON_CODEX_SETUP_STALE_VERSION, platform, version)
     return True, REASON_CODEX_WINDOWS_PROVISIONED
+
+
+def codex_receipt_version() -> str:
+    """The Codex version this installation's enforcement receipt was verified for, or ``""``."""
+    return str((_read_codex_marker() or {}).get("codex_version") or "")
 
 
 def _packaged_or(reason: str, platform: str, version: str) -> str:
@@ -833,6 +777,7 @@ __all__ = [
     "REASON_CODEX_DETECTED",
     "REASON_CODEX_ENFORCEMENT_ESCAPED",
     "REASON_CODEX_ENFORCEMENT_UNVERIFIED",
+    "REASON_CODEX_SETUP_STALE_VERSION",
     "REASON_CODEX_ENFORCEMENT_VERIFIED",
     "REASON_CODEX_NOT_INSTALLED",
     "REASON_CODEX_PROFILE_REJECTED",
@@ -851,9 +796,11 @@ __all__ = [
     "codex_windows_gate",
     "codex_windows_provisioned",
     "compose_codex_spawn",
+    "composed_layer",
     "detect_codex",
     "is_codex_version_supported",
     "parse_version",
+    "release_codex_layer",
     "synthesize_codex_profile",
     "validate_codex_profile",
     "verify_codex_enforcement",

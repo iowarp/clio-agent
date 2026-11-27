@@ -11,10 +11,11 @@ none of it may be read as an option: a commit is hex, a ref passes
 marketplace *declares* (``declared=True``) must be a network URL. It never names a
 folder on this machine, and ``file``/``ext`` transports are refused.
 
-A machine with no usable git (a Mac without the Command Line Tools whose install came
-from PyPI, a minimal Linux or Windows) still fetches a GitHub source: GitHub's archive
-of the same revision is unpacked instead of a clone (:func:`_fetch_archive`), so the
-default marketplace installs during the install wherever git is missing.
+A pinned GitHub commit is fetched as GitHub's archive of that commit (:func:`_fetch_archive`),
+one download whose header names the commit it holds, and cloned only when the archive
+cannot be had. A machine with no usable git (a Mac without the Command Line Tools whose
+install came from PyPI, a minimal Linux or Windows) fetches a GitHub ref the same way,
+so the default marketplace installs during the install wherever git is missing.
 """
 
 from __future__ import annotations
@@ -23,13 +24,17 @@ import hashlib
 import logging
 import os
 import re
+import shutil
 import ssl
 import subprocess
 import tarfile
+import tempfile
+import threading
 import time
 import urllib.request
 import uuid
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -116,6 +121,8 @@ _GITHUB_HTTPS = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.
 _REF = re.compile(r"(?!.*(?:\.\.|//|@\{|\.lock/|/\.))(?![/.])[A-Za-z0-9._/+-]+(?<![/.])(?<!\.lock)")
 #: The largest repository archive a git-less fetch reads (a marketplace is about 1 MB).
 ARCHIVE_MAX_BYTES = 256 * 1024 * 1024
+#: An archive larger than this is held on disk beside the checkout while it unpacks.
+_SPOOL_BYTES = 32 * 1024 * 1024
 
 
 def _check_revision(source: str, ref: str, commit: str) -> None:
@@ -210,34 +217,51 @@ def fetch(
         raise SourceError(f"{url!r} is not a git URL")
     key = cache_key(url, commit or ref)
     target = cache / key
-    if commit and (target / ".git").exists():
+    if commit and ((target / ".git").exists() or _archive_marker(cache, key).is_file()):
         return FetchedSource(path=target, url=url, commit=commit, local=False)
     _sweep_staging(cache, key, older_than=STAGING_GRACE_SECONDS)
-    # Each fetch stages in its own folder, so a leftover nothing could delete (an
-    # earlier crash, a file another process held) never blocks the next fetch.
-    staging = cache / f".{key}.partial-{uuid.uuid4().hex[:12]}"
-    try:
-        staging.mkdir(parents=True)
-    except OSError as exc:
-        raise SourceError(f"cannot create the fetch folder {staging}: {exc}") from exc
+    staging = _new_staging(cache, key)
     try:
         wanted = commit or ref or "HEAD"
-        try:
-            _git(["init", "-q"], cwd=staging, timeout=60)
-        except GitMissingError:
-            archive = None if local else github_archive_url(url, wanted)
-            if archive is None:
-                raise
-            head = _fetch_archive(archive, staging, url=url)
-        else:
-            _git(["remote", "add", "--", "origin", url], cwd=staging, timeout=30)
-            protocols = [] if local else list(_PROTOCOLS)
-            _git([*protocols, "fetch", "-q", "--depth", "1", "--", "origin", wanted], cwd=staging)
-            _git(["checkout", "-q", "--detach", "FETCH_HEAD", "--"], cwd=staging, timeout=120)
-            head = _git(["rev-parse", "HEAD"], cwd=staging, timeout=30)
+        # A pinned GitHub commit is one archive download, not a clone: the same tree,
+        # checked against the pin from the archive's own header. Git fetches it when
+        # the archive cannot be had.
+        archive = github_archive_url(url, commit) if commit and not local else None
+        head = ""
+        archive_error: SourceError | None = None
+        if archive is not None:
+            try:
+                head = _fetch_archive(archive, staging, url=url, reason="pinned_commit")
+            except SourceError as exc:
+                archive_error = exc
+                logger.info("plugin source archive unavailable, cloning url=%s error=%s", url, exc)
+                _discard(staging)
+                staging = _new_staging(cache, key)
+        if not head:
+            try:
+                _git(["init", "-q"], cwd=staging, timeout=60)
+            except GitMissingError:
+                if archive_error is not None:
+                    raise archive_error from None
+                archive = None if local else github_archive_url(url, wanted)
+                if archive is None:
+                    raise
+                head = _fetch_archive(archive, staging, url=url, reason="git_unavailable")
+            else:
+                _git(["remote", "add", "--", "origin", url], cwd=staging, timeout=30)
+                protocols = [] if local else list(_PROTOCOLS)
+                _git(
+                    [*protocols, "fetch", "-q", "--depth", "1", "--", "origin", wanted],
+                    cwd=staging,
+                )
+                _git(["checkout", "-q", "--detach", "FETCH_HEAD", "--"], cwd=staging, timeout=120)
+                head = _git(["rev-parse", "HEAD"], cwd=staging, timeout=30)
+        unpacked = not (staging / ".git").exists()
         if commit and not head.startswith(commit[:12]):
             raise SourceError(f"{url}: fetched {head} but the pin is {commit}")
         try:
+            # The marker goes first: a checkout half removed is never taken as fetched.
+            _archive_marker(cache, key).unlink(missing_ok=True)
             remove_tree(target)
         except OSError as exc:
             raise SourceError(f"{url}: cannot replace the previous checkout: {exc}") from exc
@@ -245,10 +269,32 @@ def fetch(
             rename_extended(staging, target)
         except OSError as exc:
             raise SourceError(f"{url}: cannot move the checkout into {target}: {exc}") from exc
+        if unpacked:
+            try:
+                _archive_marker(cache, key).write_text(head, encoding="utf-8")
+            except OSError as exc:
+                # Only the next install's cache hit is lost: it downloads the archive again.
+                logger.warning("plugin source archive marker not written key=%s error=%s", key, exc)
     except BaseException:
         _discard(staging)
         raise
     return FetchedSource(path=target, url=url, commit=head, local=False)
+
+
+def _new_staging(cache: Path, key: str) -> Path:
+    # Each fetch stages in its own folder, so a leftover nothing could delete (an
+    # earlier crash, a file another process held) never blocks the next fetch.
+    staging = cache / f".{key}.partial-{uuid.uuid4().hex[:12]}"
+    try:
+        staging.mkdir(parents=True)
+    except OSError as exc:
+        raise SourceError(f"cannot create the fetch folder {staging}: {exc}") from exc
+    return staging
+
+
+def _archive_marker(cache: Path, key: str) -> Path:
+    """Beside an unpacked archive checkout (it has no ``.git``): the commit it holds."""
+    return cache / f".{key}.archive"
 
 
 def github_archive_url(url: str, revision: str) -> str | None:
@@ -284,7 +330,7 @@ def _open_archive(archive: str) -> BinaryIO:
     return urllib.request.urlopen(request, timeout=60, context=context)  # noqa: S310 - https
 
 
-def _fetch_archive(archive: str, staging: Path, *, url: str) -> str:
+def _fetch_archive(archive: str, staging: Path, *, url: str, reason: str) -> str:
     """Unpack GitHub's ``archive`` into ``staging``; returns the commit it holds.
 
     The same tree a shallow clone checks out, without ``.git``: GitHub names the
@@ -294,35 +340,140 @@ def _fetch_archive(archive: str, staging: Path, *, url: str) -> str:
     """
     started = time.monotonic()
     try:
-        with _open_archive(archive) as response:
+        with (
+            _open_archive(archive) as response,
+            tempfile.SpooledTemporaryFile(_SPOOL_BYTES, dir=staging.parent) as spool,
+        ):
             capped = _Capped(response, ARCHIVE_MAX_BYTES)
-            with tarfile.open(fileobj=capped, mode="r|gz") as bundle:  # type: ignore[call-overload]
-
-                def members() -> Iterator[tarfile.TarInfo]:
-                    for member in bundle:
-                        _, _, inner = member.name.partition("/")
-                        if not inner:
-                            continue
-                        member.name = inner
-                        if member.islnk():
-                            member.linkname = member.linkname.partition("/")[2]
-                        yield member
-
-                bundle.extractall(staging, members=members(), filter="data")
+            shutil.copyfileobj(capped, spool, 1024 * 1024)
+            spool.seek(0)
+            with tarfile.open(fileobj=spool, mode="r:gz") as bundle:
+                _unpack(bundle, staging)
                 head = str(bundle.pax_headers.get("comment", "")).strip()
     except (SourceError, OSError, tarfile.TarError, ValueError) as exc:
-        raise SourceError(f"{url}: no git here, and GitHub's archive failed: {exc}") from exc
+        raise SourceError(f"{url}: GitHub's archive failed: {exc}") from exc
     if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head):
         raise SourceError(f"{url}: GitHub's archive names no commit")
     logger.info(
-        "plugin source fetched without git reason=git_unavailable url=%s commit=%s "
-        "bytes=%d seconds=%.1f",
+        "plugin source fetched without git reason=%s url=%s commit=%s bytes=%d seconds=%.1f",
+        reason,
         url,
         head,
         capped.read_bytes,
         time.monotonic() - started,
     )
     return head
+
+
+def _inner_members(bundle: tarfile.TarFile) -> Iterator[tarfile.TarInfo]:
+    """The archive's members below its one ``<repo>-<commit>/`` top folder, renamed."""
+    for member in bundle:
+        _, _, inner = member.name.partition("/")
+        if not inner:
+            continue
+        member.name = inner
+        if member.islnk():
+            member.linkname = member.linkname.partition("/")[2]
+        yield member
+
+
+def _plain_name(name: str) -> bool:
+    """Whether ``name`` joins below a destination exactly as ``realpath`` resolves it there.
+
+    True for a relative ``/``-separated name whose every part is an ordinary file name: no
+    empty, ``.`` or ``..`` part, no drive, and nothing the platform reserves (on Windows a
+    device name, a stream ``:``, a trailing dot or space, which ``realpath`` rewrites).
+    Below a folder holding no link, such a name cannot leave it.
+    """
+    if not name or os.path.isabs(name) or os.path.splitdrive(name)[0]:
+        return False
+    if os.sep != "/" and os.sep in name:
+        return False
+    if any(part in ("", ".", "..") for part in name.split("/")):
+        return False
+    reserved = getattr(os.path, "isreserved", None)
+    return not (callable(reserved) and reserved(name))
+
+
+def _data_view(member: tarfile.TarInfo) -> tarfile.TarInfo:
+    """``tarfile.data_filter``'s result for a regular file or folder with a plain name
+    below a link-free destination: its containment check holds by construction, so only
+    the attributes are rewritten (the same safe modes, no ownership)."""
+    mode = member.mode
+    if mode is not None:
+        if member.isdir():
+            mode = None
+        else:
+            mode &= 0o755
+            if not mode & 0o100:
+                mode &= ~0o111
+            mode |= 0o600
+    return member.replace(mode=mode, uid=None, gid=None, uname=None, gname=None, deep=False)
+
+
+def _unpack(bundle: tarfile.TarFile, staging: Path) -> None:
+    """``bundle.extractall(staging, filter="data")``, its regular files written in parallel.
+
+    Every member passes the ``data`` filter before anything is written. Regular files go
+    first, overlapped (each waits on the disk, which on a network or scanned file system is
+    most of an unpack); links, directories and the directories' times follow through
+    ``extractall`` itself, as a serial unpack leaves them.
+
+    ``staging`` is new and empty, and no link is made in it before the regular files are
+    written, so a plain-named file (:func:`_plain_name`) is filtered without the per-member
+    ``realpath`` (a system call per path part, slow on Windows). So is a plain-named folder
+    until the first link member: once a link may exist, a plain name can lead through it,
+    and every later member is resolved by ``tarfile.data_filter`` itself.
+    """
+    destination = str(staging)
+    files: dict[str, tuple[tarfile.TarInfo, tarfile.TarInfo]] = {}
+    rest: list[tarfile.TarInfo] = []
+    for member in _inner_members(bundle):
+        if member.isreg():
+            filtered = (
+                _data_view(member)
+                if _plain_name(member.name)
+                else tarfile.data_filter(member, destination)
+            )
+            files[member.name] = (member, filtered)
+        else:
+            rest.append(member)
+    if files:
+        workers = min(32, (os.cpu_count() or 1) * 4, len(files))
+        slots = threading.BoundedSemaphore(workers * 4)
+
+        def write(path: str, data: bytes, filtered: tarfile.TarInfo) -> None:
+            try:
+                with open(path, "wb") as out:
+                    out.write(data)
+                if filtered.mode is not None:
+                    os.chmod(path, filtered.mode)
+                if filtered.mtime is not None:
+                    os.utime(path, (filtered.mtime, filtered.mtime))
+            finally:
+                slots.release()
+
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="clio-unpack") as pool:
+            futures = []
+            for member, filtered in files.values():
+                path = os.path.join(staging, filtered.name)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                source = bundle.extractfile(member)
+                data = source.read() if source is not None else b""
+                slots.acquire()
+                futures.append(pool.submit(write, path, data, filtered))
+            for future in futures:
+                future.result()
+    linked = False
+
+    def resolve(member: tarfile.TarInfo, path: str) -> tarfile.TarInfo:
+        nonlocal linked
+        linked = linked or member.islnk() or member.issym()
+        if not linked and member.isdir() and _plain_name(member.name):
+            return _data_view(member)
+        return tarfile.data_filter(member, path)
+
+    bundle.extractall(staging, members=rest, filter=resolve)
 
 
 def _discard(staging: Path) -> None:
@@ -363,6 +514,7 @@ def remove_cached(cache: Path, name: str) -> None:
     """
     if not name or name != Path(name).name or name.startswith("."):
         return
+    _archive_marker(cache, name).unlink(missing_ok=True)
     remove_tree(cache / name)
     if cache.is_dir():
         for folder in cache.glob(f".{name}.partial*"):

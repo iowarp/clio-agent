@@ -19,17 +19,23 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
+from clio_agent.gact.elicitation_choices import annotate_choices
 from clio_agent.gact.types import UserQuestion, UserQuestionOption
 
 __all__ = [
     "ELICITATION_QUESTION_SOURCE",
+    "URL_TRUST_CONFIGURED",
+    "URL_TRUST_PLUGIN_LOOPBACK",
+    "URL_TRUST_PLUGIN_ORIGIN",
     "FormTranslation",
     "build_form_content",
     "build_form_metadata",
     "build_url_metadata",
     "check_elicitation_answer",
     "check_url_trust",
+    "classify_url_trust",
     "default_answer_metadata",
+    "namespaced_meta",
     "punycode_warning",
     "translate_form_schema",
     "validate_elicitation_answer",
@@ -67,18 +73,69 @@ class FormTranslation:
     degrade: str | None = None
 
 
-def _enum_options(values: Sequence[Any], names: Sequence[Any] | None) -> list[UserQuestionOption]:
-    """Build one :class:`UserQuestionOption` per enum value (label from enumNames)."""
+def _enum_options(
+    values: Sequence[Any],
+    names: Sequence[Any] | None,
+    descriptions: Sequence[str] | None = None,
+    recommended: Any = None,
+) -> list[UserQuestionOption]:
+    """Build one :class:`UserQuestionOption` per enum value.
+
+    The label comes from enumNames (else the value), the meaning from the option's
+    ``description``, and ``recommended`` marks the option whose value it equals.
+    """
 
     options: list[UserQuestionOption] = []
     for index, value in enumerate(values):
         label = str(names[index]) if names and index < len(names) else str(value)
-        options.append(UserQuestionOption(label=label, value=str(value)))
+        meaning = descriptions[index] if descriptions and index < len(descriptions) else ""
+        options.append(
+            UserQuestionOption(
+                label=label,
+                value=str(value),
+                description=meaning,
+                recommended=recommended is not None and str(value) == str(recommended),
+            )
+        )
     return options
 
 
-def _flat_multi_select(spec: Mapping[str, Any]) -> tuple[list[Any], str, list[Any] | None] | None:
-    """Return ``(enum, item_type, enum_names)`` for a flat array-of-enum ``spec``.
+def _titled_choices(spec: Mapping[str, Any]) -> tuple[list[Any], list[str], list[str]] | None:
+    """``(values, labels, meanings)`` of a titled select (``oneOf``/``anyOf`` of ``const``).
+
+    MCP's titled enum form, ``{"oneOf": [{"const": "approve", "title": "Approve"}, ...]}``,
+    names the same closed choice set as ``enum``/``enumNames``, so it maps to the same
+    field. Each label is the option's ``title``, else its value, and each meaning its
+    ``description``, else ``""``. Anything else (an empty list, an option without
+    ``const``) is not a closed choice set and returns ``None``.
+    """
+
+    for key in ("oneOf", "anyOf"):
+        options = spec.get(key)
+        if options is None:
+            continue
+        if (
+            not isinstance(options, Sequence)
+            or isinstance(options, (str, bytes))
+            or not options
+            or not all(isinstance(option, Mapping) and "const" in option for option in options)
+        ):
+            return None
+        return (
+            [option["const"] for option in options],
+            [str(option.get("title") or option["const"]) for option in options],
+            [
+                option["description"] if isinstance(option.get("description"), str) else ""
+                for option in options
+            ],
+        )
+    return None
+
+
+def _flat_multi_select(
+    spec: Mapping[str, Any],
+) -> tuple[list[Any], str, list[Any] | None, list[str] | None] | None:
+    """Return ``(enum, item_type, enum_names, meanings)`` for a flat array-of-enum ``spec``.
 
     SEP-1330 multi-select: only a FLAT array whose ``items`` is itself an
     enum-bearing scalar is admitted -- a missing/nested/unconstrained ``items``
@@ -96,13 +153,15 @@ def _flat_multi_select(spec: Mapping[str, Any]) -> tuple[list[Any], str, list[An
     ):
         return None
     item_enum = items.get("enum")
+    if item_enum is None and (titled := _titled_choices(items)) is not None:
+        return titled[0], str(items.get("type") or "string"), titled[1], titled[2]
     if not (isinstance(item_enum, Sequence) and not isinstance(item_enum, (str, bytes))):
         return None
     names = items.get("enumNames")
     enum_names = (
         list(names) if isinstance(names, Sequence) and not isinstance(names, (str, bytes)) else None
     )
-    return list(item_enum), str(items.get("type") or "string"), enum_names
+    return list(item_enum), str(items.get("type") or "string"), enum_names, None
 
 
 def _bounded_int(value: Any) -> int | None:
@@ -125,12 +184,13 @@ def _array_field(name: str, spec: Mapping[str, Any], required: set[str]) -> dict
     multi = _flat_multi_select(spec)
     if multi is None:
         return "elicitation_schema_not_flat"
-    item_enum, item_type, item_enum_names = multi
+    item_enum, item_type, item_enum_names, item_meanings = multi
     return {
         "name": str(name),
         "type": "array",
         "enum": item_enum,
         "enum_names": item_enum_names,
+        "enum_descriptions": item_meanings,
         "multi": True,
         "item_type": item_type,
         # SEP-1330 finding (Opus review, C1-S4): minItems/maxItems are
@@ -170,6 +230,10 @@ def _scalar_field(name: str, spec: Mapping[str, Any], required: set[str]) -> dic
 
     field_type = spec.get("type")
     enum = spec.get("enum")
+    enum_names = _scalar_enum_names(spec, enum)
+    meanings: list[str] | None = None
+    if enum is None and (titled := _titled_choices(spec)) is not None:
+        enum, enum_names, meanings = titled
     # A nested object (with or without a declared type) is not flat.
     if field_type == "object" or "properties" in spec or "items" in spec:
         return "elicitation_schema_not_flat"
@@ -183,7 +247,8 @@ def _scalar_field(name: str, spec: Mapping[str, Any], required: set[str]) -> dic
         "enum": list(enum)
         if isinstance(enum, Sequence) and not isinstance(enum, (str, bytes))
         else None,
-        "enum_names": _scalar_enum_names(spec, enum),
+        "enum_names": enum_names,
+        "enum_descriptions": meanings,
         "multi": False,
         "item_type": "",
         "min_items": None,
@@ -216,7 +281,9 @@ def _single_field_kind(
     return None
 
 
-def translate_form_schema(requested_schema: Mapping[str, Any]) -> FormTranslation:
+def translate_form_schema(
+    requested_schema: Mapping[str, Any], meta: Mapping[str, Any] | None = None
+) -> FormTranslation:
     """Translate a flat restricted JSON Schema into a UserQuestion shape.
 
     Accepts the MCP form-mode subset: a top-level ``{"type": "object",
@@ -226,6 +293,12 @@ def translate_form_schema(requested_schema: Mapping[str, Any]) -> FormTranslatio
     nesting (a plain object, an unconstrained/nested array) or an unsupported
     scalar type returns a typed :attr:`FormTranslation.degrade` instead of
     raising.
+
+    Every choice keeps what each option means: a titled option's ``description``
+    (or, when the schema has none, the typed choice a server sends under ``meta``,
+    see :mod:`clio_agent.gact.elicitation_choices`). A single select marks one option recommended: the
+    typed choice's recommendation, else the field's ``default``. Fields carry both
+    as ``enum_descriptions`` and ``recommended``; a single-field choice's options too.
 
     Kind selection: a single boolean field -> ``confirmation``; a single
     scalar-enum field -> ``choice``; a single array-of-enum field ->
@@ -253,12 +326,20 @@ def translate_form_schema(requested_schema: Mapping[str, Any]) -> FormTranslatio
             return FormTranslation(degrade=built)
         fields.append(built)
 
+    annotate_choices(fields, meta)
+
     if len(fields) == 1:
         kind = _single_field_kind(fields[0], properties)
         if kind is not None:
-            names = fields[0].get("enum_names") or properties[fields[0]["name"]].get("enumNames")
+            only = fields[0]
+            names = only.get("enum_names") or properties[only["name"]].get("enumNames")
             options = (
-                _enum_options(fields[0]["enum"], names if isinstance(names, Sequence) else None)
+                _enum_options(
+                    only["enum"],
+                    names if isinstance(names, Sequence) else None,
+                    only.get("enum_descriptions"),
+                    only.get("recommended"),
+                )
                 if kind != "confirmation"
                 else []
             )
@@ -290,6 +371,22 @@ def default_answer_metadata(fields: Sequence[Mapping[str, Any]]) -> dict[str, An
     return prefill
 
 
+def namespaced_meta(own: Any, carried: Any = None) -> dict[str, Any] | None:
+    """The namespaced ``_meta`` keys (``vendor/name``) of a request, else ``None``.
+
+    An elicitation's own ``params._meta`` wins key by key. A task's input request can
+    carry none (2026-07-28 embedded requests have no ``_meta``), so ``carried`` is the
+    carrying result's ``_meta``. Only ``prefix/name`` keys pass, so transport fields
+    such as ``progressToken`` stay out.
+    """
+
+    kept: dict[str, Any] = {}
+    for source in (carried, own):
+        if isinstance(source, Mapping):
+            kept.update({str(k): v for k, v in source.items() if "/" in str(k)})
+    return kept or None
+
+
 def build_form_metadata(
     translation: FormTranslation,
     *,
@@ -300,16 +397,20 @@ def build_form_metadata(
     forwarded_from_session: str,
     task_id: str | None = None,
     input_key: str | None = None,
+    meta: Mapping[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Assemble the form-mode ``metadata.elicitation`` block for a new question.
 
     ``task_id`` / ``input_key`` carry the MCP-task correlation for an
     elicitation raised inside a task-shaped invocation, so the interactions
-    projection can route the response back to the parked task input.
+    projection can route the response back to the parked task input. ``meta`` is
+    the request's namespaced ``_meta`` (see :func:`namespaced_meta`), passed
+    through unchanged for renderers that understand a server's typed data.
     """
 
     return {
         "elicitation": {
+            **({"meta": dict(meta)} if meta else {}),
             "mode": "form",
             "fields": translation.fields,
             "additional_properties": translation.additional_properties,
@@ -334,6 +435,11 @@ def build_url_metadata(
     forwarded_from_session: str,
     task_id: str | None = None,
     input_key: str | None = None,
+    origin_trust: str = "",
+    plugin: str = "",
+    server: str = "",
+    plugin_title: str = "",
+    meta: Mapping[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Assemble the url-mode ``metadata.elicitation`` block for a new question.
 
@@ -344,14 +450,24 @@ def build_url_metadata(
     renders from. ``punycode_host_raw`` carries the host EXACTLY as it
     appeared (still ACE-encoded for an ``xn--`` host) alongside the decoded
     ``punycode_host``, so a consent surface can show both forms rather than
-    only the decoded one (Opus review, C1-S4).
+    only the decoded one (Opus review, C1-S4). ``origin`` and ``origin_trust``
+    (see :func:`classify_url_trust`) say why the origin was accepted, and
+    ``plugin``/``server`` name the plugin server that asked ("" when none), and
+    ``plugin_title`` its plugin's display title (left out when it has none).
+    ``meta`` is the request's namespaced ``_meta``, as for :func:`build_form_metadata`
+    (a sign-in's detail and evidence from a server that types them).
     """
 
     warning, display_host, raw_host = punycode_warning(url)
     return {
         "elicitation": {
+            **({"meta": dict(meta)} if meta else {}),
             "mode": "url",
             "url": url,
+            "origin": _origin(url),
+            "origin_trust": origin_trust,
+            "plugin": plugin,
+            "server": server,
             # Client MUST render in an isolated, non-inspectable container
             # (ephemeral, no shared session/referrer) — see the bridge module docstring.
             "container": "isolated",
@@ -365,6 +481,7 @@ def build_url_metadata(
             "task_id": task_id,
             "input_key": input_key,
             "forwarded_from_session": forwarded_from_session,
+            **({"plugin_title": plugin_title} if plugin_title else {}),
         }
     }
 
@@ -389,17 +506,65 @@ def check_url_trust(url: str, trusted_origins: Sequence[str]) -> str | None:
     trust flow is not configured, so every url is rejected as not-declared.
     """
 
-    if not trusted_origins:
-        return "elicitation_url_not_declared"
+    return classify_url_trust(url, trusted_origins)[0]
+
+
+#: Where an accepted url-mode origin's trust came from (``metadata.elicitation.origin_trust``).
+URL_TRUST_CONFIGURED = "configured"
+URL_TRUST_PLUGIN_ORIGIN = "plugin_origin"
+URL_TRUST_PLUGIN_LOOPBACK = "plugin_loopback"
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost"})
+
+
+def _is_loopback_http(url: str) -> bool:
+    """``http://127.0.0.1:<port>`` or ``http://localhost:<port>``, nothing else."""
+
+    parts = urlsplit(url)
+    if parts.scheme.lower() != "http" or parts.username or parts.password:
+        return False
+    try:
+        port = parts.port
+    except ValueError:
+        return False
+    return port is not None and (parts.hostname or "").lower() in _LOOPBACK_HOSTS
+
+
+def classify_url_trust(
+    url: str,
+    trusted_origins: Sequence[str],
+    *,
+    plugin_origins: Sequence[str] = (),
+    loopback: bool = False,
+    launched: bool = False,
+) -> tuple[str | None, str]:
+    """Decide a url-mode url's trust: ``(reject reason or None, origin_trust)``.
+
+    ``trusted_origins`` is the configured allow-list every server shares. A
+    plugin's server adds its own ``plugin_origins`` (https only) and, when the
+    plugin sets ``loopback`` and CLIO launched the server (``launched``),
+    ``http://127.0.0.1:<port>`` and ``http://localhost:<port>``. Loopback from a
+    server CLIO did not launch is ``elicitation_url_insecure_scheme``. Nothing is
+    fetched. ``origin_trust`` is "" whenever the url is refused.
+    """
+
+    if not (trusted_origins or plugin_origins or loopback):
+        return "elicitation_url_not_declared", ""
+    if _is_loopback_http(url):
+        if loopback and launched:
+            return None, URL_TRUST_PLUGIN_LOOPBACK
+        return "elicitation_url_insecure_scheme", ""
     parts = urlsplit(url)
     if parts.scheme.lower() != "https":
-        return "elicitation_url_insecure_scheme"
-    allowed = {_origin(o) if "://" in o else o.lower() for o in trusted_origins}
+        return "elicitation_url_insecure_scheme", ""
     origin = _origin(url)
     host = parts.netloc.lower()
-    if origin not in allowed and host not in allowed:
-        return "elicitation_url_untrusted_origin"
-    return None
+    allowed = {_origin(o) if "://" in o else o.lower() for o in trusted_origins}
+    if origin in allowed or host in allowed:
+        return None, URL_TRUST_CONFIGURED
+    if origin in {_origin(o) for o in plugin_origins if "://" in o}:
+        return None, URL_TRUST_PLUGIN_ORIGIN
+    return "elicitation_url_untrusted_origin", ""
 
 
 def punycode_warning(url: str) -> tuple[bool, str, str]:

@@ -176,7 +176,7 @@ def test_an_unresolvable_agent_reads_the_plain_fleet(monkeypatch: pytest.MonkeyP
         "session_server_set",
         _boom(resolution.SessionAgentUnavailable("", "mcp_connection_unavailable", [])),
     )
-    assert connector_values.session_fleet_variant(_app(), "sess_a") == ""
+    assert connector_values.session_fleet_variant(_app(), "sess_a", "/ws") == ""
 
 
 def test_a_fault_reading_the_fleet_variant_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -186,7 +186,7 @@ def test_a_fault_reading_the_fleet_variant_raises(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(connector_values, "session_overlay", lambda _a, _s: {"x": {"k": "v"}})
     monkeypatch.setattr(resolution, "session_server_set", _boom(TypeError("bug")))
     with pytest.raises(TypeError):
-        connector_values.session_fleet_variant(_app(), "sess_a")
+        connector_values.session_fleet_variant(_app(), "sess_a", "/ws")
 
 
 # ------------------------------------------------------------- connectors_service._records

@@ -405,3 +405,117 @@ def test_a_view_called_tool_cannot_hand_the_view_a_declaration(tmp_path: Path) -
         )
         assert answer.status_code == 200
         assert TOKEN not in answer.text and SERVICE_META_KEY not in answer.text
+
+
+def _free_port() -> int:
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    return port
+
+
+def test_a_fenced_servers_port_is_dialed_inside_its_namespace(
+    tmp_path: Path, upstream: _Upstream, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The declared port is the fence's: nothing on the host's loopback serves it."""
+
+    from clio_agent.gact import mcp_app_service_dial as dial  # noqa: PLC0415
+    from clio_agent.gact import session_fleet  # noqa: PLC0415
+    from clio_agent.runtime.fence_service import FencedNamespace  # noqa: PLC0415
+
+    declared = _free_port()  # the host's loopback has nothing here
+    namespace = FencedNamespace(pid=4242, inode=4026537238)
+    searched: list[tuple[int, str]] = []
+    dialed: list[tuple[FencedNamespace, int]] = []
+
+    def find(port: int, child: str = "") -> FencedNamespace | None:
+        searched.append((port, child))
+        return namespace
+
+    def connect(target: FencedNamespace, port: int, timeout: float = 10.0) -> socket.socket:
+        dialed.append((target, port))
+        return socket.create_connection(("127.0.0.1", upstream.port), timeout=timeout)
+
+    monkeypatch.setattr(dial, "fenced_services_possible", lambda: True)
+    monkeypatch.setattr(dial, "find_fenced_namespace", find)
+    monkeypatch.setattr(dial, "connect_in_namespace", connect)
+    app, client = _client(tmp_path)
+    with client:
+        sid = client.post("/v1/sessions", json={"title": "svc"}).json()["id"]
+        # The channel of the server this conversation's fleet routes ``svc`` to.
+        monkeypatch.setattr(
+            session_fleet,
+            "session_net_child",
+            lambda _app, s, ns: "child-svc" if (s, ns) == (sid, "svc") else "",
+        )
+        record = _open(app, sid, declared)
+        prefix = f"/v1/sessions/{sid}/mcp-apps/{record.app_instance_id}"
+        body = client.get(prefix, params={"data_ref": record.data_ref}).json()
+        assert body["service_refusal"] is None
+        assert body["service_url"].endswith(f"{prefix}/service/{record.data_ref}/")
+        base = f"{prefix}/service/{record.data_ref}"
+        answer = client.get(f"{base}/state?x=1", headers={"origin": "null"})
+        assert answer.status_code == 200
+        assert answer.json() == {"path": "/state", "query": "x=1"}
+        posted = client.post(f"{base}/bump", headers={"origin": "null"}, content=b"two")
+        assert posted.json() == {"bumped": "two"}
+        with client.websocket_connect(f"{base}/ws") as socket_:
+            socket_.send_text("scene")
+            assert socket_.receive_text() == "echo:scene"
+        assert upstream.socket_messages == ["scene"]
+        assert set(searched) == {(declared, "child-svc")}
+        assert dialed and set(dialed) == {(namespace, declared)}
+
+
+def test_a_fenced_service_that_does_not_answer_is_typed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.gact import mcp_app_service_dial as dial  # noqa: PLC0415
+    from clio_agent.runtime.fence_service import FencedNamespace  # noqa: PLC0415
+
+    def refused(target: FencedNamespace, port: int, timeout: float = 10.0) -> socket.socket:
+        raise ConnectionRefusedError(111, "Connection refused")
+
+    monkeypatch.setattr(dial, "fenced_services_possible", lambda: True)
+    monkeypatch.setattr(dial, "find_fenced_namespace", lambda *_a: FencedNamespace(1, 2))
+    monkeypatch.setattr(dial, "connect_in_namespace", refused)
+    app, client = _client(tmp_path)
+    with client:
+        sid = client.post("/v1/sessions", json={"title": "svc"}).json()["id"]
+        record = _open(app, sid, _free_port())
+        prefix = f"/v1/sessions/{sid}/mcp-apps/{record.app_instance_id}"
+        body = client.get(prefix, params={"data_ref": record.data_ref}).json()
+        assert body["service_refusal"]["reason"] == "service_unreachable"
+        down = client.get(f"{prefix}/service/{record.data_ref}/state")
+        assert down.status_code == 502
+        assert down.json()["error"]["error"] == "service_unreachable"
+        with client.websocket_connect(f"{prefix}/service/{record.data_ref}/ws") as socket_:
+            message = socket_.receive()
+            assert message["type"] == "websocket.close"
+            assert message["reason"] == "service_unreachable"
+
+
+def test_without_the_fence_the_hosts_loopback_is_dialed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from clio_agent.gact import mcp_app_service_dial as dial  # noqa: PLC0415
+
+    def unexpected(*_args: Any) -> None:
+        raise AssertionError("searched for a fenced namespace without a fence")
+
+    monkeypatch.setattr(dial, "fenced_services_possible", lambda: False)
+    monkeypatch.setattr(dial, "find_fenced_namespace", unexpected)
+    record = SimpleNamespace(service=SimpleNamespace(port=80), session_id="s")
+    assert asyncio.run(dial.fenced_target(SimpleNamespace(), record)) is None
+
+
+def test_the_fenced_transport_replaces_httpxs_connection_pool() -> None:
+    """httpx takes no network backend; this guards the private seam it is given through."""
+
+    import httpcore  # noqa: PLC0415
+
+    from clio_agent.gact import mcp_app_service_dial as dial  # noqa: PLC0415
+    from clio_agent.runtime.fence_service import FencedNamespace  # noqa: PLC0415
+
+    transport = dial.FencedServiceTransport(FencedNamespace(1, 2), 41207)
+    assert isinstance(transport._pool, httpcore.AsyncConnectionPool)
+    assert isinstance(transport._pool._network_backend, dial._FencedBackend)

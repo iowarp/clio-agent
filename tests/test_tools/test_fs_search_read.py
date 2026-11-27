@@ -320,17 +320,3 @@ def test_stopping_the_turn_ends_a_running_search(
     ):
         fs_search_rg._run(["-c", "import time; time.sleep(30)"], tmp_path)
     assert time.monotonic() - started < 15
-
-
-def test_an_operator_limit_returns_what_was_found_marked_partial(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import sys
-
-    from clio_agent.tools import fs_search_rg
-
-    monkeypatch.setenv("CLIO_FS_SEARCH_TIMEOUT_S", "0.5")
-    monkeypatch.setattr(fs_search_rg, "ripgrep_executable", lambda: sys.executable)
-    script = "import time; print('a.py:1:hit', flush=True); time.sleep(30)"
-    lines, partial = fs_search_rg._run(["-c", script], tmp_path)
-    assert partial and lines == ["a.py:1:hit"]

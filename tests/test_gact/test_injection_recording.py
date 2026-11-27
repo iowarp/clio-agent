@@ -192,11 +192,12 @@ def test_thread_states_in_the_forms_plans_are_written(
     assert (result["unfinished_threads"], result["marked_threads"]) == (unfinished, marked)
 
 
-def test_a_done_plan_without_markers_says_it_cannot_count(active: Any) -> None:
+def test_a_done_plan_reports_unfinished_todos_not_missing_markers(active: Any) -> None:
+    """Progress lives in the todos, so a plan without state markers is not nudged to add them."""
     app, sid = active
     tool = build_plan_update_tool()
     tool.func(content="# Objective\nx\n\n- one\n- two\n")
     reply = tool.func(status="done")
-    assert "No thread in the plan carries a state marker" in reply
+    assert "state marker" not in reply
     tool.func(content="# Objective\nx\n\n- [open] one\n")
     assert "still marks 1 thread open or active" in tool.func(status="done")

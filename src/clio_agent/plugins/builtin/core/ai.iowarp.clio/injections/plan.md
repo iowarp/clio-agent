@@ -9,6 +9,6 @@ x_variables: status, path, plan_text
 ---
 ## The plan ({{status}}, {{path}})
 
-If this plan is relevant to the current work and not finished, continue on it, and update it with plan_update when your understanding or direction changes.
+If this plan is relevant to the current work and not finished, continue on it: track its steps with write_todos, and revise it with plan_update when a finding changes its approach.
 
 {{plan_text}}

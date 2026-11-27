@@ -1,0 +1,103 @@
+---
+title: The Compute page
+description: Add the clusters and computers relay may use as endpoints, pick each one's protocol and security, probe it, sign in, and edit or remove it from CLIO's Compute page.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+The **Compute** page is where you keep the endpoints [relay](/docs/relay/) may use:
+the clusters, supercomputers, cloud accounts and computers the agent can run work on.
+It is in CLIO's left bar once the relay plugin is installed. See
+[Install relay](/docs/relay/install/#in-clio).
+
+The page is laid out like **Settings → Tools**: one table, one row per endpoint, with
+the choices you change most often right on the row. The agent uses the endpoints you
+keep here. It never adds, changes or removes one.
+
+The page and relay's command line, `clio-relay site`, change the same endpoints in
+the same way. If you change one from a terminal, the page shows it within a couple of
+seconds. When the plugin is updated, an open page picks up the new version by itself.
+
+## The endpoints table
+
+**Endpoints** has a row for each endpoint, and three columns:
+
+| Column | What it means |
+| --- | --- |
+| **Protocol** | How relay reaches the endpoint: **SSH**, **Worker**, **Tapis**, **Globus**, **IRI**, **SkyPilot** or **Local**. Each has its own page under [Relay](/docs/relay/). |
+| **Security** | **Secure** runs only reviewed packages. **Open** runs what the agent writes. See [Guardrails](/docs/relay/guardrails/). |
+| **Status** | **Ready**, **Needs a sign-in** or **Unavailable**. |
+
+Under each endpoint's name is its address, and a second line that says what the status
+needs, such as **Needs a tacc sign-in**, and what the last probe found.
+
+You can change **Protocol** and **Security** right on the row. Picking a protocol the
+endpoint has no settings for yet opens its edit form, so you can fill them in first.
+
+At the top of the table, **Defaults for new endpoints** sets the protocol and security
+a new endpoint starts with. Out of the box they are **SSH** and **Secure**.
+
+With no endpoints, the table reads **No endpoints yet.**
+
+## Add an endpoint
+
+Choose **Add endpoint**. The **Add an endpoint** form has two parts.
+
+**From the catalog.** Choose one of the endpoints relay already knows, such as
+**Ares**, **TACC Vista** or **ALCF Polaris**. Optionally give it your own
+**Endpoint ID (optional)**, then choose **Add from catalog**. Relay fills in its
+address, protocol, defaults and skill.
+
+**Your own.**
+
+<Steps>
+1. Fill in the **Endpoint ID** (lowercase letters, digits, `-` and `_`) and a
+   **Name**.
+2. Choose its **Security** and **Ask before spending**: `always`, `never`, or a number
+   of node-hours above which relay asks you first.
+3. Optionally name a **Skill**: a skill relay ships, or the path of your own Markdown
+   file that tells the agent how this machine works.
+4. Under **Protocol**, pick a tab and fill in its settings. Each tab shows only the
+   settings its protocol takes. The protocol pages list them all.
+5. Choose **Add endpoint**.
+</Steps>
+
+A field that is wrong says so beneath it, for example **Enter an endpoint ID**, and
+nothing is saved until you fix it. When it is added, the page says **Added** and the
+endpoint's name.
+
+## The row's menu
+
+Each row has a menu:
+
+- **Connect** appears when the endpoint needs a sign-in. Where CLIO holds the account,
+  as with Globus, CLIO's own sign-in is used. Otherwise the row shows **Open the
+  sign-in page**. See [Asks and sign-in](/docs/relay/asks/).
+- **Probe** checks that relay can reach the endpoint and run there. The page then says
+  what it found: **Ready**, **Missing an allocation**, **Needs a sign-in**,
+  **Unreachable** or **Not configured**.
+- **Edit** opens the endpoint's settings under the row: its name, address, security,
+  spend, skill, default account and queue, and one tab per protocol. The tab in use
+  says **In use**. On another tab, **Also reach it this way** keeps a second protocol
+  ready, for example SSH as well as Tapis for a TACC system. **Save** keeps your
+  changes; **Cancel** leaves them.
+- **Remove** asks first: **Remove Ares from your endpoints? Its operations stay on
+  record.** **Remove endpoint** removes it; **Keep it** does not.
+
+If relay cannot read one endpoint, that row reads **Unavailable** with the reason, and
+the rest of the page keeps working.
+
+## Where endpoints and sign-ins live
+
+Relay keeps your endpoints in the plugin's own data folder. To change them from a
+terminal, see [Use CLIO's endpoints from a terminal](/docs/relay/install/#use-clios-endpoints-from-a-terminal).
+
+Sign-ins go to your system's keyring. Where no keyring works, such as inside CLIO's
+sandbox on Linux, relay keeps them in a file only you can read. Ask the agent to
+describe relay to see which one it uses.
+
+<Aside type="caution" title="The page is for you">
+The page's buttons and pickers work only from the page. The agent cannot press them.
+A button from an old view refreshes the page instead of acting, and says
+**That button was out of date, so the page has been refreshed.**
+</Aside>

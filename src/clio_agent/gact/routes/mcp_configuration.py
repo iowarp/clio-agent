@@ -42,6 +42,18 @@ def _configuration_name(value: str) -> str:
 def _configuration_spec(body: dict[str, Any]) -> dict[str, Any]:
     """Normalize a declaration through the public install grammar."""
 
+    replaces = body.get("replaces_plugin_server")
+    if replaces is not None and not isinstance(replaces, bool):
+        raise HTTPException(422, "replaces_plugin_server must be a boolean")
+    spec = _transport_spec(body)
+    if replaces:
+        spec["replaces_plugin_server"] = True
+    return spec
+
+
+def _transport_spec(body: dict[str, Any]) -> dict[str, Any]:
+    """The declaration's transport half."""
+
     transport_kind = str(body.get("transport") or "stdio").lower()
     connection_only = body.get("connection_only")
     if connection_only is not None and not isinstance(connection_only, bool):
@@ -143,7 +155,8 @@ async def _probe_user_mcp_server(
             # The probe starts the server confined; build its environment first (#1991).
             await asyncio.to_thread(mcp_prepare.provision, normalized.name, normalized)
         # FP-D3: a probed server starts in the conversations' folder, not the launch folder.
-        transport = transport_for(normalized, cwd=default_workspace_root())
+        # Off the app loop: a stdio transport composes its fence there.
+        transport = await asyncio.to_thread(transport_for, normalized, cwd=default_workspace_root())
         with probe_server_context(
             "", timeout_retries=_FIRST_START_PROBE_RETRIES if fetching else None
         ):

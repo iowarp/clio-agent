@@ -16,6 +16,29 @@ Each row carries `id`, `session_id`, `tool_call.{tool_name, input}`,
 `summary`, `created_at`, `status`, `action`, optional `resolved_at` +
 `reason`.
 
+The card is titled with the human action (`interaction.title`, and `title` on the
+`permission.requested` event): the row's own `title` ("Connect to pypi.org"), else a
+summary that is already a sentence, else the tool's declared title ("Run command"),
+else "Use a tool from <server>". It is never a tool id. `payload.summary` keeps the
+technical line.
+
+A person may write a comment with either answer: `answer` on
+`POST /v1/sessions/{sid}/interactions/{iid}/respond` (or on `POST /v1/permissions/{pid}`).
+It is kept on the row as `comment` and reaches the agent with the decision. With Deny the
+agent reads "The person denied <tool> and said: …" in place of the generic refusal; with
+Allow it reads "The person allowed <tool> and commented: …" before the tool's result (a
+`run_code` script's result too). A hook deferral's approval does not carry a comment.
+An MCP elicitation answer's comment (any `answer` that is not a form field's own value)
+reaches the server in the `ElicitResult` as `_meta["io.iowarp/approval"].comment`.
+
+`allow_session` and `allow_workspace` store a policy for the tool in that scope.
+For a call that names a file (`path`, `output_path`, `target_path`), the policy
+covers the folder holding that file and everything below it, so the next file
+written there does not ask again and a waiting question for that folder is
+answered with it. Other folders still ask. The pending row and its interaction
+carry `standing_scope.folder`, the folder such an answer covers, before the
+person answers.
+
 Policy updates are atomic. `PUT /v1/policies` rejects malformed rows with a
 structured `422 invalid_request` and leaves the previous policy set unchanged;
 the backend never silently drops typoed scopes/actions or stores rules that it
@@ -37,8 +60,18 @@ The gate decides in this order:
    `grant_resolver.is_read_only(kind, name, args, context)` returns true when a
    tool call is provably read-only — an MCP `readOnlyHint=true` annotation, or a
    static tool-catalog `read` tag with no `write` tag (e.g. `fs_read_file`,
-   `fs_search_text`). A read returns `allow` **before** the mode lock and
-   records no tool-action permission row, in every `session.mode`. This does not
+   `fs_search_text`), or a fenced `shell_bash` command made only of listing and
+   reading commands (`Get-ChildItem`, `Get-Content`, `Test-Path`, `Select-String`,
+   `ls`, `cat`, `grep` and their aliases, optionally piped through `Select-Object`,
+   `Sort-Object`, `Format-*`, `Measure-Object`, `head` or `wc`) with no redirection
+   other than discarding stderr, no subexpression, script block, grouping or call
+   operator, and no pipeline stage outside that list
+   (`clio_agent/tools/shell_read_only.py`). Anything the classifier cannot prove
+   stays a non-read. A read returns `allow` **before** the mode lock and
+   records no tool-action permission row, in every `session.mode`. The durable
+   task check that accepts the call (`task_runtime.authorization_mode`) agrees:
+   a read is accepted with no plan lock, so a plan-mode shell read is not revoked
+   after the gate allowed it; person policies still apply. This does not
    grant access to a new folder: a managed built-in file call outside permitted
    roots parks on a `kind="folder_access"` request first.
 
@@ -91,6 +124,37 @@ The gate decides in this order:
 > interactive approver) for such calls is the job of the approval-mode work
 > (#1034); until then, give such tools a `read` tag or `readOnlyHint`.
 
+### MCP servers that confirm calls themselves
+
+A person sees one ask per call. When a server also asks during a call, CLIO
+settles the two asks into one:
+
+- **Plain confirms are answered by the person's own permission.** A server's
+  confirm with nothing to choose (no fields, or one boolean) that is correlated
+  to a call a *person* allowed is answered from that permission and recorded as
+  `mcp_confirm_covered_by_host_permission` (`gact/mcp_confirm_coverage.py`).
+  The server's message shows as a note under that call. A confirm with fields,
+  choices or numbers, one carrying typed `_meta` (such as a job plan), or one
+  for a call only a policy allowed still asks.
+- **Server-confirmed tools get the server's card, not CLIO's yes/no.** A tool
+  whose `tools/list` entry declares `_meta["io.iowarp/confirm"] = {"version": 1}`
+  confirms itself. When CLIO would ask a person directly about such a call, it
+  records the call as `mcp_confirm_deferred_to_server` and sends it with
+  `params._meta["io.iowarp/confirm"] = "server"`. The server then asks exactly
+  once before any side effect, or refuses `needs_approval` when it cannot ask
+  (`gact/mcp_server_confirm.py`, `tools/server_confirm.py`). Unattended runs,
+  the ai-review reviewer, `always_ask` decisions and any rule or mode that
+  already decides keep CLIO's own path. A tool without the declaration, or
+  with another version, is never deferred to.
+- **A server that skips its card stops being trusted.** A flagged call that
+  completes without an ask, and without result `_meta["io.iowarp/confirm"] =
+  "not_needed"`, is recorded as `mcp_server_confirm_missing`. A deferred call
+  whose server stopped declaring the confirm is not sent and is recorded as
+  `mcp_server_confirm_undeclared`. Either way CLIO asks about that server's
+  calls itself for the rest of the session. Failed or refused calls report
+  their own error and are not counted. The check is held in memory, so a call
+  that settles after an agent restart is not checked.
+
 ## Scripts and per-tool settings
 
 **A script is approved before it runs.** `run_code` is one non-read call: it asks the
@@ -108,11 +172,16 @@ script was accepted with (a change of mode while it runs does not change it):
 | --- | --- |
 | `bypass` | Run |
 | `auto-edits`, `ai-review`, `spotter-ai`, `spotter-watcher` (`code.covering_postures`) | Covered by the script's approval, recorded with `run_code_script_grant` |
-| `ask` | Each asks, one question per script at a time, showing the script; denial raises in the script |
+| `ask` | A person's "Allow once" on the script covers the calls its code names (`tools.<group>.<tool>` or `tools.call("<name>")`), including the tools a kernel binding the script uses names in its own source (`browser.open(...)` names `browser_open`), recorded with `run_code_script_grant`. Any other call asks, one question per script at a time, showing the script; denial raises in the script |
 
 In `ask` mode the question offers "Allow for the rest of this script"
-(`allow_script`), which covers that script's remaining calls; the next `run_code` asks
-again. A tool whose rule or default is `ask` asks even under a covering mode. A
+(`allow_script`), which covers that script's remaining calls, named or not; the next
+`run_code` asks again. "Allow once" on a nested call covers that same subject for the
+rest of the script: the same tool with the same arguments, or the same browser host
+(its next calls on that page do not ask again). It covers nothing in the next script,
+and a rule set to "Ask every time" still asks each time. A script approved by a rule or the reviewer rather than a person
+covers nothing in `ask` mode. A tool whose rule or default is `ask` asks even under a
+covering mode or a person's approval of the script. A
 background script's question belongs to its task: it is asked in the owner's
 conversation with the task's handle, and only an answer or cancelling the task ends
 the wait. In plan mode a script runs only where the sandbox enforces the write fence:
@@ -141,7 +210,7 @@ asks; a view tool annotated `readOnlyHint` asks nothing unless a rule or default
 so. Other built-ins (`search_tools`, `load_skill`, plans, todos, memory) are CLIO's own
 bookkeeping: only a rule or default makes them ask or refuses them. Built-ins that act
 outside but ask by their own gate call or card keep doing so without the declaration
-(`ssh_execute`, `connected_data_connect`, `run_code`, `offer_plugin`'s card).
+(`connected_data_connect`, `run_code`, `offer_plugin`'s card).
 
 **Deny hides the tool.** A tool whose default is `deny`, or that a person's rule names
 exactly and denies, is left out of the agent's tools: the tool list, the deferred
@@ -331,6 +400,11 @@ changed roots are repaired with one traversal for both restricted users. Allowin
 UAC does not force a fresh native probe. A failed access grant is unsuccessful
 for every entry point.
 
+The setup receipt records the Codex version that was verified. After a Codex
+update the receipt is stale: status reports `codex_setup_stale_version` and names
+both versions. The next server start verifies the new version again without UAC
+and rewrites the receipt.
+
 Open **Infrastructure > CLIO hosts > Protected execution**, or run:
 
 ```powershell
@@ -356,52 +430,264 @@ File edit tools still reject writes to protected source copies before dispatch.
 Private credentials remain excluded from both reads and writes. If the host
 cannot enforce these exclusions, shell execution fails before starting a child.
 
+### Files the fence creates
+
+On Windows, fenced commands run as a restricted sandbox account, which owns what they
+create. A folder made owner-only (Python 3.13+ `tempfile.mkdtemp` and `mkdir(0o700)`
+set a protected ACL) can't be listed, taken over or deleted by the person without
+administrator rights. CLIO's removals go through `runtime/fenced_removal.py`:
+- Scratch, spawn folders, garbage collection and the short-root sweep first try to
+  delete as the person.
+- If that fails, CLIO deletes through the fence's own identity.
+- Each outcome is traced as `fenced_removal_done` or `fenced_removal_failed`, with
+  both errors.
+
+Folder removal never fails silently. Codex can run a command as either sandbox
+account (offline or online), so a folder owned by the other account can survive.
+That case is traced as `fenced_removal_failed`.
+
+For such files in a workspace, run `clio sandbox reclaim` in the folder. It grants the
+person full control through the fence (`fenced_grant_done` or `fenced_grant_failed`).
+
+Deep caches need short roots on Windows. Native-package DLL loads resolve real
+paths, so a junction doesn't keep them inside MAX_PATH. On Windows the shared uv cache
+therefore lives in `%LOCALAPPDATA%\clio-u\<hash of its home path>`, which lasts as long
+as the home, instead of a stand-in in the system temp. At startup the
+short-root sweep removes any of these:
+- stand-ins and links whose home, session or target is gone
+  (`short_root_owner_gone`, `short_root_target_gone`);
+- an old temp stand-in that a home's `clio-u` root replaced (`short_root_superseded`).
+
+A root whose hash doesn't match the path it names isn't CLIO's, and the sweep leaves
+it alone.
+
 ### Network chokepoint + deny mode (#978/#979)
 
-Agents with `shell_bash` also receive `ssh_execute` for remote commands. An
-agent may explicitly declare `ssh_execute` without receiving local shell
-access. Read-only side sessions do not receive this effectful tool. It reuses
-the shared SSH profile/custom route and jump chain, existing keys/agent and
-strict known-host verification. Approval names the route and exact remote
-command before connecting; **Bypass checks** records the usual automatic
-approval. Private keys are not copied into the shell workspace.
+**SSH from the shell.** Remote work uses the ordinary `ssh`, `scp`, `sftp` and
+git-over-SSH commands in `shell_bash`; CLIO has no separate SSH tool. Inside an
+enforced fence the shell's `ssh`, `scp` and `sftp`, and those of fenced MCP servers,
+resolve to small shims
+(`runtime/fence_ssh.py`) that run the real program with CLIO's CONNECT helper
+(`runtime/net_connect.py`) as its `ProxyCommand`. Git reaches the same shim through
+`GIT_SSH_COMMAND`, which outranks the person's `core.sshCommand`. The person's own
+`GIT_SSH_COMMAND`, `core.sshCommand` or `GIT_SSH` program is kept and run through the
+helper, so their options and keys still apply. A `ProxyCommand` from the
+person's ssh config is kept, and a `ProxyJump` chain is rewritten so every hop goes
+through the helper. The connection therefore crosses the chokepoint below like any
+other egress: it is recorded as `net.egress` with its host and port 22, and a host
+outside the workspace's network policy is refused with an explicit message instead
+of a hang. In deny mode a host with no grant raises the same `network_egress`
+request as any other domain, and the connection waits open until the person allows
+it once or always (the helper says it is waiting) or declines it. The person's keys,
+agent and `known_hosts` are used as they are; nothing is copied into the workspace.
+Remote commands run with the SSH account's permissions, and the local write fence
+does not constrain the remote filesystem.
+On Windows each shim is an `.exe` console launcher (distlib's, as pip uses) with a
+`.cmd` beside it. `CreateProcess` — Python's `subprocess` with a list, Node's `spawn`
+without a shell — tries only `.exe` for a bare `ssh`, so without the launcher such a
+spawn reaches System32 OpenSSH, whose direct connect the fence blocks. The launcher
+also passes arguments verbatim; the `.cmd` goes through `cmd.exe`, which expands
+`%VAR%` and strips `^` in a remote command, so `GIT_SSH`, `scp -S` and `ProxyJump`
+hops use the `.exe` too.
+On the floor (no fence) the shims are not installed and `ssh` connects directly.
 
-This is a trusted SSH transport operation, separate from a local shell's
-HTTP-proxy network fence. A raw `ssh` subprocess does not automatically use
-HTTP proxy variables, so approving a local shell command alone cannot make
-its direct TCP connection work. The managed `ssh_execute` connector provides
-finite remote execution through CLIO's configured routes. Ordinary shell SSH
-is still a valid capability, but proxy integration for the enforced network
-route remains unresolved; this tool does not establish Bash/OpenSSH parity.
-Use the NDP connector for NDP service operations. Neither requires disabling
-the local sandbox. Remote commands run with the SSH account's permissions;
-the local workspace write fence does not constrain the remote filesystem.
-The tool captures both output streams, spills large output into session-owned
-files and reports the real exit status. Its finite command deadline or
-cancellation closes the SSH channel, but does not prove remote descendants
-stopped; inspect remote state before retrying an uncertain command.
-
-The normal tool catalog describes its command, profile/custom route, command
-deadline and output limits. Its typed result contains the normalized route,
-stdout/stderr, exit status, stop reason, truncation flags and optional spill
-receipts. Command input and actual output use the existing terminal blocks,
-including an explicit empty-capture message when both streams are empty.
-See [SSH contract and qualification](verification/ssh-agent-execution-2026-10-19.md#contract-and-presentation-follow-up).
+Results recorded by the former built-in SSH tool in old sessions keep their
+recorded presentation and render through the generic tool view.
 
 Child egress defaults to **ALLOW + RECORD**: every spawned child routes through one
 clio-owned CONNECT-only proxy (`runtime/net_chokepoint.py`), and each connection is
 recorded as a trace-only `net.egress` event and joined into provenance as a
-`used web:<domain>@<time>` ingest edge. On the legacy Codex tier (Linux and Windows)
-CLIO labels egress `proxy-enforced`; native MXC records external proxy enforcement and direct host
-loopback separately; on macOS Codex and on Landlock/floor tiers egress is proxy-ENV
-cooperation only (`env-cooperative`, raw sockets bypass) — the per-edge label never
-claims enforcement the tier can't provide.
+`used web:<domain>@<time>` ingest edge. On the legacy Codex tier (Windows) CLIO
+labels egress `proxy-enforced`; native MXC records external proxy enforcement and
+direct host loopback separately; on macOS Codex and on Landlock/floor tiers egress is
+proxy-ENV cooperation only (`env-cooperative`, raw sockets bypass) — the per-edge
+label never claims enforcement the tier can't provide.
+
+On Linux the Codex fence runs each child in its own network namespace whose only
+route out is Codex's managed proxy (`[features] network_proxy`, SOCKS and local
+binding off), and that proxy chains every connection to the child's CLIO chokepoint
+port. An `ssh` called by absolute path, `curl --noproxy '*'` and raw sockets
+therefore fail, and everything that does connect is recorded and subject to deny
+mode. The fence probe (`sandbox_codex_probe.probe_codex_linux_fence`) proves this at
+startup: its child must fail to reach a listener on the host's loopback. Only then
+is the tier labelled `proxy-enforced`; if the child can still reach the host network,
+CLIO keeps the write fence, reports `codex_linux_net_unisolated` in
+`details["codex_net"]` and labels egress `env-cooperative`. If the per-child
+chokepoint port cannot be opened, the child's proxy is pointed at a closed port, so
+it stays offline rather than connecting unrecorded. Codex's proxy passes only public
+hosts on to CLIO, so for everything else the fenced `ssh`, `scp`, `sftp` and Git over
+SSH use a relay: the CONNECT helper (told by `CLIO_EGRESS_RELAY`) first opens a
+tunnel to the never-routed documentation address `[2001:db8::c110]:443`, which Codex
+forwards to the child's chokepoint port, and CLIO's proxy answers that tunnel itself
+and reads the real `CONNECT` from inside it. A private, link-local or loopback host
+reached this way (an SSH login node on a cluster network, say) always needs consent,
+in or out of deny mode: unless a workspace `host_pattern` policy already decides it,
+the person gets a `network_egress` request naming the address kind and can allow it
+once, allow it for the workspace, or decline. An allow is held too: "once" covers that
+host and port for the rest of the turn (a scheduler client opens one connection per
+command), and an allow for the session covers it until the session ends; another port
+asks again. An allow also covers the child sessions the session starts (a delegate, or
+the agent that answers a plugin's question). A decline holds for the rest of the turn
+it was given in: a client that retries the same host fails at once without asking
+again, and the next turn asks afresh (a workspace policy the person adds still
+decides first). The same holds for any `network_egress` request. The connection is recorded as
+`proxy-enforced` with its `network` kind. CLIO resolves the name once and dials the
+addresses it classified, and refuses any relayed connection that would land on a port
+CLIO itself serves. Other programs (`curl`, Python clients) keep Codex's rule:
+loopback, private and non-public names are refused, and the CONNECT helper says so
+when it happens. Fenced MCP servers get the same `ssh` shims as the shell, so a
+server that runs `ssh` (a remote-site adapter, say) takes the same route and asks the
+same question.
+
+Raw TCP clients that ignore proxies and are not `ssh` (Slurm's `sbatch`, `squeue` and
+`scontrol` dialing `slurmctld`) reach only the endpoints a site declares in
+`sandbox.forward_tcp` (`CLIO_SANDBOX_FORWARD_TCP`, comma-separated `host:port`, for
+example `ares:6817,ares:6819`). Every Linux-fenced child (shell, MCP server, kernel)
+then starts behind the CONNECT helper's forwarder (`runtime/fence_forward.py`), which
+listens inside the sandbox and carries each connection through the same relay, so it
+is recorded and asks the same `network_egress` question. A host that resolves to a
+loopback address on this machine (a login node that is also the controller) is
+forwarded at that address. Any other host gets its own `127.0.0.N` address (N from 2),
+and a host given by name is renamed for the child: the forwarder runs the program in a
+user and mount namespace of its own (same uid and gid, no added privilege, the fence's
+read-only mounts stay read-only) with a private `/etc/hosts` in which the name points at
+that address, so `sbatch` resolving `ares` reaches the forwarder unchanged. Every such
+endpoint is also listed in the child's `CLIO_FORWARDED_TCP` (`host:port=address:port`),
+for a client given an IP address or a kernel that refuses the namespace. Nothing is
+forwarded without a declaration. A client with a
+short connect timeout (Slurm's `MessageTimeout`) may give up while the person is
+deciding; its retry goes through on the held answer.
+
+The Linux fence allows Unix-domain sockets, because `ssh -o ControlMaster`, munge and
+other local IPC need them and they carry no route off the machine (abstract sockets
+belong to the child's own network namespace). A child can bind a socket only where it
+can write (its workspace, data directories and temp). Connecting is not confined by
+path, so CLIO denies the known host control sockets inside the fence: the session's
+runtime directory (`$XDG_RUNTIME_DIR`, which holds the user bus and agent sockets),
+D-Bus, systemd and nscd (a resolver path that would bypass the proxy), Docker,
+containerd, Podman, libvirt, snapd and LXD, and X11, tmux and screen sockets. A socket a
+host service opens elsewhere stays reachable, so treat Unix sockets as local IPC the
+child can use, not as part of the network barrier.
+
+A socket path holds at most 107 bytes. When a fenced shell's, kernel's or plugin
+server's `TMPDIR`, `TEMP` or `TMP` is deeper than 64 bytes (a session scratch folder or
+the fence's per-workspace cache under a long `CLIO_AGENT_HOME`), CLIO points it at a
+short alias instead: a symlink `/tmp/clio-<uid>-<hash>` owned by the user, which leads
+to the same folder. Files and sockets still land in that folder, and deleting or
+sweeping a session removes its scratch alias. A name already there that is not the
+user's own link is never used.
+
+Windows' MXC AppContainer replaces a fenced child's `LOCALAPPDATA`, `TEMP` and `TMP`
+with a per-launch `Packages\sandbox.{GUID}\AC` profile that the fence does not grant and
+that is discarded on the next launch (uv failed there with *Access is denied*). Setting
+them before the container starts breaks MXC's own bootstrap, so the child runs under a
+small in-fence shim (`runtime/fence_container_env.py`) that sets them inside: to the
+child's cache folder under `CLIO_AGENT_HOME` (`cache/sandbox/<hash>`, `Temp` beneath it),
+which is granted and the same on every launch. A fenced shell keeps its session scratch
+`TEMP`. `APPDATA` stays the real roaming folder, which holds uv's tools, Pythons and
+credentials and other tools' settings: a fenced child reads it but does not write it, as
+`~/.config` elsewhere. Python's `platformdirs` asks Windows' Known Folder API rather than
+these variables, so inside MXC it still names the per-launch profile; tools built on it
+need their own override (`FASTMCP_HOME`, `CLIO_KIT_CACHE_DIR`).
+
+The MXC token also cannot open the person's CurrentUser PowerShell policy key
+(`HKCU\...\PowerShell\1\ShellIds\Microsoft.PowerShell`). Windows PowerShell reads it
+before it runs any `.ps1`, so every script and `.ps1` shim (`npm`, `npx`, `pnpm`, `yarn`,
+which PowerShell prefers over their `.cmd` siblings) failed with *AuthorizationManager
+check failed*. The same shim gives the child the person's own effective policy (CLIO asks
+`Get-ExecutionPolicy` as the person) as `PSExecutionPolicyPreference`, the Process scope.
+It ranks above CurrentUser, so PowerShell stops there, while Group Policy still outranks
+it. A policy the person already set for the process is inherited unchanged, and CLIO
+never widens it (for example to `Bypass`) (`runtime/fence_powershell.py`).
+
+A fenced MCP server's loopback is its own network namespace's, so a port an MCP App
+declares for its live service (MA23) is not on the host's `127.0.0.1`. CLIO reaches it
+from inside instead: each Linux-fenced child carries `CLIO_FENCE_CHILD` (its egress
+channel), and the probe and both service proxies find the one namespace among CLIO's
+own descendants that carries the serving child's mark and listens on the declared port.
+A short helper joins that namespace (through the user namespace that owns it, which
+this user created, so no privilege is added), connects to `127.0.0.1:<port>` and hands
+the connected socket back (`runtime/fence_service.py`,
+`gact/mcp_app_service_dial.py`). Nothing listens for it on the host, and no other port
+in the namespace is dialed, so the fence gains no inbound path. When two namespaces
+could be the server's, CLIO refuses to guess and the view reports `service_unreachable`.
+
+On Windows the Codex fence runs a fenced MCP server in an MXC AppContainer. The
+container shares the host's port space, but the desktop (a browser, the ParaView
+client, CLIO itself) cannot connect to a port the server listens on inside it: the
+loopback SYN is dropped. CLIO adds no firewall rule or loopback exemption. Instead each
+fenced stdio server runs under a small in-fence agent (`runtime/fence_loopback_agent.py`,
+marked by `CLIO_FENCE_LOOPBACK`), and a host publisher in CLIO
+(`runtime/fence_loopback.py`) carries traffic for that one container:
+
+- When the server writes a `127.0.0.1`/`localhost` address or URL to its stdout, the agent
+  asks the publisher to publish that port. The publisher answers only a CLIO descendant
+  holding that spawn's token, and only for a port that a process in that agent's own tree
+  is listening on, on loopback.
+- It opens a host listener on `127.0.0.1:<new port>`, plus `[::1]:<same port>` when the
+  server bound only IPv4. Each accepted connection is spliced to a connection that the
+  agent dials from inside the container (outbound to host loopback is allowed).
+- The agent rewrites the address in the server's output:
+  - a URL becomes `http://localhost:<same port>/…`, so pages that check `Origin` against
+    their own port, such as relay's ask page, keep working;
+  - a bare address, such as a serve-route forward port for an IPv4-only client, becomes
+    `127.0.0.1:<new port>`.
+- On the way in, published addresses are mapped back to the server's own port.
+- The published listeners close when the server exits. A port no process in that tree
+  listens on is never published, so the fence gains no general inbound path.
+- The MCP App service probe and proxies use the same publisher (`fence_service.py`).
+
+`inbound_loopback: "published"` in the fence details reports this.
+
+Known limits:
+
+- Only addresses in the server's text output are translated. A port sent as a separate
+  JSON number is not.
+- A sign-in that sends an identity provider straight to the server's own loopback
+  callback is not translated.
+- A desktop CLI that reads the server's state files, such as `clio-relay asks answer`,
+  sees the unpublished port.
+- If the server itself holds `[::1]` on its port, URLs use the new port, and a page that
+  checks `Origin` may refuse its form posts.
 
 On macOS the Codex write fence does not restrict network routes. Tools that honor
-`HTTP(S)_PROXY`/`ALL_PROXY` (curl, Python, pip/uv, git over HTTPS) go through CLIO's
-proxy and are recorded. A client that ignores those variables (raw `ssh`, raw sockets,
-some Node `fetch` clients) connects directly: that connection works but is not
-recorded.
+`HTTP(S)_PROXY`/`ALL_PROXY` (curl, Python, pip/uv, git over HTTPS) and the shell's
+`ssh`/`scp`/`sftp` shims go through CLIO's proxy and are recorded. A client that
+ignores those variables (an `ssh` called by absolute path, raw sockets, some Node
+`fetch` clients) connects directly: that connection works but is not recorded.
+
+On Windows, the system's own clients (WinHTTP, WinINet, and so CryptoAPI's revocation
+fetches, .NET Framework and many installers) do not read those variables. They take
+their proxy from the machine's WinHTTP setting or from the registry of the current user
+(HKCU). The legacy Codex fence blocks their direct connections, so they fail closed:
+nothing leaves unrecorded, but no ask appears either. The visible case is the
+certificate revocation check of the `curl.exe` that ships with Windows (schannel). It
+fails with `CRYPT_E_REVOCATION_OFFLINE`, although the download itself would have gone
+through the proxy. Go-based tools such as `gh`, and Python, pip and uv, honor the
+variables and work. The tool's own error reaches the agent.
+
+CLIO cannot hand these clients a proxy:
+
+- Codex runs the fenced child without loading the sandbox account's profile, so the
+  child's HKCU is the machine's default hive, `HKU\.DEFAULT`.
+- The child's restricted token cannot write HKCU.
+- Writing `.DEFAULT` or the machine's WinHTTP setting needs administrator rights and
+  would redirect every profile-less process on the machine.
+- Concurrent children each get their own proxy port, and one shared registry value
+  cannot tell them apart.
+
+Such a download runs outside the sandbox with the person's approval, or through a tool
+that honors the variables.
+
+CLIO's own shell is the exception, since CLIO starts it. Windows PowerShell 5.1 runs on
+.NET Framework, so `Invoke-WebRequest`, `Invoke-RestMethod` and `WebClient` would
+otherwise take the registry proxy and be refused. The shell tool starts every PowerShell
+command with a preamble that sets `[System.Net.WebRequest]::DefaultWebProxy` to the
+`http://` proxy in `HTTPS_PROXY`, `ALL_PROXY` or `HTTP_PROXY` (the chokepoint, inside the
+fence), bypassing local names. Those requests are then recorded, asked about and subject
+to deny mode like curl's. PowerShell 7 reads the variables itself and is left alone. The
+preamble covers requests made inside that shell process. A nested `powershell.exe`, BITS
+and CryptoAPI's own fetches still use the system settings above.
 
 **Deny-by-default** is an opt-in per-workspace mode: egress is refused unless the
 domain is granted, and the first connection to a new domain raises a
@@ -409,6 +695,43 @@ domain is granted, and the first connection to a new domain raises a
 vocabulary scopes a domain grant. Deny mode is decided at CLIO's proxy, so on macOS
 (and other `env-cooperative` tiers) it cannot stop a client that ignores the proxy
 variables; treat it as a policy for cooperating tools, not a network barrier there.
+On Linux, when the fence probe proves isolation, deny mode is a real barrier.
+
+**Network rules: ports, every workspace, and the rules CLIO ships.** A domain rule's
+`host_pattern` may name a port: `github.com:22` matches only connections to port 22,
+and `[::1]:8080` works for an IPv6 literal. A rule with no port matches every port. A
+connection whose port is unknown never matches a rule that names one, so it asks.
+`scope_id: "*"` on a workspace rule means every workspace. An empty `scope_id` on a
+domain rule matches no workspace: a session with no workspace leaves that value, and
+it must not widen into "all". Validation rejects a non-numeric or out-of-range port,
+and `"*"` on a session rule.
+
+At its first boot, the server seeds the rules in
+`gact/runtime/default_network_rules.py`. They are ordinary `allow` rules in
+`permission_policies.json`, so they appear in Settings > Permissions and the person
+can edit or remove them there. Each carries `metadata.source: "clio_default"`, an id,
+a reason and a protocol. `permission_policies.json` records each id it seeds under
+`seeded_default_rules`, so a removed or edited rule is never seeded again, and a later
+release seeds only the ids it adds. The rules share the bottom priority band, so any
+rule the person adds or answers wins over them. Protocol is a description only: the
+chokepoint relays an opaque tunnel and doesn't check what runs inside it.
+
+| Rule | Protocol | Why it ships |
+|---|---|---|
+| `github.com:22`, `ssh.github.com:443` | ssh | git and gh over SSH (gh's `git_protocol=ssh`) |
+| `github.com:443`, `api.github.com:443` | https | git and gh over HTTPS, CLIO's GitHub storage |
+| `codeload.github.com:443`, `objects.githubusercontent.com:443` | https | plugin and skill archives, release assets |
+| `pypi.org:443`, `files.pythonhosted.org:443` | https | uv and pip installs |
+| `registry.npmjs.org:443` | https | npm installs for skills and tools |
+
+Every rule the person sets holds in every workspace mode: a `deny` rule refuses the
+connection and an "Ask every time" (`ask`) rule asks each time, whether or not the
+workspace is in deny mode. Deny mode decides only a host no rule covers: it asks,
+while outside deny mode the connection is allowed and recorded. The ask's card is
+titled "Connect to pypi.org" ("on port 22" when not 80 or 443). A connection served
+from a local cache (a `uv` or npm cache hit) opens no connection, so nothing asks.
+Other forges, conda-forge, crates and site mirrors are added the same way, as a rule
+in Settings or with `PUT /v1/policies`.
 
 ### Local listeners
 
@@ -455,6 +778,13 @@ servers' environments, settings, hook trust, credentials, the plugin store) are 
 servers' only, so a shell command cannot break a running server, widen its own limits or
 replace a credential (`runtime/sandbox_roots.py`; KiCad ledger FN-3).
 
+**Server launchers' homes exist before the fence starts.** A fence rules only on
+folders that exist, and the launchers that start MCP servers create theirs on first
+use (`uvx` locks `<uv data>/tools/.lock`, `npx` fills the npm cache). CLIO creates uv's
+data, cache and tool folders (`UV_TOOL_DIR` when set), the npm cache and clio-kit's
+folders before granting them, so a fresh machine or a fresh `XDG_DATA_HOME` starts a
+plugin server on its first try.
+
 **Boundary feedback in the result (#1905).** A denial is diagnosed once, in the
 confinement layer (`runtime/sandbox_diagnosis.py`): a per-platform denial signature
 in stderr (PowerShell "Access to the path … is denied", `UnauthorizedAccessException`,
@@ -495,6 +825,30 @@ the command unfenced (mechanism `none`, reason `outside_sandbox_allowed`, logged
 shell refuses `outside_sandbox` without a recorded allow (`outside_sandbox_not_approved`), so
 a path that skipped the gate fails closed. CLIO never takes a password: a command that needs
 one (`sudo` on a desktop) is still the person's to run, as `elevation_required` says.
+
+**A connector's server outside the sandbox, once per connector.** Some connector servers
+start a desktop app or a user-scope installer, and those keep the person's own settings
+where the fence blocks them: the registry and Documents on Windows, `~/Library` on macOS,
+`~/.config` and the display on Linux. Such a connector's catalog entry says so in
+`outside_sandbox`. The first time an agent calls one of its tools under an active fence,
+before the call reaches the server, the gate asks the person whether that server may run
+outside CLIO's sandbox (`gact/connector_outside.py`). As with a command outside the
+sandbox, only the person answers, whatever the approval mode, rules or AI reviewer; the
+card states what the server starts and what running outside the sandbox means, and offers
+only **allow** or **deny**. The row's `consent` (`scope: connector_outside_sandbox`,
+`lasting: true`) tells the card the allow is kept, so it reads **Allow**, not "Allow
+once". The answer is kept for that connector and its server
+declaration (`connectors/outside_sandbox.py`, in `connectors.yaml`), so a new command or
+pinned release is asked again. An allow starts the connector's server again, unconfined,
+in every resident fleet (mechanism `none`, reason `outside_sandbox_allowed_for_connector`,
+logged), so the call that asked already reaches it; a deny keeps it fenced. The call
+itself then goes through the gate's other layers as usual. Nothing is asked in an
+unattended run, when a rule or the mode denies the call, or when the question ends with
+the turn. The person takes it back on the connector (`DELETE
+/v1/connectors/{id}/outside-sandbox`), and the server runs fenced again. The same code
+runs on every platform; only the fence it leaves differs (MXC AppContainer on Windows,
+Seatbelt on macOS, Landlock or bubblewrap on Linux), and with no active fence nothing is
+asked.
 
 ### Provenance tiers under the fence (#980)
 

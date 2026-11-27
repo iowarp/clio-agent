@@ -9,7 +9,6 @@ from typing import Any
 from clio_agent.gact.agents.recorded_inspection_presentation import legacy_inspection_presentation
 from clio_agent.gact.agents.skill_presentation import legacy_skill_presentation
 from clio_agent.gact.protocol.v3.message import transcript_entities
-from clio_agent.gact.ssh_recorded_presentation import legacy_ssh_presentation
 from clio_agent.gact.storage.ndp_recorded_presentation import legacy_ndp_presentation
 
 
@@ -53,8 +52,7 @@ def archive_transcript_views(transcript: dict[str, Any]) -> dict[str, Any]:
                         "metadata": {**(part.get("metadata") or {}), "result": result},
                     }
                 value = (
-                    legacy_ssh_presentation(observed)
-                    or legacy_ndp_presentation(observed, calls.get(call_id))
+                    legacy_ndp_presentation(observed, calls.get(call_id))
                     or legacy_skill_presentation(observed, calls.get(call_id))
                     or legacy_inspection_presentation(observed, calls.get(call_id))
                     or part.get("presentation")

@@ -124,12 +124,27 @@ def test_load_precedence_frontmatter_user_workspace(tmp_path):
     (home / ".config" / "clio-agent").mkdir(parents=True)
     (cwd / ".clio").mkdir(parents=True)
 
-    plugin_servers = {"earthscope": {"ndp": "pack-ndp", "geo": "pack-geo"}}
+    plugin_servers = {"earthscope": {"ndp": "pack-ndp", "geo": "pack-geo", "map": "pack-map"}}
     (home / ".config" / "clio-agent" / "mcp.yaml").write_text(
-        yaml.safe_dump({"mcp_servers": {"ndp": "user-ndp", "weather": "user-weather"}})
+        yaml.safe_dump(
+            {
+                "mcp_servers": {
+                    "ndp": "user-ndp",
+                    "weather": "user-weather",
+                    "files": "user-files",
+                }
+            }
+        )
     )
     (cwd / ".clio" / "mcp.yaml").write_text(
-        yaml.safe_dump({"mcp_servers": {"ndp": "workspace-ndp"}})
+        yaml.safe_dump(
+            {
+                "mcp_servers": {
+                    "geo": {"command": "workspace-geo", "replaces_plugin_server": True},
+                    "files": "workspace-files",
+                }
+            }
+        )
     )
 
     # Point the user-config resolver at the XDG layout this test writes into, so the
@@ -137,11 +152,23 @@ def test_load_precedence_frontmatter_user_workspace(tmp_path):
     # %LOCALAPPDATA%/clio-agent, not home/.config/clio-agent).
     env = {"XDG_CONFIG_HOME": str(home / ".config")}
     trust_workspace_mcp(cwd / ".clio" / "mcp.yaml", home=home, env=env)
-    servers = load_mcp_servers(home=home, cwd=cwd, plugin_servers=plugin_servers, env=env)
-    assert servers["ndp"].command == "workspace-ndp"  # workspace wins
-    assert servers["ndp"].source == "workspace"
-    assert servers["geo"].command == "pack-geo"  # only declared by a plugin
+    taken: list[dict[str, str]] = []
+    servers = load_mcp_servers(
+        home=home, cwd=cwd, plugin_servers=plugin_servers, env=env, taken=taken
+    )
+    # A plugin keeps its server against a person's same-named entry, which is reported.
+    assert servers["ndp"].command == "pack-ndp"
+    assert servers["ndp"].source == "plugin:earthscope"
+    assert [(row["server"], row["plugin"], row["source"]) for row in taken] == [
+        ("ndp", "earthscope", "user")
+    ]
+    assert all(row["reason"] == "mcp_server_name_taken_by_plugin" for row in taken)
+    # An entry that says it replaces the plugin's server does.
+    assert servers["geo"].command == "workspace-geo"
+    assert servers["geo"].source == "workspace"
+    assert servers["map"].command == "pack-map"  # only declared by a plugin
     assert servers["weather"].command == "user-weather"
+    assert servers["files"].command == "workspace-files"  # workspace wins over user
 
 
 # --------------------------------------------------------------------------- #
@@ -271,12 +298,22 @@ def test_transport_for_resolves_relative_launcher_to_absolute(tmp_path):
     assert stdio.cwd == str(work)  # still spawns in the workspace
 
 
-def test_transport_for_missing_cwd_fails_loud():
-    """A nonexistent working directory raises a precise MCPSpawnError, never os error 2."""
+def test_transport_for_missing_cwd_fails_loud(tmp_path):
+    """A working directory that cannot be created raises a precise MCPSpawnError, never
+    os error 2."""
     from clio_agent.tools.mcp_config import MCPSpawnError
 
+    blocker = tmp_path / "a-file"
+    blocker.write_text("x")
     with pytest.raises(MCPSpawnError, match="working directory"):
-        transport_for(spec_from_declaration("geo", "sh -c true"), cwd="/no/such/dir/xyz123")
+        transport_for(spec_from_declaration("geo", "sh -c true"), cwd=str(blocker / "root"))
+
+
+def test_transport_for_recreates_a_deleted_workspace_root(tmp_path):
+    """The workspace root went between runs: the server's transport creates it again."""
+    root = tmp_path / "gone"
+    stdio = transport_for(spec_from_declaration("geo", f"{sys.executable} -c pass"), cwd=str(root))
+    assert root.is_dir() and stdio.cwd == str(root)
 
 
 def test_transport_for_unresolved_command_fails_loud():

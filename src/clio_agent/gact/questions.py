@@ -173,6 +173,11 @@ class QuestionCommands:
             raise ValueError("Freeform Questions must allow a freeform answer")
         if len({option.value for option in definition.options}) != len(definition.options):
             raise ValueError("Question option values must be unique")
+        if (
+            definition.kind != "multi_choice"
+            and sum(option.recommended for option in definition.options) > 1
+        ):
+            raise ValueError("Mark at most one option recommended")
 
     def restore(self, session_id: str | None = None) -> None:
         """Finish posting confirmed Question headers after an interrupted owner write.

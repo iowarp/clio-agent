@@ -199,9 +199,9 @@ def test_boot_listing_is_sequential_one_chain_at_a_time(
         base interpreter are two processes of ONE chain)."""
 
         namespaces: set[str] = set()
-        for proc in psutil.process_iter(["cmdline"]):
+        for proc in psutil.Process().children(recursive=True):
             try:
-                cmdline = " ".join(proc.info["cmdline"] or [])
+                cmdline = " ".join(proc.cmdline())
             except psutil.Error:
                 continue
             for ns in ("alpha", "beta", "gamma"):

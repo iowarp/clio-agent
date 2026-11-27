@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import httpx
 
 from clio_agent.gact.agents.tool_instrumentation import native_tool
+from clio_agent.tools.result_errors import ToolFailure
 
 _GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 _FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
@@ -35,9 +36,9 @@ def _condition(code: int) -> str:
     return "Variable conditions"
 
 
-def _failure(code: str, message: str) -> dict[str, Any]:
+def _failure(code: str, message: str) -> ToolFailure:
     """Return an actionable tool failure without an invented forecast."""
-    return {"ok": False, "error": {"code": code, "message": message}}
+    return ToolFailure({"ok": False, "error": {"code": code, "message": message}})
 
 
 def _local_timestamp(value: str, zone: ZoneInfo) -> str:
@@ -70,9 +71,14 @@ def fetch_weather_forecast(
             geocode.raise_for_status()
             matches = geocode.json().get("results") or []
             if not matches:
-                return _failure(
-                    "location_not_found", f"No location matched {place!r}; add a region."
-                )
+                # A lookup that found nothing is the answer, not a failed call.
+                return {
+                    "ok": False,
+                    "error": {
+                        "code": "location_not_found",
+                        "message": f"No location matched {place!r}; add a region.",
+                    },
+                }
             match = matches[0]
             forecast = client.get(
                 _FORECAST_URL,

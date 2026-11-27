@@ -553,6 +553,7 @@ def test_generated_catalog_skills_state_catalog_id_and_default_role(tmp_path: Pa
 
     app, sid = _app_session(tmp_path)
     bind_builtin_catalogs(app, sid)  # declares [clio-workspace, basic]
+    _advertise(app, sid, [WORKSPACE_ID, BASIC_ID])
 
     refs = SkillCatalog(app=app, session_id=sid)._catalog_refs()
     bodies = {ref.id: ref.body_provider() for ref in refs}
@@ -560,10 +561,28 @@ def test_generated_catalog_skills_state_catalog_id_and_default_role(tmp_path: Pa
     workspace = bodies["a2ui-catalog-clio-workspace"]
     basic = bodies["a2ui-catalog-basic"]
     assert f"Catalog id: `{WORKSPACE_ID}`" in workspace
-    assert "This is this agent's default catalog" in workspace
+    assert "empty `catalog_id` uses in this session" in workspace
     assert f"Catalog id: `{BASIC_ID}`" in basic
-    assert "This is not this agent's default catalog" in basic
     assert f'catalog_id="{BASIC_ID}"' in basic
+
+
+def test_catalog_skills_follow_the_catalogs_this_client_renders(tmp_path: Path) -> None:
+    """A declared catalog the client does not render is never offered by id."""
+    from clio_agent.gact.skills import SkillCatalog
+
+    app, sid = _app_session(tmp_path)
+    bind_builtin_catalogs(app, sid)  # declares [clio-workspace, basic]
+    _advertise(app, sid, [BASIC_ID])
+
+    refs = SkillCatalog(app=app, session_id=sid)._catalog_refs()
+    bodies = {ref.id: ref.body_provider() for ref in refs}
+
+    workspace = bodies["a2ui-catalog-clio-workspace"]
+    basic = bodies["a2ui-catalog-basic"]
+    assert "does not render this catalog" in workspace
+    assert f'catalog_id="{WORKSPACE_ID}"' not in workspace
+    assert f"empty `catalog_id` uses `{BASIC_ID}`" in workspace
+    assert "empty `catalog_id` uses in this session" in basic
 
 
 # --------------------------------------------------------------------------- #

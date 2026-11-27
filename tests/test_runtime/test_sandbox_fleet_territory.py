@@ -43,9 +43,23 @@ def _policy(base: Path) -> FileAccessPolicy:
 def test_fleet_territory_includes_the_workspace_binding(tmp_path: Path) -> None:
     ws = tmp_path / "workspace"
     ws.mkdir()
-    roots = effective_write_roots(PROFILE_FLEET, policy=_policy(tmp_path), workspace_root=str(ws))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    roots = effective_write_roots(PROFILE_FLEET, policy=_policy(ws), workspace_root=str(outside))
     # The declared territory (workspace binding) is part of the fence profile.
-    assert ws in roots
+    assert outside in roots
+
+
+def test_a_folder_inside_a_root_is_not_its_own_root(tmp_path: Path) -> None:
+    # Codex rewrites each root's access list; a folder the confined child created inside the
+    # workspace refuses that, so a cwd already covered by a root must not be listed again.
+    skill = tmp_path / ".claude" / "skills" / "teardown"
+    skill.mkdir(parents=True)
+    roots = effective_write_roots(
+        PROFILE_SHELL, policy=_policy(tmp_path), workspace_root=str(skill)
+    )
+    assert tmp_path in roots
+    assert skill not in roots
 
 
 def test_fleet_and_advisory_share_one_base_no_drift(tmp_path: Path) -> None:
@@ -100,3 +114,55 @@ def test_clio_kit_folders_exist_before_the_fence_rules_on_them(tmp_path, monkeyp
     assert tmp_path / "data" / "clio-kit" in dirs
     assert (tmp_path / "data" / "clio-kit").is_dir()
     assert (tmp_path / "cache" / "clio-kit").is_dir()
+
+
+@pytest.mark.parametrize(
+    ("platform", "env", "expected"),
+    [
+        ("win32", {"APPDATA": "R:/roaming"}, Path("R:/roaming/uv/tools")),
+        ("win32", {"APPDATA": "R:/roaming", "UV_TOOL_DIR": "T:/tools"}, Path("T:/tools")),
+        ("linux", {"APPDATA": "R:/roaming", "UV_TOOL_DIR": "T:/tools"}, None),
+    ],
+)
+def test_windows_fleet_can_lock_uv_tools(platform, env, expected, tmp_path, monkeypatch) -> None:
+    """uvx locks Roaming ``uv/tools/.lock``; Windows keeps it outside uv's Local data folder."""
+    from clio_agent.runtime import sandbox_roots
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.delenv("UV_TOOL_DIR", raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    with monkeypatch.context() as platform_patch:
+        platform_patch.setattr(sandbox_roots.sys, "platform", platform)
+        resolved = sandbox_roots._windows_uv_tool_dir()
+    assert resolved == expected
+    if expected is not None:
+        monkeypatch.delenv("UV_TOOL_DIR", raising=False)
+        tools = tmp_path / "roaming" / "uv" / "tools"
+        monkeypatch.setattr(sandbox_roots, "_windows_uv_tool_dir", lambda: tools)
+        assert tools in sandbox_roots._platform_tool_cache_dirs()
+        assert tools.is_dir()
+
+
+def test_launcher_homes_exist_on_a_fresh_data_home(tmp_path, monkeypatch) -> None:
+    """uvx writes ``<uv-data>/tools/.lock`` on its first run; a fresh data home lacks uv."""
+    import sys
+
+    if sys.platform != "linux":
+        return
+    from clio_agent.runtime.sandbox_roots import _platform_tool_cache_dirs
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("UV_TOOL_DIR", str(tmp_path / "uv-tools"))
+    monkeypatch.setenv("npm_config_cache", str(tmp_path / "npm"))
+    dirs = _platform_tool_cache_dirs()
+    for home in (
+        tmp_path / "data" / "uv",
+        tmp_path / "cache" / "uv",
+        tmp_path / "uv-tools",
+        tmp_path / "npm",
+    ):
+        assert home in dirs
+        assert home.is_dir()

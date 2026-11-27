@@ -37,7 +37,13 @@ from clio_agent.gact.routes.session_cancellation import (
     stop_scope,
 )
 from clio_agent.gact.routes.session_creation import register_session_creation_route
-from clio_agent.gact.routes.session_delete import active_work, session_has_active_work
+from clio_agent.gact.routes.session_delete import (
+    REASON_FLEET_SESSION_DELETED,
+    active_work,
+    close_workspace_fleet,
+    session_has_active_work,
+    stop_for_delete,
+)
 from clio_agent.gact.routes.session_delete import delete_session as delete_session_record
 from clio_agent.gact.routes.session_export import register_session_export_routes
 from clio_agent.gact.routes.session_fork import register_session_fork_route
@@ -183,8 +189,15 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         )
         blocked, active = await active_work(app, sid)
         if blocked:
+            blocked, active = await stop_for_delete(app, deps, sid)
+        if blocked:
             raise session_has_active_work(sid, active)
-        if not await delete_session_record(app, deps, sid, sess.workspace_id):
+        try:
+            existed = await delete_session_record(app, deps, sid, sess.workspace_id)
+        except BaseException:
+            app.state.turn_runner.reopen_admission(sid)  # it stays: usable again
+            raise
+        if not existed:
             raise HTTPException(
                 status_code=404,
                 detail=ErrorEnvelope(
@@ -196,6 +209,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
+        await close_workspace_fleet(app, sess.workspace_id, REASON_FLEET_SESSION_DELETED)
         return Response(status_code=204)
 
     async def copy_session_context(src: str, dst: str, at: str = "") -> int:

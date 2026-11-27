@@ -421,7 +421,9 @@ def mint_tool_declared_outputs(
     consumed_paths = declared_consumed_file_paths(tool_name, effective_args)
     # (channel, label, path) — arg channel FIRST so it wins a dedup tie over a
     # result that merely echoes the same arg path.
-    designated = [("arg", k, v) for k, v in grounded_output_paths(effective_args).items()]
+    designated = [
+        ("arg", k, v) for k, v in grounded_output_paths(effective_args, tool_name).items()
+    ]
     designated += [("result", k, v) for k, v in result_declared_paths(result).items()]
     for channel, label, raw_path in designated:
         path = Path(raw_path)

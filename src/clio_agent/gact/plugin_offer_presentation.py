@@ -34,6 +34,8 @@ def _found(row: Mapping[str, Any]) -> str:
         mark = ", left out in Settings" if item.get("left_out_by_person") else ""
         summary = f": {item['summary']}" if item.get("summary") else ""
         lines.append(f"{item.get('name')} ({kind}{mark}){summary}")
+        if item.get("mentions"):
+            lines.append(f"  Its server says: {item['mentions']}")
     return "\n".join(lines) or "Nothing matches"
 
 
@@ -71,6 +73,15 @@ def _searched(args: Mapping[str, Any], row: Mapping[str, Any]) -> dict[str, Any]
     )
     if more := int(row.get("more") or 0):
         blocks.append({"id": "more", "type": "text", "label": "Not shown", "text": f"{more} more"})
+    if here := [str(item) for item in row.get("in_this_conversation") or []]:
+        blocks.append(
+            {
+                "id": "here",
+                "type": "text",
+                "label": "Already in this conversation",
+                "text": ", ".join(here),
+            }
+        )
     return {**head, "summary": str(row.get("message") or ""), "blocks": blocks}
 
 

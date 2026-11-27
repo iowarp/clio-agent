@@ -115,9 +115,68 @@ lazily on first use, in the session workspace rather than the plugin root.
 per-plugin folder under the plugin store) are expanded in `args`, `env` and `cwd`
 and set in the server's environment. A declaration that references
 `${CLIO_PROVENANCE_CONFIG}` also receives the path of a YAML file with the
-effective provenance configuration. Two resolved plugins declaring the same
+effective provenance configuration. A declaration that references
+`${CLIO_SAVED_SSH_CONFIG}` receives the path of an OpenSSH config file listing
+the SSH hosts saved in this CLIO: one `Host` block each, with `HostName`, `User`
+and `Port` (and `IdentityFile` or `ProxyJump` only when the host names them), never
+a secret. CLIO rewrites it whenever the saved hosts change. Write it as
+`${CLIO_SAVED_SSH_CONFIG:-}` so a CLIO without the file expands it to empty. Two
+resolved plugins declaring the same
 server name is `mcp_server_collision`. A server's tools are namespaced by the
 server name (`web_...`).
+
+For a trusted plugin that declares a navigation page, CLIO builds its stdio servers'
+environments in the background, byte-compiled, with the same provisioning step a
+server's first start runs (`uv sync` for `uv run --project`, a warm-up for `uvx`
+and `uv tool run` where builds run outside the sandbox, `clio-kit --prepare`). It
+does so when a marketplace is installed, updated or trusted, and once when the app
+first lists its pages, so the default marketplace and a version that changed while
+CLIO was closed are covered; an unchanged environment is skipped at once. Opening the
+page then finds its server built. Other plugins' servers build on first use, since a
+marketplace holds many a turn may never start. A failed build is logged and never
+fails the install; the server's first start builds it again.
+`tools.mcp.install_prebuild` (`CLIO_MCP_INSTALL_PREBUILD`) turns this off.
+
+A built environment still leaves the server's own start (a Python server's imports
+take seconds, more on the first run of freshly installed files). So once a page
+plugin builds cleanly, CLIO also prestarts its page: it creates the page's context,
+starts its servers as for a new session, and holds them for
+`tools.mcp.page_prestart_s` (`CLIO_MCP_PAGE_PRESTART_S`, 1800 s; `0` turns this off).
+A first open in that time finds the server running.
+
+A plugin may declare its own server here with no connector catalog entry: the
+server starts from the plugin's declaration alone.
+
+### Host semantics
+
+A plugin and its own MCP server can use five host capabilities. None is specific to
+one server, and a server that uses them stays a plain MCP server for any other client.
+[The host semantics contract](design/host-semantics-contract.md) is the exact wire
+contract.
+
+- HS1, A2UI from a server: a tool result, a task's terminal result or a resource read
+  may carry an embedded `application/a2ui+json` resource. CLIO renders it as a surface
+  owned by that server, in the catalogs the plugin lists in
+  `extensions["ai.iowarp.clio"].catalogs`. CLIO advertises the `org.a2ui/a2ui`
+  extension to servers.
+- HS2, actions: an action on a server's surface calls a tool of that server, including
+  tools visible only to apps (`_meta.ui.visibility: ["app"]`), and its A2UI result
+  updates the surface.
+- HS3, tabs: `extensions["ai.iowarp.clio"].tabs` lists `{id, title, icon, resource}`.
+  The tab reads the resource and reopens on every update. At 2026-07-28 an update
+  reaches CLIO only on a `subscriptions/listen` stream: the server must serve listen
+  and publish `ResourceUpdated` (FastMCP needs the SDK's `ListenHandler` registered;
+  see the contract).
+- HS4, accounts: `accounts` lists `{provider, scopes}`. Once the user grants them, CLIO
+  writes the tokens to a 0600 file and passes its path as
+  `$CLIO_ACCOUNT_<PROVIDER>_FILE`, which the declaration may also use in `args` or
+  `env`.
+- HS5, URL elicitation: `elicitation` declares `loopback` and trusted `https`
+  `origins`, accepted from that plugin's servers only. The question CLIO shows names the
+  origin and why it is trusted (`origin_trust`); any other URL is refused.
+
+`tests/fixtures/plugins/host_semantics/` is a complete example: a plugin and a FastMCP
+server that use all five.
 
 ### Skills
 

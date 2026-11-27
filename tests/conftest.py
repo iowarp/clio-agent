@@ -122,6 +122,7 @@ from tests._process_hygiene import (
 )
 from tests._test_runtime_isolation import (
     cleanup_test_runtime,
+    stop_bytecode_warmup,
 )
 
 
@@ -188,6 +189,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         return
     try:
         if not hasattr(session.config, "workerinput"):
+            stop_bytecode_warmup()
             # An xdist worker the hang guard ended (tests/_hang_guard.py) never ran its
             # own teardown: its private daemon and run root are left behind. Every worker
             # is gone by the time the controller finishes, so reap them now instead of
@@ -238,6 +240,31 @@ def floor_sandbox(monkeypatch):
 
     monkeypatch.setattr(_sandbox, "install_sandbox", _floor_install)
     return floor
+
+
+@pytest.fixture(autouse=True)
+def _remove_short_roots(monkeypatch):
+    """Remove the short roots (socket links, uv cache stand-ins) a test's deep folders got.
+
+    :func:`session_scratch.short_root` gives a folder too deep for a unix socket or a uv
+    cache a short name in ``/tmp`` or the system temp; every ``tmp_path`` is that deep, so
+    without this each shell environment a test builds would leave one outside the runtime.
+    """
+    from clio_agent.runtime import session_scratch as _scratch
+
+    made: list[tuple[Path, object]] = []
+    original = _scratch.short_root
+
+    def _tracked(target: Path, role):
+        short = original(target, role)
+        if short != target:
+            made.append((target, role))
+        return short
+
+    monkeypatch.setattr(_scratch, "short_root", _tracked)
+    yield
+    for target, role in made:
+        _scratch._remove_short_root(target, role)
 
 
 @pytest.fixture(autouse=True)
@@ -742,18 +769,6 @@ def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
         allowed_roots.extend(item for item in existing.split(os.pathsep) if item)
     monkeypatch.delenv("CLIO_ALLOWED_ROOTS", raising=False)
 
-    # Strip ambient relay wiring from tests that did not opt into a live door
-    # (``relay`` / ``live`` / ``real_case`` markers keep it). CLIO_RELAY_* can
-    # appear MID-SUITE: litellm's import-time dotenv slurps a repo-root ``.env``
-    # on the first turn that touches the LM stack, and a stale relay block there
-    # then configures a half-dead door for every later-built app (observed live
-    # 2026-08-19: ~15s connect timeouts inside child turns — the s7 parity
-    # reds). Tests that need relay config set it explicitly via monkeypatch,
-    # which runs after this fixture and still wins.
-    if not any(request.node.get_closest_marker(m) for m in ("relay", "live", "real_case")):
-        for _key in [k for k in os.environ if k.startswith("CLIO_RELAY_")]:
-            monkeypatch.delenv(_key, raising=False)
-
     config_dir = xdg_root / "clio-agent"
     config_dir.mkdir(parents=True, exist_ok=True)
     layer: dict[str, object] = {
@@ -761,7 +776,7 @@ def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
         # covers the warm-up itself); a live test runs it as an operator would.
         "tools": {
             "file_policy": {"allowed_roots": allowed_roots},
-            "mcp": {"session_warmup": False},
+            "mcp": {"session_warmup": False, "install_prebuild": False},
         },
         "lm": {"model": "ibm/granite-4-h-tiny"},
         # clio-core is the only store: every test runs ARC on this worker's private

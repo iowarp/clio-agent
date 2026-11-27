@@ -22,6 +22,7 @@ from mcp.server.request_state import RequestStateSecurity
 from clio_agent.search import broker
 from clio_agent.search.reasons import note
 from clio_agent.search.web import SearchFailure
+from clio_agent.tools.result_errors import ToolFailure
 
 _FIELD = "choice"
 _REQUEST = "search_decision"
@@ -115,15 +116,18 @@ async def answered_run(ctx: Context, body: Callable[[], Awaitable[dict[str, Any]
         return input_required(ask.decision)
     except broker.WaitingForPerson as waiting:
         failure = note("search_waiting_for_person", detail=str(waiting))
+        # Waiting on the person is the search's pending state, not a failed call.
         return {"ok": False, "error": failure.as_dict(), "notes": []}
     except SearchFailure as failure:
         return failure.as_result()
     except ValueError as exc:
-        return {
-            "ok": False,
-            "error": {"code": "invalid_arguments", "message": str(exc)},
-            "notes": [],
-        }
+        return ToolFailure(
+            {
+                "ok": False,
+                "error": {"code": "invalid_arguments", "message": str(exc)},
+                "notes": [],
+            }
+        )
 
 
 __all__ = [

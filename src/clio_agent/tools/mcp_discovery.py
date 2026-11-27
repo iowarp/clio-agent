@@ -106,11 +106,10 @@ def _list_one_namespace(
     resolves this namespace's override — contextvars propagate into
     ``asyncio.run``'s task on the thread that calls it, no cross-thread hop.
 
-    A cold spawn onto the SHARED dedicated uv cache first acquires the
-    bounded launcher-cache lock (#1232 pt 3) — serializing just the spawn
-    step against sibling COLD spawns from this same concurrent pass, never
-    the whole connect — and raises typed on a wedged lock instead of
-    stalling this namespace (and, pre-#1232-pt-2, every namespace after it).
+    A cold spawn onto the SHARED dedicated uv cache first acquires the launcher-cache
+    lock of its own uv environment (#1232 pt 3): only a spawn building the SAME
+    environment queues behind it, so independent servers list concurrently. A wedged
+    lock raises typed instead of stalling this namespace.
 
     The connect + listing itself waits while the server's own process tree works and
     raises the typed ``NoProgressTimeout`` once it stops progressing (or at
@@ -140,7 +139,7 @@ def _list_one_namespace(
         try:
             with probe_server_context(namespace, timeout_retries=spec.probe_timeout_retries):
                 if uses_shared_launcher_cache(spec):
-                    with acquire_launcher_cache_lock(namespace):
+                    with acquire_launcher_cache_lock(namespace, spec=spec):
                         listed = _list_declared_tools(spec, attempt_key=attempt_key)
                 else:
                     listed = _list_declared_tools(spec, attempt_key=attempt_key)
@@ -335,8 +334,8 @@ class NamespaceDiscoveryHealer:
         """Signal the thread to exit WITHOUT waiting — for a caller that must not block.
 
         ``ClioAgent._start_mcp_namespace_discovery`` uses this to retire a
-        stale healer from a PRIOR default-gateway build (e.g. a periodic
-        relay-catalog refresh): that call runs on the gact event loop, so a
+        stale healer from a PRIOR default-gateway build: that call runs on the
+        gact event loop, so a
         bounded :meth:`stop` join (up to ``tick_s`` + 5s) would freeze the
         whole server for that window. ``threading.Event.set`` wakes a thread
         parked in ``wait()`` immediately, so the stale thread exits promptly
@@ -480,30 +479,48 @@ def ensure_namespace(namespace: str, spec: MCPServerSpec) -> dict[str, Any]:
     Raises whatever ``_list_one_namespace`` raises (a real, typed failure —
     e.g. a missing launcher executable) so the caller (builders.py's expert-
     tool resolve, or mcp_executor.py's dispatch-time race) can name the
-    server + reason for THIS one attempt.
+    server + reason for THIS one attempt. A caller whose turn is stopped ends
+    with ``CancellationError``: an owner stops its own listing, and the callers
+    that joined it start a fresh attempt instead of taking that stop as theirs.
     """
 
-    with _ensure_lock:
-        future = _ensure_inflight.get(namespace)
-        if future is None:
-            future = concurrent.futures.Future()
-            _ensure_inflight[namespace] = future
-            owns = True
-        else:
-            owns = False
-    if not owns:
-        return future.result()
-    try:
-        result = _list_one_namespace(namespace, spec)
-    except Exception as exc:  # noqa: BLE001 - propagate to every joiner, never cache the failure
+    from clio_agent.errors import CancellationError  # noqa: PLC0415
+    from clio_agent.tools.call_cancellation import wait_future  # noqa: PLC0415
+
+    while True:
+        with _ensure_lock:
+            future = _ensure_inflight.get(namespace)
+            if future is None:
+                future = concurrent.futures.Future()
+                _ensure_inflight[namespace] = future
+                owns = True
+            else:
+                owns = False
+        if not owns:
+            try:
+                return wait_future(future, stage=f"join listing {namespace}")
+            except _OwnerStopped:
+                continue
+        try:
+            result = _list_one_namespace(namespace, spec)
+        except CancellationError:
+            with _ensure_lock:
+                _ensure_inflight.pop(namespace, None)
+            future.set_exception(_OwnerStopped(namespace))
+            raise
+        except Exception as exc:  # noqa: BLE001 - propagate to every joiner, never cache the failure
+            with _ensure_lock:
+                _ensure_inflight.pop(namespace, None)
+            future.set_exception(exc)
+            raise
         with _ensure_lock:
             _ensure_inflight.pop(namespace, None)
-        future.set_exception(exc)
-        raise
-    with _ensure_lock:
-        _ensure_inflight.pop(namespace, None)
-    future.set_result(result)
-    return result
+        future.set_result(result)
+        return result
+
+
+class _OwnerStopped(Exception):
+    """The attempt a caller joined ended because its owner's turn was stopped."""
 
 
 async def ensure_namespace_async(namespace: str, spec: MCPServerSpec) -> dict[str, Any]:

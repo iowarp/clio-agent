@@ -19,6 +19,10 @@ On the way through CLIO:
 Closing the app removes its registry record, so the route answers 404, and
 :func:`clio_agent.gact.mcp_app_service.close_app_service` ends its open
 WebSockets with close code 4410 and reason ``mcp_app_closed``.
+
+A server inside the Linux fence declares its own network namespace's port, so
+both proxies dial it inside that namespace
+(:mod:`clio_agent.gact.mcp_app_service_dial`); nothing listens for it on the host.
 """
 
 from __future__ import annotations
@@ -55,6 +59,11 @@ from clio_agent.gact.mcp_app_service_declaration import (
     ServiceRefusal,
     is_service_path,
     service_prefix,
+)
+from clio_agent.gact.mcp_app_service_dial import (
+    FencedServiceTransport,
+    dial_fenced,
+    fenced_target,
 )
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
@@ -243,7 +252,9 @@ def register_mcp_app_service_routes(
         assert service is not None  # admitted: service_refusal refuses a record without one
         target = f"http://127.0.0.1:{service.port}{_upstream_target(request.scope, data_ref)}"
         body = None if request.method in {"GET", "HEAD"} else await request.body()
+        fenced = await fenced_target(app, record)
         client = httpx.AsyncClient(
+            transport=FencedServiceTransport(fenced, service.port) if fenced else None,
             trust_env=False,
             follow_redirects=False,
             timeout=httpx.Timeout(_CONNECT_TIMEOUT_S, read=None, write=None, pool=None),
@@ -321,8 +332,12 @@ def register_mcp_app_service_routes(
         ]
         target = f"ws://127.0.0.1:{service.port}{_upstream_target(websocket.scope, data_ref)}"
         try:
+            fenced = await fenced_target(app, record)
+            # Inside the fence, the declared port is the server's namespace's: dial it there.
+            sock = await dial_fenced(fenced, service.port) if fenced else None
             upstream = await connect_websocket(
                 target,
+                sock=sock,
                 additional_headers=[("Authorization", f"Bearer {service.token}")],
                 subprotocols=offered or None,  # type: ignore[arg-type]
                 proxy=None,

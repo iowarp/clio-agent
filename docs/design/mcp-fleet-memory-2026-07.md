@@ -54,7 +54,7 @@ daemon 0.05 GB: the bounded-arena work held).
 
 - **cwd pinning + `CLIO_KIT_ARTIFACTS`**: relative/default-output tools
   (plot, export) write into the bound workspace only because the server
-  process cwd/env say so (`transport_for`; `_ground_output_paths` repairs).
+  process cwd/env say so (`transport_for`); CLIO never rewrites the path.
 - **Per-workspace artifact isolation**: two sessions on different workspaces
   must never write into each other's roots.
 - **`UV_CACHE_DIR` isolation** (the uvx cold-cache corruption race).

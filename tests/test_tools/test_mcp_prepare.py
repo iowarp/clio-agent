@@ -172,6 +172,64 @@ def test_any_other_launcher_has_nothing_to_provision() -> None:
     assert mcp_prepare.provision_plan(spec, "/bin/node") == mcp_prepare.PROVISION_NOT_APPLICABLE
 
 
+_GIT_SOURCE = "clio-relay @ git+https://example.invalid/clio-relay@3d0ff6b"
+
+
+@pytest.mark.parametrize(
+    ("command", "args", "warm"),
+    [
+        (
+            "uvx",
+            ("--from", _GIT_SOURCE, "clio-relay", "serve"),
+            ("/bin/uvx", "--from", _GIT_SOURCE, "python", "-c", "pass"),
+        ),
+        (
+            "C:\\Tools\\uvx.EXE",
+            ("--python", "3.13", "weather-mcp", "--port", "1"),
+            ("/bin/uvx", "--python", "3.13", "--from", "weather-mcp", "python", "-c", "pass"),
+        ),
+        (
+            "uv",
+            ("tool", "run", "--with=extra", "-q", "kicad-mcp"),
+            ("/bin/uv", "tool", "run", "--with=extra", "-q", "--from", "kicad-mcp")
+            + ("python", "-c", "pass"),
+        ),
+    ],
+)
+def test_windows_builds_a_uvx_environment_without_starting_the_server(
+    monkeypatch: pytest.MonkeyPatch, command: str, args: tuple[str, ...], warm: tuple[str, ...]
+) -> None:
+    """Outside the fence the environment, a git clone included, is built; the server is not run."""
+
+    monkeypatch.setattr(mcp_prepare, "builds_outside_fence", lambda: True)
+    spec = MCPServerSpec(name="relay", transport="stdio", command=command, args=args)
+
+    plan = mcp_prepare.provision_plan(spec, warm[0])
+
+    assert isinstance(plan, mcp_prepare.ProvisionPlan)
+    assert plan.argv == warm
+    assert "(environment only)" in mcp_prepare._plan_label(plan)
+
+
+@pytest.mark.parametrize(
+    ("outside", "args"),
+    [
+        (True, ("--some-new-option", "x", "weather-mcp")),
+        (True, ("--from", _GIT_SOURCE)),
+        (False, ("--from", _GIT_SOURCE, "clio-relay", "serve")),
+    ],
+)
+def test_a_uvx_launcher_is_never_guessed_at(
+    monkeypatch: pytest.MonkeyPatch, outside: bool, args: tuple[str, ...]
+) -> None:
+    """An unmodeled option, no server command, or a fence that hosts builds: no plan."""
+
+    monkeypatch.setattr(mcp_prepare, "builds_outside_fence", lambda: outside)
+    spec = MCPServerSpec(name="relay", transport="stdio", command="uvx", args=args)
+
+    assert mcp_prepare.provision_plan(spec, "/bin/uvx") == mcp_prepare.PROVISION_NOT_APPLICABLE
+
+
 # --------------------------------------------------------------------------- #
 # Provisioning runs                                                           #
 # --------------------------------------------------------------------------- #
@@ -221,6 +279,80 @@ def test_a_failed_provision_is_typed_with_the_commands_output(tmp_path: Path) ->
     assert "no solution" in raised.value.detail
     # A failure leaves no marker: the next preparation tries again.
     assert not any(Path(mcp_prepare.project_environment_dir(str(project))).glob("*.json"))
+
+
+def test_concurrent_provisions_of_one_build_are_single_flight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    spec = _uv_spec(project)
+    started, release, runs = threading.Event(), threading.Event(), []
+
+    def slow_build(*_args: Any) -> None:
+        runs.append(1)
+        started.set()
+        assert release.wait(10)
+
+    monkeypatch.setattr("clio_agent.runtime.macos_clt.real_which", lambda _c: "/bin/uv")
+    monkeypatch.setattr(mcp_prepare, "_run_provision", slow_build)
+    outcomes: list[str] = []
+    first = threading.Thread(target=lambda: outcomes.append(mcp_prepare.provision("spot", spec)))
+    first.start()
+    assert started.wait(10)
+    second = threading.Thread(target=lambda: outcomes.append(mcp_prepare.provision("spot", spec)))
+    second.start()
+    second.join(0.5)
+    assert second.is_alive(), "the second provision waits on the first"
+    release.set()
+    first.join(10)
+    second.join(10)
+
+    assert runs == [1]
+    assert outcomes == [mcp_prepare.PROVISIONED, mcp_prepare.PROVISIONED]
+
+
+def test_a_stopped_turn_stops_waiting_and_leaves_the_build_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.errors import CancellationError
+    from clio_agent.runtime.cancellation import cancellation_checker
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    spec = _uv_spec(project)
+    started, release, finished, stop = (threading.Event() for _ in range(4))
+
+    def slow_build(*_args: Any) -> None:
+        started.set()
+        assert release.wait(10)
+        finished.set()
+
+    monkeypatch.setattr("clio_agent.runtime.macos_clt.real_which", lambda _c: "/bin/uv")
+    monkeypatch.setattr(mcp_prepare, "_run_provision", slow_build)
+    errors: list[BaseException] = []
+
+    def stopped_caller() -> None:
+        with cancellation_checker(stop.is_set):
+            try:
+                mcp_prepare.provision("spot", spec)
+            except BaseException as exc:  # noqa: BLE001 - recorded for the assertion
+                errors.append(exc)
+
+    caller = threading.Thread(target=stopped_caller)
+    caller.start()
+    assert started.wait(10)
+    stop.set()
+    caller.join(2)
+
+    assert not caller.is_alive(), "Stop settles while the build still runs"
+    assert len(errors) == 1 and isinstance(errors[0], CancellationError)
+    assert errors[0].details.get("left_behind") is True
+    assert not finished.is_set()
+    release.set()
+    assert finished.wait(10), "the build goes on and completes"
 
 
 def test_a_missing_launcher_is_typed(tmp_path: Path) -> None:

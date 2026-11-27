@@ -46,13 +46,25 @@ def _fake_app(sessions: dict[str, Any] | None = None) -> Any:
     return SimpleNamespace(state=SimpleNamespace(sessions=_FakeSessions(sessions or {})))
 
 
-def test_decide_routing_unhinted_form_defaults_to_agent_by_contract() -> None:
-    """fastmcp drops the InputRequiredResult ``_meta`` (2026-09-07), so a
-    guard-style server's audience tag never arrives. Because clio advertises the
-    agent-driven-elicitation extension on every execution client, an unhinted FORM
-    elicitation reaching the handler is agent-directed by that contract and routes
-    to the agent under the typed unhinted reason (default ON)."""
+def test_decide_routing_unhinted_form_goes_to_the_person_by_default() -> None:
+    """An untagged form elicitation (a spend approval, a package review) is the
+    server asking the person. By default it never routes to the agent, so the
+    agent cannot answer it; only an explicit ``audience: agent`` tag routes."""
 
+    app = _fake_app({"sid1": SimpleNamespace(metadata={})})
+    decision = ae.decide_routing(app, mode="form", session_id="sid1", namespace="v2ex", audience="")
+    assert decision.route is False
+    assert decision.reason == ""
+    assert ae.routing_fields(decision) == {}
+
+
+def test_decide_routing_unhinted_opt_in_routes_under_the_unhinted_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deployment that opts in (fastmcp drops the MRTR ``_meta`` tag) routes an
+    unhinted form elicitation to the agent under the typed unhinted reason."""
+
+    monkeypatch.setattr(ae, "_default_unhinted", lambda: True)
     app = _fake_app({"sid1": SimpleNamespace(metadata={})})
     decision = ae.decide_routing(app, mode="form", session_id="sid1", namespace="v2ex", audience="")
     assert decision.route is True
@@ -60,9 +72,12 @@ def test_decide_routing_unhinted_form_defaults_to_agent_by_contract() -> None:
     assert decision.depth == 1
 
 
-def test_decide_routing_unhinted_empty_namespace_still_fails_closed() -> None:
-    """An unhinted elicitation with no identifiable server namespace fails closed."""
+def test_decide_routing_unhinted_empty_namespace_still_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An opted-in unhinted elicitation with no identifiable server fails closed."""
 
+    monkeypatch.setattr(ae, "_default_unhinted", lambda: True)
     app = _fake_app({"sid1": SimpleNamespace(metadata={})})
     decision = ae.decide_routing(app, mode="form", session_id="sid1", namespace="", audience="")
     assert decision.route is False
@@ -72,8 +87,8 @@ def test_decide_routing_unhinted_empty_namespace_still_fails_closed() -> None:
 def test_decide_routing_strict_mode_makes_unhinted_a_pure_noop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With ``default_unhinted`` OFF, an unhinted elicitation is the byte-identical
-    pre-2026 no-op again (strict explicit-tag routing)."""
+    """With ``default_unhinted`` OFF (the default), an unhinted elicitation is a
+    pure no-op (strict explicit-tag routing)."""
 
     monkeypatch.setattr(ae, "_default_unhinted", lambda: False)
     app = _fake_app({"sid1": SimpleNamespace(metadata={})})
@@ -363,3 +378,61 @@ def test_decide_routing_known_namespace_still_routes_when_not_denied() -> None:
         app, mode="form", session_id="sid1", namespace="v2ex", audience="agent"
     )
     assert decision.route is True
+
+
+def test_decide_routing_sends_a_person_audience_plugin_straight_to_the_person(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.plugins import host_semantics
+
+    monkeypatch.setattr(host_semantics, "_BY_PLUGIN", {})
+    host_semantics.remember(
+        {
+            "asker": {"plugin": "asks", "host": {"elicitation": {"audience": "person"}}},
+            "other": {"plugin": "plain", "host": {}},
+        }
+    )
+    app = _fake_app({"sid1": SimpleNamespace(metadata={})})
+
+    for audience in ("", "agent"):
+        decision = ae.decide_routing(
+            app, mode="form", session_id="sid1", namespace="asker", audience=audience
+        )
+        assert decision.route is False
+    assert (
+        ae.decide_routing(app, mode="form", session_id="sid1", namespace="other", audience="agent")
+    ).route is True
+
+
+def test_every_routing_reason_validates_on_question_and_interaction_rows() -> None:
+    """A question stored under any routing reason, the unhinted one included,
+    still reads back, so GET interactions never 500s on an older row."""
+
+    from clio_agent.gact.agent_elicitation_reasons import AGENT_ELICITATION_REASONS
+    from clio_agent.gact.interaction_types import (
+        PendingInteraction,
+        PendingInteractionSource,
+        UserQuestion,
+    )
+
+    for reason in AGENT_ELICITATION_REASONS:
+        question = UserQuestion(
+            id="q1",
+            session_id="sid1",
+            prompt="May I spend?",
+            created_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T00:00:00Z",
+            agent_elicitation_routing=reason,
+        )
+        assert question.agent_elicitation_routing == reason
+        row = PendingInteraction(
+            id="q1",
+            kind="question",
+            owner_session_id="sid1",
+            attended_session_id="sid1",
+            title="Question",
+            routing_state=reason,
+            source=PendingInteractionSource(protocol="mcp"),
+            created_at="2026-01-01T00:00:00Z",
+        )
+        assert row.routing_state == reason

@@ -27,22 +27,34 @@ fastmcp still emits ``notifications/tools/list_changed`` UNSOLICITED over the
 plain connection (the legacy push style) even on a modern-era negotiation --
 :func:`list_changed_message_handler` reacts to that instead, giving CLIO a
 real, live-provable invalidation path against the fastmcp fleet TODAY while
-:func:`watch_list_changed` covers spec-complete servers.
+:func:`watch_tools` covers spec-complete servers: an executor holds one such
+stream per connected namespace and reopens it when it is lost, because at
+2026-07-28 the SDK drops an unsolicited ``notifications/tools/list_changed``.
+:func:`watch_list_changed` is the single-stream form, without reconnection.
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+import asyncio
+from collections.abc import Awaitable, Callable, Mapping
+from contextlib import AbstractAsyncContextManager
 from typing import Any, Protocol
 
 from clio_agent.runtime import trace
 
 __all__ = [
+    "PUSH_ONLY",
     "ListenUnsupported",
     "combined_message_handler",
     "list_changed_message_handler",
     "watch_list_changed",
+    "watch_resource",
+    "watch_tools",
 ]
+
+#: :func:`watch_tools` result for a connection whose server cannot listen. Asking that
+#: same connection again would only repeat the refusal.
+PUSH_ONLY = "push_only"
 
 
 class ListenUnsupported(RuntimeError):
@@ -134,19 +146,204 @@ def list_changed_message_handler(namespace: str) -> Callable[[Any], Awaitable[No
 
     Ignores every other message type -- a caller with other notifications to handle
     composes this alongside its own handler rather than this one growing a dispatch table.
+
+    A notification stamped with a ``subscriptions/listen`` subscription id belongs to a
+    stream this host opened (:func:`watch_tools`, :func:`watch_resource`), which reports
+    it. The SDK still tees such frames to ``message_handler``, so this handler skips them
+    and each change is reported once.
     """
 
     async def _handler(message: Any) -> None:
-        from mcp_types import PromptListChangedNotification, ToolListChangedNotification
+        from mcp_types import (
+            PromptListChangedNotification,
+            ResourceUpdatedNotification,
+            ToolListChangedNotification,
+        )
 
+        if _from_listen_stream(message):
+            return
         if isinstance(message, ToolListChangedNotification):
             _record_list_changed(namespace)
         elif isinstance(message, PromptListChangedNotification):
             from clio_agent.tools.mcp_prompts import mark_prompts_changed  # noqa: PLC0415
 
             mark_prompts_changed(namespace)
+        elif isinstance(message, ResourceUpdatedNotification):
+            # A server without ``subscriptions/listen`` (fastmcp today) pushes
+            # resource updates unsolicited; see :func:`watch_resource`.
+            from clio_agent.tools.mcp_resource_updates import resource_updated  # noqa: PLC0415
+
+            resource_updated(namespace, str(message.params.uri))
 
     return _handler
+
+
+def _from_listen_stream(message: Any) -> bool:
+    from mcp.shared.subscriptions import SUBSCRIPTION_ID_META_KEY
+
+    meta = getattr(getattr(message, "params", None), "meta", None)
+    return isinstance(meta, Mapping) and meta.get(SUBSCRIPTION_ID_META_KEY) is not None
+
+
+async def watch_resource(
+    connect: Callable[[], Awaitable[_SessionHolder]],
+    namespace: str,
+    uri: str,
+    *,
+    catch_up: bool = False,
+    retry_after: float = 1.0,
+    max_retry_after: float = 30.0,
+) -> None:
+    """Watch one resource over ``subscriptions/listen`` until cancelled.
+
+    Opens a listen stream with ``resource_subscriptions=[uri]`` on the client
+    ``connect`` returns, and reports every ``ResourceUpdated`` event for it to
+    :func:`clio_agent.tools.mcp_resource_updates.resource_updated` as ``uri`` (a
+    reader reads the whole resource, so a sub-resource update reports the watched
+    URI). A stream that is lost, times out or ends is opened again after a backoff
+    on a fresh ``connect()``, and once re-acknowledged one update is reported, so the
+    reader refetches whatever changed while it was gone. ``catch_up`` reports one on
+    the first acknowledgement too, for a watch that replaces an earlier connection's.
+    A closed connection ends the watch: the executor starts a new one on the namespace's
+    next connection.
+
+    A server that cannot listen (a connection before 2026-07-28, or a server that
+    answers ``-32601``) ends the watch quietly. On an older protocol such a server
+    sends ``notifications/resources/updated`` unsolicited, which
+    :func:`list_changed_message_handler` reports instead. On a 2026-07-28 connection
+    the SDK drops that notification, so a server there must serve listen for its
+    updates to arrive. The 2025 per-resource subscribe request (removed in
+    2026-07-28) is never sent.
+
+    Raises:
+        MCPError: The server rejected the listen request for another reason.
+    """
+
+    from anyio import BrokenResourceError, ClosedResourceError
+    from mcp.client.subscriptions import ListenNotSupportedError, SubscriptionLost, listen
+    from mcp.shared.exceptions import MCPError
+    from mcp.shared.subscriptions import ResourceUpdated
+    from mcp_types.jsonrpc import CONNECTION_CLOSED, METHOD_NOT_FOUND
+
+    from clio_agent.tools.mcp_resource_updates import resource_updated  # noqa: PLC0415
+
+    delay = retry_after
+    resumed = catch_up
+    while True:
+        client = await connect()
+        trace.event("TOOLS", "mcp_listen_resource_start namespace=%s uri=%s", namespace, uri)
+        try:
+            async with listen(client.session, resource_subscriptions=[uri]) as subscription:
+                delay = retry_after
+                if resumed:
+                    resource_updated(namespace, uri, via="catch_up")
+                async for event in subscription:
+                    if isinstance(event, ResourceUpdated):
+                        resource_updated(namespace, uri, via="listen")
+        except ListenNotSupportedError:
+            trace.event("TOOLS", "mcp_listen_resource_push namespace=%s uri=%s", namespace, uri)
+            return
+        except (BrokenResourceError, ClosedResourceError) as exc:
+            trace.event(
+                "TOOLS",
+                "mcp_listen_resource_closed namespace=%s uri=%s reason=%r",
+                namespace,
+                uri,
+                exc,
+            )
+            return
+        except MCPError as exc:
+            if exc.code == METHOD_NOT_FOUND:
+                trace.event("TOOLS", "mcp_listen_resource_push namespace=%s uri=%s", namespace, uri)
+                return
+            if exc.code == CONNECTION_CLOSED:
+                trace.event(
+                    "TOOLS", "mcp_listen_resource_closed namespace=%s uri=%s", namespace, uri
+                )
+                return
+            raise
+        except (SubscriptionLost, TimeoutError) as exc:
+            trace.event(
+                "TOOLS",
+                "mcp_listen_resource_lost namespace=%s uri=%s reason=%s",
+                namespace,
+                uri,
+                exc,
+            )
+        resumed = True
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, max_retry_after)
+
+
+async def watch_tools(
+    open_session: Callable[[], AbstractAsyncContextManager[_SessionHolder | None]],
+    namespace: str,
+    *,
+    catch_up: bool = False,
+    retry_after: float = 1.0,
+    max_retry_after: float = 30.0,
+) -> str | None:
+    """Watch ``namespace``'s server for tool-list changes until cancelled.
+
+    At 2026-07-28 a ``notifications/tools/list_changed`` reaches a client only on a
+    ``subscriptions/listen`` stream opened with ``tools_list_changed``; the SDK drops a
+    bare one. Each stream runs on the connection ``open_session`` yields, and every
+    ``ToolsListChanged`` marks the namespace changed (:func:`_record_list_changed`),
+    so an executor connected to it re-lists. A stream that is lost, times out or ends
+    is opened again after a backoff; once re-acknowledged, one change is recorded so
+    anything missed while it was gone is re-listed. ``catch_up`` records one on the
+    first acknowledgement too, for a watch that replaces an earlier connection's.
+
+    The watch ends quietly when ``open_session`` yields ``None``, when the server
+    cannot listen (a connection before 2026-07-28, or ``-32601``: such a server
+    pushes the notification unsolicited and :func:`list_changed_message_handler`
+    records it), or when the connection is closed (its next connection starts a new
+    watch).
+
+    Raises:
+        MCPError: The server rejected the listen request for another reason.
+    """
+
+    from anyio import BrokenResourceError, ClosedResourceError
+    from mcp.client.subscriptions import ListenNotSupportedError, SubscriptionLost, listen
+    from mcp.shared.exceptions import MCPError
+    from mcp.shared.subscriptions import ToolsListChanged
+    from mcp_types.jsonrpc import CONNECTION_CLOSED, METHOD_NOT_FOUND
+
+    delay = retry_after
+    resumed = catch_up
+    while True:
+        try:
+            async with open_session() as client:
+                if client is None:
+                    return None
+                trace.event("TOOLS", "mcp_listen_tools_start namespace=%s", namespace)
+                async with listen(client.session, tools_list_changed=True) as subscription:
+                    delay = retry_after
+                    if resumed:
+                        _record_list_changed(namespace)
+                    async for event in subscription:
+                        if isinstance(event, ToolsListChanged):
+                            _record_list_changed(namespace)
+        except ListenNotSupportedError:
+            trace.event("TOOLS", "mcp_listen_tools_push namespace=%s", namespace)
+            return PUSH_ONLY
+        except (BrokenResourceError, ClosedResourceError) as exc:
+            trace.event("TOOLS", "mcp_listen_tools_closed namespace=%s reason=%r", namespace, exc)
+            return None
+        except MCPError as exc:
+            if exc.code == METHOD_NOT_FOUND:
+                trace.event("TOOLS", "mcp_listen_tools_push namespace=%s", namespace)
+                return PUSH_ONLY
+            if exc.code == CONNECTION_CLOSED:
+                trace.event("TOOLS", "mcp_listen_tools_closed namespace=%s", namespace)
+                return None
+            raise
+        except (SubscriptionLost, TimeoutError) as exc:
+            trace.event("TOOLS", "mcp_listen_tools_lost namespace=%s reason=%s", namespace, exc)
+        resumed = True
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, max_retry_after)
 
 
 def _record_list_changed(namespace: str) -> None:

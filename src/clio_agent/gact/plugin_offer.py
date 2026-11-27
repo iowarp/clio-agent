@@ -8,7 +8,8 @@ not have, and every connector whose plugin it does not have, on or off, each as
 ``name (id): one-line summary``, capped (``plugins.offer_listed``) with the total, and
 with the person's choice over that list (:mod:`clio_agent.gact.offer_list`). It
 offers one with the native tool ``offer_plugin(plugin, reason)``. The model decides
-whether a request needs one; CLIO never adds a plugin by itself.
+whether a request needs one; CLIO adds a plugin by itself only to a new conversation,
+when the person has set it up (:mod:`clio_agent.gact.plugin_join`).
 
 * A **connector** (or a plugin that follows one) is the connector offer of
   :mod:`clio_agent.gact.connector_offer`: its card also turns the connector on and asks
@@ -166,7 +167,14 @@ def _ordered(app: Any, found_connectors: list[Any], here: set[str]) -> list[dict
     as the session facts list them."""
 
     from clio_agent.connectors import state  # noqa: PLC0415
+    from clio_agent.gact.agents.resolution import plugin_service  # noqa: PLC0415
 
+    store = plugin_service(app).store
+    # A connector stands for the plugins that follow it, so a search finds it by their words.
+    followers: dict[str, list[Any]] = {}
+    for record in store.records():
+        if record.follows and record.valid:
+            followers.setdefault(record.follows, []).append(record)
     rows: list[dict[str, Any]] = [
         {
             "kind": "connector",
@@ -177,14 +185,17 @@ def _ordered(app: Any, found_connectors: list[Any], here: set[str]) -> list[dict
             "kit": bool(found.kit),
             # Discover's group: what offer_plugin searches by category (OL-D11).
             "category": found.group or "",
+            # Searched, never shown: the whole descriptions and the followers' keywords.
+            "about": " ".join(
+                [found.description, *(r.description for r in followers.get(found.id, ()))]
+            ),
+            "keywords": [k for r in followers.get(found.id, ()) for k in r.keywords],
         }
         for found in found_connectors
     ]
     # Grouped by marketplace, the most recently added first: a marketplace the person
     # just added is not hidden behind the cap by an older, larger one (CF-D4).
-    from clio_agent.gact.agents.resolution import plugin_service  # noqa: PLC0415
-
-    added = plugin_service(app).store.marketplaces()
+    added = store.marketplaces()
     order = {
         name: rank
         for rank, name in enumerate(
@@ -193,6 +204,8 @@ def _ordered(app: Any, found_connectors: list[Any], here: set[str]) -> list[dict
             )
         )
     }
+    from clio_agent.plugins.recorded_instructions import plugin_instructions  # noqa: PLC0415
+
     plugins = [
         {
             "kind": "plugin",
@@ -201,8 +214,11 @@ def _ordered(app: Any, found_connectors: list[Any], here: set[str]) -> list[dict
             "name": record.id,
             "marketplace": record.marketplace,
             "summary": summary(record.description),
+            "about": record.description,
             "category": record.category,
             "keywords": list(record.keywords),
+            # What its servers last said they reach: a search finds the plugin by it.
+            "instructions": plugin_instructions(record.id),
         }
         for record in library(app)
         if record.id not in here
@@ -279,13 +295,17 @@ def offerable_facts(
 
 
 def offerable_matching(app: Any, session_id: str, query: str) -> list[dict[str, Any]]:
-    """The plugins and connectors this conversation could add whose id or name a tool
-    search names: a search only reaches this conversation's own tools, so a miss on
-    "paraview" would otherwise read as "there is no ParaView"."""
+    """The plugins and connectors this conversation could add that a tool search names:
+    by id or name, or as ``offer_plugin``'s search finds them (description, keywords, the
+    plugins a connector stands for, its servers' instructions), at most
+    :func:`offer_listed`. A search only reaches this conversation's own tools, so a miss on
+    "prepare spack" or "field notebook" (or on a site a plugin's server says it reaches)
+    would otherwise read as "there is none"."""
 
     if not session_id or getattr(getattr(app, "state", None), "sessions", None) is None:
         return []
     from clio_agent.connectors.state import ConnectorStateError  # noqa: PLC0415
+    from clio_agent.gact.offer_search import matching, words_of  # noqa: PLC0415
     from clio_agent.plugins.store import StoreError  # noqa: PLC0415
 
     try:
@@ -294,7 +314,11 @@ def offerable_matching(app: Any, session_id: str, query: str) -> list[dict[str, 
         trace.event("TOOLS", "plugin_offer_search_unavailable (%s)", type(exc).__name__)
         return []
     asked = query.casefold()
-    return [row for row in rows if row["id"].casefold() in asked or row["name"].casefold() in asked]
+    named = [
+        row for row in rows if row["id"].casefold() in asked or row["name"].casefold() in asked
+    ]
+    found = named + [row for row in matching(rows, words_of(query)) if row not in named]
+    return found[: offer_listed()]
 
 
 def search_note(rows: list[dict[str, Any]]) -> str:
@@ -472,6 +496,141 @@ def _joined(
     return result
 
 
+def _here_matching(app: Any, session_id: str, search: str) -> list[dict[str, Any]]:
+    """The plugins already in this conversation that ``search`` finds as it finds the
+    person's others (:func:`offer_search.found_by`): by id, description, declared
+    keywords, server name or the instructions its servers last sent. A search for what
+    is already here must not read as "there is none" (the agent would then work around
+    it)."""
+
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        SessionAgentUnavailable,
+        session_resolution,
+    )
+    from clio_agent.gact.offer_search import found_by, words_of  # noqa: PLC0415
+    from clio_agent.plugins.recorded_instructions import plugin_instructions  # noqa: PLC0415
+
+    words = words_of(search)
+    if not words:
+        return []
+    try:
+        resolution = session_resolution(app, session_id)
+    except (SessionAgentUnavailable, RuntimeError):
+        return []
+    try:
+        keywords = {record.id: list(record.keywords) for record in library(app)}
+    except Exception:  # noqa: BLE001 - the library is a hint here, never a failure
+        keywords = {}
+    out: list[dict[str, Any]] = []
+    for plugin in resolution.plugins:
+        pid = str(plugin.get("id") or "")
+        if not pid or (plugin.get("provenance") or {}).get("source") == "core":
+            continue  # always here, and named in the prompt already
+        servers = sorted(
+            name for name, row in resolution.mcp_servers.items() if row.get("plugin") == pid
+        )
+        row = {
+            "id": pid,
+            "about": " ".join([str(plugin.get("description") or ""), *servers]),
+            "keywords": keywords.get(pid) or list(plugin.get("keywords") or ()),
+            "instructions": plugin_instructions(pid),
+        }
+        if found_by(row, words):
+            out.append(
+                {"id": pid, "servers": servers, **_relevant_skills(app, session_id, pid, words)}
+            )
+    return out
+
+
+def _relevant_skills(app: Any, session_id: str, plugin: str, words: list[str]) -> dict[str, Any]:
+    """A matching plugin's skills, and the one the search points to (``skill``): the one
+    whose id, title or description holds the search, else the plugin's only skill. A
+    plugin found by what it does hands over its how-to, not only its name."""
+
+    from clio_agent.gact.offer_search import found_by  # noqa: PLC0415
+    from clio_agent.gact.skill_commands import plugin_skills  # noqa: PLC0415
+
+    try:
+        refs = plugin_skills(app, session_id, plugin)
+    except Exception:  # noqa: BLE001 - the skills are a hint here, never a failure
+        return {"skills": []}
+    named = [
+        ref
+        for ref in refs
+        if found_by({"id": ref.id, "name": ref.title, "summary": ref.description}, words)
+    ]
+    chosen = named[0] if named else (refs[0] if len(refs) == 1 else None)
+    out: dict[str, Any] = {
+        "skills": [{"id": ref.id, "description": summary(ref.description)} for ref in refs]
+    }
+    if chosen is not None:
+        out["skill"] = chosen.id
+    return out
+
+
+def _load_here_skill(app: Any, session_id: str, here: list[dict[str, Any]]) -> dict[str, Any]:
+    """Load the skill the first matching plugin here points to, as ``load_skill`` would
+    (``{}`` when none, or when it does not load)."""
+
+    from clio_agent.gact.skill_commands import load_skill_for_agent  # noqa: PLC0415
+
+    for row in here:
+        if skill_id := row.get("skill"):
+            try:
+                content = load_skill_for_agent(app, session_id, str(skill_id))
+            except Exception as exc:  # noqa: BLE001 - the note still names it to load
+                trace.event("TOOLS", "plugin_offer_skill_load_failed skill=%s (%s)", skill_id, exc)
+                return {}
+            return {"plugin": row["id"], "id": str(skill_id), "content": content}
+    return {}
+
+
+def _here_note(here: list[dict[str, Any]], loaded_skill: Mapping[str, Any] | None = None) -> str:
+    """What the agent can use of the matching plugins already here, and any that failed."""
+
+    from clio_agent.tools import mount_failures  # noqa: PLC0415
+    from clio_agent.tools.execution import get_active_tool_workspace_root  # noqa: PLC0415
+
+    def named(row: dict[str, Any]) -> str:
+        skills = ", ".join(skill["id"] for skill in row.get("skills") or ())
+        return f"{row['id']} (skills: {skills})" if skills else str(row["id"])
+
+    ids = "; ".join(named(row) for row in here)
+    servers = [server for row in here for server in row["servers"]]
+    failed = mount_failures.note(get_active_tool_workspace_root(), servers)
+    loaded = (
+        f" Its skill {loaded_skill['id']} is loaded below (skill_loaded): follow it."
+        if loaded_skill
+        else ""
+    )
+    return (
+        f"Already in this conversation, so not offered: {ids}. Its skills load with "
+        "load_skill and its tools are in your tool list or found with search_tools."
+        + loaded
+        + (f" {failed}" if failed else "")
+    )
+
+
+def here_matching(app: Any, session_id: str, query: str) -> tuple[list[str], str]:
+    """The plugins already in this conversation a search finds, with the note naming their
+    skills (``([], "")`` when none): a tool search that misses still points to them."""
+
+    if not session_id or getattr(getattr(app, "state", None), "sessions", None) is None:
+        return [], ""
+    here = _here_matching(app, session_id, query)
+    return [row["id"] for row in here], (_here_note(here) if here else "")
+
+
+#: What a search that finds nothing at all says: a plugin is found by what it says it
+#: does, so a name only the person uses (a machine, a site, a project) may belong to one
+#: that does not name it yet.
+MISS_HINT = (
+    "A plugin is found by what it says it does: a name only the person uses (a machine, "
+    "a site, a project) may be reached by one that does not name it yet, so search for "
+    "the kind of thing it is or what it does too."
+)
+
+
 async def _offer_plugin(
     app: Any, session_id: str, record: Any, reason: str, *, required: bool = True
 ) -> dict[str, Any]:
@@ -594,9 +753,18 @@ async def offer_plugin(
             ),
         }
     if search.strip() or category.strip():
-        return offer_search.search_result(
+        found = offer_search.search_result(
             rows, shown, set(chosen.exclude), offer_listed(), search=search, category=category
         )
+        if here := await asyncio.to_thread(_here_matching, app, session_id, search):
+            found["in_this_conversation"] = [row["id"] for row in here]
+            loaded = await asyncio.to_thread(_load_here_skill, app, session_id, here)
+            if loaded:
+                found["skill_loaded"] = loaded
+            found["message"] += f" {_here_note(here, loaded)}"
+        elif search.strip() and not found.get("count"):
+            found["message"] += f" {MISS_HINT}"
+        return found
     from clio_agent.gact.connector_needs_offer import optional_needs  # noqa: PLC0415
 
     return {
@@ -627,7 +795,8 @@ def build_offer_plugin_tool() -> Any:
             "true (the request cannot go on without it) the turn waits for the answer: on "
             "Add its tools and skills are yours from your next step and you continue; on "
             "Not now you get a refusal and nothing changed. Otherwise the card stays on "
-            "screen and you go on with what you have; if the person adds it later you are "
+            "screen and you go on with the work that does not need it, never doing its work "
+            "some other way while it waits; if the person adds it later you are "
             "told, and offering it again brings its tools into the turn. The session facts list some "
             "of them and count the rest by category; search (words) or category reaches "
             "every one, the unlisted too, and asks the person nothing: each row says whether "

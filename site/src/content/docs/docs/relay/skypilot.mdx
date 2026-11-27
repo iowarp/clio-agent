@@ -1,0 +1,111 @@
+---
+title: SkyPilot
+description: Run jobs on cloud machines, Kubernetes or Slurm through SkyPilot managed jobs. Relay shows SkyPilot's price for a job before it runs, and asks you first.
+---
+
+import { Steps } from '@astrojs/starlight/components';
+import Capture from '../../../../components/overview/Capture';
+import { captureImage } from '../../../../lib/captures';
+import skypilotAdd from '../../../../assets/captures/relay/skypilot-add.png';
+import skypilotAddPhone from '../../../../assets/captures/relay/skypilot-add-phone.png';
+
+The **SkyPilot** protocol runs jobs as [SkyPilot](https://skypilot.readthedocs.io/)
+managed jobs, on the clouds, Kubernetes and Slurm that SkyPilot supports. SkyPilot
+brings the machines up, runs the job and takes them down. Before a job runs, relay
+asks SkyPilot what it will cost and shows you the price.
+
+It takes `describe` and `run`.
+
+## Install SkyPilot
+
+SkyPilot pins versions of libraries relay also uses, so it goes in its own
+environment. Relay runs it there as a separate program:
+
+```sh
+uv venv ~/.clio-relay/sky
+uv pip install --python ~/.clio-relay/sky 'skypilot[aws]==0.14.3'
+```
+
+Put the clouds you use in the brackets, such as `skypilot[aws,gcp]`. Relay finds
+SkyPilot's Python in the endpoint's `python` setting, then in `~/.clio-relay/sky`, then
+next to a `sky` command on your `PATH`. When it finds none, `describe` and `run` on
+the endpoint are refused with `adapter_unavailable` and these steps. `describe` shows which Python and
+which SkyPilot version it uses.
+
+## Add a SkyPilot endpoint
+
+<Steps>
+1. On the [Compute page](/docs/compute/), choose **Add endpoint**, fill in **Your
+   own**, and choose the **SkyPilot** tab.
+2. Set **infra**, such as `aws` or `gcp/us-central1`, and what each node needs, such
+   as **cpus** `2+`.
+3. Leave **Security** on **Secure** and **Ask before spending** on `always` until you
+   know what your jobs cost.
+</Steps>
+
+```yaml
+- id: aws
+  name: AWS through SkyPilot
+  adapter: sky
+  config:
+    infra: aws
+    cpus: 2+
+    credentials:
+      provider: aws
+      env:
+        AWS_ACCESS_KEY_ID: aws-access-key-id
+        AWS_SECRET_ACCESS_KEY: aws-secret-access-key
+  policy: guarded
+  spend: {ask: always}
+```
+
+<Capture client:visible image={await captureImage(skypilotAdd)}
+  alt="The output of clio-relay site add aws --adapter sky with infra aws and cpus 2+, a guarded endpoint that always asks before spending"
+  caption="A SkyPilot endpoint on AWS, Secure and asking before every launch."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(skypilotAddPhone)}
+  alt="The output of clio-relay site add aws --adapter sky with infra aws and cpus 2+, a guarded endpoint that always asks before spending, on a phone-width terminal"
+  sizes="(min-width: 50rem) 24rem, 100vw" />
+
+## Cloud credentials
+
+SkyPilot reads the cloud profiles already on your computer, such as
+`~/.aws/credentials`. With `credentials`, relay reads each key from its own secret
+store instead, under the name you give, and hands it to SkyPilot as that variable. A
+missing key shows the endpoint as **Needs a sign-in**, and relay's page asks you to
+type it.
+
+## Settings
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `python` | found as above | SkyPilot's Python |
+| `infra` | SkyPilot's choice | Where to run, such as `aws`, `gcp/us-central1` or `k8s` |
+| `instance_type`, `cpus`, `memory`, `accelerators` | none | What each node needs, in SkyPilot's terms |
+| `use_spot` | off | Use spot instances |
+| `disk_size`, `region`, `zone` | none | Passed to SkyPilot |
+| `setup` | none | Commands run once on each node before the job |
+| `workdir` | none | A local folder SkyPilot copies to the job |
+| `env` | none | Variables for SkyPilot itself |
+| `credentials` | none | Secret names to hand to SkyPilot as variables |
+| `stall_s` | 1800 | How long SkyPilot may print nothing before relay stops waiting |
+
+A job can override any resource with a `sky.` attribute, such as
+`sky.accelerators: A100:8`.
+
+## Price
+
+Relay asks SkyPilot's catalog what the job's resources cost for its walltime, times
+its node count, in US dollars. This works offline, with no cloud account. Two
+`m6i.large` nodes on AWS for one hour come to 0.192 USD on demand. A job with no
+walltime has no upper bound, so relay asks you before it starts.
+
+## How a job runs
+
+Relay copies the inputs into a work folder SkyPilot syncs to the job, and launches a
+managed job named `relay-<operation id>`. When the job ends, relay downloads its log as
+the job's output. `cancel` cancels the managed job.
+
+SkyPilot reports no exit code for a managed job. A failed job is recorded with exit
+code 1 unless SkyPilot's reason names one.

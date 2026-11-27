@@ -22,6 +22,7 @@ from clio_agent.gact.sessions import Session
         ("root", {"id": "main", "mode": "subagent"}, {}, "agent"),
         ("root", {"id": "main"}, {"session_type": "agent_task"}, "agent"),
         ("root", {"id": "main"}, {"side_session": {"read_only": True}}, "lookup"),
+        ("", {"id": "main"}, {"plugin_page": {"plugin": "p", "page": "home"}}, "page"),
         ("root", {}, {}, "agent"),
     ],
 )

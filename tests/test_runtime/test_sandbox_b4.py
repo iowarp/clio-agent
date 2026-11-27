@@ -303,6 +303,20 @@ def test_method_flows_into_net_egress_record_dict() -> None:
     )
     record_egress(app, connect_rec)
     assert net_egress_records(app)[1]["method"] == ""
+    assert net_egress_records(app)[1]["network"] == ""
+    local_rec = nc.EgressRecord(
+        child_id="c1",
+        host="ares.local",
+        port=22,
+        resolved_ip="127.0.1.1",
+        transport="connect",
+        mechanism="proxy-enforced",
+        workspace_root="/ws",
+        at="2026-07-23T00:00:02+00:00",
+        network=nc.NETWORK_LOOPBACK,
+    )
+    record_egress(app, local_rec)
+    assert net_egress_records(app)[2]["network"] == "loopback"
 
 
 # --------------------------------------------------------------------------- #
@@ -927,6 +941,13 @@ def test_wrap_confined_codex_records_egress_recipe_a(
     # The child cannot bypass codex's managed proxy → the honest per-edge label is proxy-enforced.
     assert captured["mechanism"] == nc.MECHANISM_PROXY_ENFORCED
     assert captured["workspace_root"] == str(tmp_path)
+    # The spawn's Codex layer leaves the Codex home once the spawn is released, exactly once.
+    assert confined.codex_layer is not None
+    layer = tmp_path / f"{confined.codex_layer.layer}.config.toml"
+    assert layer.is_file()
+    confined.release()
+    confined.release()
+    assert not layer.exists()
 
 
 def test_confined_spawn_release_closes_its_real_channel(monkeypatch: pytest.MonkeyPatch) -> None:

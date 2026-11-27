@@ -1,5 +1,6 @@
-"""Wait receipts distinguish pending work from collected task results."""
+"""Wait receipts show unfinished work in its recorded state, apart from collected results."""
 
+import json
 from typing import Any
 
 import pytest
@@ -29,12 +30,12 @@ def test_wait_defaults_are_explicit_in_the_agent_visible_declaration() -> None:
         assert "positive expiry or Stop ends only this waiter" in description
 
 
-def test_mail_interrupt_receipt_explains_pending_work_without_claiming_completion() -> None:
+def test_mail_interrupt_receipt_explains_unfinished_work_without_claiming_completion() -> None:
     presentation = wait_presentation(
         {"tasks": ["task_child"], "return_when": "all", "timeout_s": None},
         {
             "outcomes": [],
-            "pending": ["task_child"],
+            "unfinished": [{"handle": "task_child", "status": "running"}],
             "timed_out": False,
             "interrupted": "mail_received",
         },
@@ -42,29 +43,33 @@ def test_mail_interrupt_receipt_explains_pending_work_without_claiming_completio
     assert "New input received" in presentation["summary"]
     assert presentation["status"] == "interrupted"
     assert "Interrupted by mail" in presentation["diagnostic"]
-    assert "1 pending" in presentation["summary"]
+    assert "1 running" in presentation["summary"]
     assert any(
         "New input is available" in block.get("text", "") for block in presentation["blocks"]
     )
 
 
-def test_stop_interrupt_is_marked_without_making_pending_tasks_unsuccessful() -> None:
+def test_stop_interrupt_is_marked_without_making_unfinished_tasks_unsuccessful() -> None:
     presentation = wait_presentation(
         {"tasks": ["task_child"], "return_when": "all"},
-        {"outcomes": [], "pending": ["task_child"], "interrupted": "stopped"},
+        {
+            "outcomes": [],
+            "unfinished": [{"handle": "task_child", "status": "running"}],
+            "interrupted": "stopped",
+        },
     )
     assert presentation["status"] == "interrupted"
     assert "stop request" in presentation["diagnostic"]
-    assert "1 pending" in presentation["summary"]
+    assert "1 running" in presentation["summary"]
     assert not any(block.get("severity") == "error" for block in presentation["blocks"])
 
 
 def test_wait_interruption_keeps_independent_child_failure_detail() -> None:
     presentation = wait_presentation(
-        {"tasks": ["failed", "pending"]},
+        {"tasks": ["failed", "waiting"]},
         {
             "outcomes": [{"handle": "failed", "status": "failed", "result": "Bad input"}],
-            "pending": ["pending"],
+            "unfinished": [{"handle": "waiting", "status": "queued"}],
             "interrupted": "mail_received",
         },
     )
@@ -75,44 +80,81 @@ def test_wait_interruption_keeps_independent_child_failure_detail() -> None:
 
 
 @pytest.mark.parametrize("timeout", [0, 2.5, None])
-def test_wait_receipt_keeps_pending_work_visible(timeout: float | None) -> None:
-    """An immediate poll or expired wait must not look like completed task work."""
+def test_wait_receipt_shows_unfinished_work_in_its_recorded_state(timeout: float | None) -> None:
+    """An immediate poll or expired wait shows a running task as running, not pending."""
     receipt: dict[str, Any] = {
-        "results": [],
-        "pending": ["task_child"],
-        "errors": [],
+        "outcomes": [],
+        "unfinished": [{"handle": "task_child", "status": "running", "activity": "submitting"}],
         "timed_out": True,
     }
     shown = wait_presentation({"tasks": "task_child", "timeout_s": timeout}, receipt)
     assert shown["action"] == ("Check all tasks" if timeout == 0 else "Wait for all tasks")
-    assert shown["summary"] == "1 pending, 0 results collected"
+    assert shown["summary"] == "1 running, 0 results collected"
     assert shown["subject"] == "wait-targets"
     assert shown["blocks"][0]["text"] == "task_child"
+    assert shown["blocks"][2]["label"] == "task_child: Running"
     assert shown["blocks"][2]["result_kind"] == "snapshot"
-    assert shown["blocks"][2]["status"] == "pending"
-    assert "Pending when this call returned" in shown["blocks"][2]["text"]
+    assert shown["blocks"][2]["status"] == "running"
+    assert shown["blocks"][2]["text"] == (
+        "Still running when this call returned (activity: submitting)"
+    )
+    assert "pending" not in json.dumps(shown).lower()
+
+
+def test_legacy_pending_receipt_does_not_claim_a_state() -> None:
+    """A receipt recorded before ``unfinished`` names no state it did not record."""
+    shown = wait_presentation({"tasks": "task_child"}, {"outcomes": [], "pending": ["task_child"]})
+    assert shown["summary"] == "1 unfinished, 0 results collected"
+    assert shown["blocks"][2]["status"] == "unknown"
+    assert shown["blocks"][2]["text"] == "Still unfinished when this call returned"
 
 
 def test_mixed_wait_receipt_counts_only_collected_results() -> None:
-    """A collected child and a pending child remain separate outcomes."""
-    shown = wait_presentation({}, {"results": [{"handle": "ready"}], "pending": ["pending"]})
-    assert shown["summary"] == "1 pending, 1 result collected"
+    """A collected child and a queued child remain separate outcomes."""
+    shown = wait_presentation(
+        {},
+        {"results": [{"handle": "ready"}], "unfinished": [{"handle": "next", "status": "queued"}]},
+    )
+    assert shown["summary"] == "1 queued, 1 result collected"
 
 
-def test_completed_wait_has_no_pending_snapshot() -> None:
+def test_task_waiting_for_an_answer_is_not_shown_as_plain_running() -> None:
+    """A task waiting for an answer says so, and still was not collected."""
+    shown = wait_presentation(
+        {"tasks": ["asks", "runs"], "timeout_s": 30},
+        {
+            "outcomes": [],
+            "unfinished": [
+                {"handle": "asks", "status": "running", "activity": "waiting_for_input"},
+                {"handle": "runs", "status": "running"},
+            ],
+            "awaiting_input": ["asks", "gone"],
+            "timed_out": True,
+        },
+    )
+    assert shown["summary"] == "1 waiting for input, 1 running, 0 results collected"
+    asks, runs = shown["blocks"][2], shown["blocks"][3]
+    assert asks["label"] == "asks: Waiting for input"
+    assert asks["status"] == "waiting_user" and asks["result_kind"] == "snapshot"
+    assert "waiting for its answer" in asks["text"] and "not cancelled" in asks["text"]
+    assert runs["status"] == "running"
+    assert "Still running when this call returned" in runs["text"]
+
+
+def test_completed_wait_has_no_unfinished_snapshot() -> None:
     """A fully collected wait does not retain a running indicator."""
-    shown = wait_presentation({}, {"results": [{"handle": "ready"}], "pending": []})
+    shown = wait_presentation({}, {"results": [{"handle": "ready"}], "unfinished": []})
     assert shown["summary"] == "1 result collected"
     assert not any(block.get("status") == "pending" for block in shown["blocks"])
     assert shown["blocks"][2]["label"] == "ready: Result collected"
 
 
 def test_any_wait_shows_selection_policy_and_each_result() -> None:
-    """Any can return collected evidence while other selected tasks remain pending."""
+    """Any can return collected evidence while other selected tasks keep running."""
     shown = wait_presentation(
         {"tasks": ["worker_a", "worker_b"], "return_when": "any"},
         {
-            "pending": ["worker_b"],
+            "unfinished": [{"handle": "worker_b", "status": "running"}],
             "results": [
                 {
                     "handle": "worker_a",
@@ -125,11 +167,11 @@ def test_any_wait_shows_selection_policy_and_each_result() -> None:
     )
     assert shown["action"] == "Wait for any task"
     assert shown["blocks"][0]["text"] == "worker_a, worker_b"
-    assert "Pending tasks continue running" in shown["blocks"][1]["text"]
+    assert "Unfinished tasks continue" in shown["blocks"][1]["text"]
     assert "No deadline" not in shown["blocks"][1]["text"]
     assert shown["blocks"][2]["label"] == "worker_a: Assignment complete"
     assert shown["blocks"][2]["text"] == "Audit incomplete; loader failed."
-    assert shown["blocks"][3]["status"] == "pending"
+    assert shown["blocks"][3]["status"] == "running"
 
 
 def test_a_child_agents_report_is_its_answer_not_its_run() -> None:
@@ -160,7 +202,7 @@ def test_wait_surfaces_failed_result_and_collection_error() -> None:
     shown = wait_presentation(
         {"tasks": ["failed", "missing"]},
         {
-            "pending": [],
+            "unfinished": [],
             "results": [
                 {"handle": "failed", "status": "failed", "result": {"output": "Bad input"}}
             ],

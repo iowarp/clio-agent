@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections.abc import Iterator, Sequence
 from heapq import merge
 from itertools import islice
@@ -28,6 +28,19 @@ def _ordered_after(
     start = bisect_right(ordering, after) if after is not None else 0
     for index in range(start, len(ordering)):
         yield ordering[index]
+
+
+def _ordered_before(
+    ordering: Sequence[tuple[str, str]], before: tuple[str, str] | None
+) -> Iterator[tuple[str, str]]:
+    """Walk an immutable ascending ordering newest first, strictly below ``before``."""
+    stop = bisect_left(ordering, before) if before is not None else len(ordering)
+    for index in range(stop - 1, -1, -1):
+        yield ordering[index]
+
+
+#: Page orders a task query accepts: by creation, oldest or newest first.
+TASK_QUERY_ORDERS = frozenset({"oldest", "newest"})
 
 
 #: Activities of open work that is queued, running or waiting for input or approval.
@@ -89,14 +102,20 @@ def query_tasks(
     message_before: str | None = None,
     relation: str = "tree",
     underway_only: bool = False,
+    order: str = "oldest",
 ) -> dict[str, Any]:
     """Return authorized filtered snapshots; pages never disclose hidden counts.
 
     ``active_only`` keeps open work, including idle and stopped conversations;
     ``underway_only`` keeps only work that is queued, running or waiting (:func:`underway`).
+    ``order="newest"`` pages by creation newest first, so a client can reach recent
+    work on a busy home without walking its whole history; its cursor keeps that order.
     """
     if limit < 1:
         raise ValueError("limit must be positive")
+    if order not in TASK_QUERY_ORDERS:
+        raise ValueError("Task query order must be oldest or newest")
+    newest = order == "newest"
     if relation not in {"tree", "direct"}:
         raise ValueError("Task relation must be tree or direct")
     if relation == "direct" and (scope != "tree" or not caller.session_id):
@@ -128,6 +147,8 @@ def query_tasks(
         filters["relation"] = relation
     if underway_only:
         filters["underway_only"] = True
+    if newest:  # oldest-first cursors keep their released signature
+        filters["order"] = order
     if start is not None or end is not None:
         filters.update(
             message_after=start.isoformat() if start is not None else None,
@@ -189,11 +210,12 @@ def query_tasks(
             orders = (((task.created_at, task.handle),),) if task is not None else ((),)
             total = None
         anchor = (after[0], after[1]) if after else None
-        streams = (_ordered_after(ordering, anchor) for ordering in orders)
+        walk = _ordered_before if newest else _ordered_after
+        streams = (walk(ordering, anchor) for ordering in orders)
         scan_limit = max(200, limit * 4)
         # Copy only this bounded candidate page while the orderings are
         # protected. Transcript hydration must not hold the writer's lock.
-        candidates = list(islice(merge(*streams), scan_limit + 1))
+        candidates = list(islice(merge(*streams, reverse=newest), scan_limit + 1))
     page, previous, last = [], None, None
     last_readable, scanned = False, 0
     for key in candidates[:scan_limit]:

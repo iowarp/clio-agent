@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
@@ -223,6 +224,12 @@ def accept_session_input(
 #: their Resume of a stopped assignment (a ``control`` input).
 STARTING_KINDS = frozenset({"human", "composer", "goal", "loop", "schedule", "hook", "control"})
 
+#: The ``control`` inputs that are the person acting on this conversation again: their
+#: Resume and their Restart. Every other control input (the notice of a person's Stop or
+#: Cancel of a task, an agent's control of a child, a boot recovery) reports work and
+#: waits for the person after they stopped.
+_PERSON_CONTROLS = ("resume:", "restart:")
+
 
 def stopped_by_person(latest: Any) -> bool:
     """Whether the person stopped the latest assignment: Stop leaves it open as
@@ -234,19 +241,41 @@ def stopped_by_person(latest: Any) -> bool:
     return latest.cancellation_requested_at is not None
 
 
-def admission_trigger(session_id: str, items: tuple[MailItem, ...], latest: Any) -> MailItem | None:
+def _starts_after_stop(item: MailItem, read: Callable[[Any], Any] | None) -> bool:
+    if item.kind == "control":
+        return item.id.startswith(_PERSON_CONTROLS)
+    if item.kind == "hook" and read is not None:
+        try:
+            value = read(item.content)
+        except Exception:  # noqa: BLE001 - an unreadable input does not start work here
+            return False
+        metadata = value.get("metadata") if isinstance(value, dict) else None
+        # A Stop hook's "not done, continue" is the agent's own loop, not the person.
+        return not (isinstance(metadata, dict) and metadata.get("stop_loop_redrive"))
+    return item.kind in STARTING_KINDS
+
+
+def admission_trigger(
+    session_id: str,
+    items: tuple[MailItem, ...],
+    latest: Any,
+    read: Callable[[Any], Any] | None = None,
+) -> MailItem | None:
     """The staged input a new turn answers, or ``None`` when nothing may start one.
 
-    After the person stopped the latest assignment, an outcome of the stopped work does
-    not start the agent again: it stays eligible and reaches the agent with the person's
-    next message or Resume, which is then the turn's trigger. Before this, a shell
-    command's outcome arriving after Stop woke the agent with a synthesized "continue"
-    prompt, and again at the next boot; the agent went on installing packages and
-    starting a server the person had stopped.
+    After the person stopped the latest assignment, nothing but the person starts the
+    agent again: an outcome of the stopped work, the notice of the Stop or of a task
+    cancelled with it, and a Stop hook's redrive stay eligible and reach the agent with
+    the person's next message or Resume, which is then the turn's trigger. Before this,
+    a shell command's outcome arriving after Stop woke the agent with a synthesized
+    "continue" prompt, and again at the next boot; the agent went on installing packages
+    and starting a server the person had stopped. Later, the parent notices of tasks
+    cancelled with a Stop (``control`` mail) woke it the same way. ``read`` reads an
+    input's content (``TaskHistory.read_content``).
     """
     if not stopped_by_person(latest):
         return items[0] if items else None
-    trigger = next((item for item in items if item.kind in STARTING_KINDS), None)
+    trigger = next((item for item in items if _starts_after_stop(item, read)), None)
     if trigger is None and items:
         from clio_agent.runtime import trace  # noqa: PLC0415
 

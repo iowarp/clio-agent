@@ -1,0 +1,920 @@
+"""Reach SSH through the fence: a CONNECT helper and the ``ssh``/``scp``/``sftp`` launcher (RL37).
+
+A fenced shell has no direct route out: its traffic leaves only through the fence's proxy,
+which the child finds in ``HTTPS_PROXY``/``ALL_PROXY``. OpenSSH does not read those variables,
+so this file gives it a ``ProxyCommand`` that does:
+
+* ``net_connect.py <shim-dir> connect <host> <port>`` opens ``CONNECT host:port`` through the
+  proxy (HTTP, or SOCKS5 when the variable says so) and joins standard input and output to the
+  tunnel. With no proxy in the environment it dials the host directly.
+* ``net_connect.py <shim-dir> ssh|scp|sftp <args>`` runs the real program with that helper as
+  its ``ProxyCommand``. ``scp`` and ``sftp`` get ``-S <shim-dir>/ssh``. A ``ProxyJump`` is
+  rewritten as a chain of these launchers, so every hop crosses the proxy too.
+* ``net_connect.py <shim-dir> forward [--hosts=name=addr,...] <bind:port=host:port>... --
+  <program>`` listens on each ``bind:port`` inside the sandbox, carries every connection to
+  ``host:port`` the same way, and runs the program, which finds each ``--hosts`` name at the
+  forwarder's address. Raw TCP clients that ignore proxies (a batch scheduler's ``sbatch``)
+  reach a declared endpoint through it (:mod:`clio_agent.runtime.fence_forward`).
+
+The proxy records each tunnel as ``net.egress`` with the host and port, and a host the policy
+refuses gets ``403``, which the helper reports on standard error.
+
+Behind the Linux fence the child's proxy is Codex's, which reaches only public hosts and sends
+nothing else to CLIO. There CLIO also sets :data:`RELAY_VARIABLE`: the helper then opens a
+tunnel to :data:`RELAY_AUTHORITY`, an IPv6 documentation address that is never routed, which
+Codex passes to CLIO's proxy like any public host. CLIO's proxy answers that tunnel itself and
+reads the real ``CONNECT`` inside it, so a private or local host can still be reached, after
+the person allows it.
+
+This module runs as a script on CLIO's interpreter in isolated mode (``python -I``), so it
+imports only the standard library: it must start fast inside the fence and never import CLIO.
+:mod:`clio_agent.runtime.fence_ssh` writes the ``ssh``/``scp``/``sftp`` shims that call it.
+"""
+
+from __future__ import annotations
+
+import base64
+import os
+import shlex
+import shutil
+import socket
+import subprocess
+import sys
+import threading
+from urllib.parse import unquote, urlsplit
+
+#: Tools this launcher wraps; the shim directory holds one shim for each.
+TOOLS = ("ssh", "scp", "sftp")
+
+#: Proxy variables in the order the helper reads them; the first non-empty one wins.
+PROXY_VARIABLES = (
+    "HTTPS_PROXY",
+    "https_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+)
+
+#: Names the relay tunnel when the fence's proxy reaches only public hosts (the Linux fence).
+RELAY_VARIABLE = "CLIO_EGRESS_RELAY"
+#: The relay tunnel's target: in 2001:db8::/32 (RFC 3849), so it never reaches a real host.
+#: CLIO's proxy answers it and reads the real ``CONNECT`` from inside the tunnel.
+RELAY_HOST = "2001:db8::c110"
+RELAY_PORT = 443
+RELAY_AUTHORITY = f"[{RELAY_HOST}]:{RELAY_PORT}"
+
+#: ssh(1) short options that take a value (OpenSSH 8 to 10 getopt string).
+_SSH_VALUE_FLAGS = frozenset("BbcDEeFIiJLlmOoPpQRSWw")
+#: scp(1) and sftp(1) short options that take a value.
+_COPY_VALUE_FLAGS = {"scp": frozenset("cDFiJloPSX"), "sftp": frozenset("BbcDFiJloPRSsX")}
+#: Bound on a proxy's reply head; a larger head is not a proxy answering CONNECT.
+_MAX_REPLY_HEAD = 64 * 1024
+_CHUNK = 64 * 1024
+_DIAL_TIMEOUT_S = 30.0
+#: After this long without a reply to ``CONNECT`` the helper says it is waiting: CLIO holds the
+#: tunnel while the person answers a network permission request, however long that takes.
+_APPROVAL_NOTICE_S = 5.0
+
+
+class ProxyRefused(OSError):
+    """The proxy answered ``CONNECT`` with anything but ``200``.
+
+    ``fence_error`` is Codex's ``x-proxy-error`` when the Linux fence's own proxy refused.
+    """
+
+    def __init__(self, status: int, line: str) -> None:
+        super().__init__(line)
+        self.status = status
+        self.line = line
+        self.fence_error = ""
+
+
+def _say(message: str) -> None:
+    sys.stderr.write(f"clio: {message}\n")
+    sys.stderr.flush()
+
+
+# --------------------------------------------------------------------------- #
+# The CONNECT helper.
+# --------------------------------------------------------------------------- #
+
+
+def proxy_from_environment(env: dict[str, str] | os._Environ[str]) -> str:
+    """The proxy URL the fence gave this process, or ``""`` when it gave none."""
+    for key in PROXY_VARIABLES:
+        value = (env.get(key) or "").strip()
+        if value:
+            return value if "://" in value else f"http://{value}"
+    return ""
+
+
+def _authority(host: str, port: int) -> str:
+    return f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
+
+
+def _read_head(sock: socket.socket, waiting_for: str = "") -> tuple[bytes, bytes]:
+    """Read a reply head up to the blank line; return ``(head, bytes after it)``.
+
+    With ``waiting_for`` set, a slow reply is reported once and then awaited without a limit.
+    """
+    data = b""
+    while b"\r\n\r\n" not in data:
+        try:
+            chunk = sock.recv(4096)
+        except TimeoutError:
+            if not waiting_for:
+                raise
+            _say(f"waiting for CLIO's proxy to open {waiting_for} (it may be asking to allow it)")
+            waiting_for = ""
+            sock.settimeout(None)
+            continue
+        if not chunk:
+            break
+        data += chunk
+        if len(data) > _MAX_REPLY_HEAD:
+            raise ProxyRefused(0, "the proxy reply head is too large")
+    head, _sep, rest = data.partition(b"\r\n\r\n")
+    return head, rest
+
+
+def _http_connect(proxy: str, host: str, port: int, relay: str = "") -> tuple[socket.socket, bytes]:
+    """``CONNECT host:port`` through ``proxy``; with ``relay``, inside a tunnel to it."""
+    parts = urlsplit(proxy)
+    sock = socket.create_connection(
+        (parts.hostname or "127.0.0.1", parts.port or 8080), timeout=_DIAL_TIMEOUT_S
+    )
+    auth: list[str] = []
+    if parts.username is not None:
+        token = f"{unquote(parts.username)}:{unquote(parts.password or '')}"
+        auth.append("Proxy-Authorization: Basic " + base64.b64encode(token.encode()).decode())
+    try:
+        if relay:
+            _connect_request(sock, relay, auth, wait=False)
+            auth = []
+        return sock, _connect_request(sock, _authority(host, port), auth, wait=True)
+    except BaseException:
+        sock.close()
+        raise
+
+
+def _connect_request(sock: socket.socket, target: str, auth: list[str], *, wait: bool) -> bytes:
+    """Send ``CONNECT target`` on ``sock`` and return the bytes after a ``200`` reply head."""
+    lines = [f"CONNECT {target} HTTP/1.1", f"Host: {target}", *auth]
+    sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
+    sock.settimeout(_APPROVAL_NOTICE_S if wait else _DIAL_TIMEOUT_S)
+    head, rest = _read_head(sock, waiting_for=target if wait else "")
+    status_line = head.split(b"\r\n", 1)[0].decode("latin-1", "replace").strip()
+    fields = status_line.split()
+    status = int(fields[1]) if len(fields) > 1 and fields[1].isdigit() else 0
+    if status != 200:
+        refused = ProxyRefused(status, status_line or "the proxy closed the connection")
+        refused.fence_error = _header(head, "x-proxy-error")
+        raise refused
+    if not wait and rest:
+        raise ProxyRefused(0, "the relay tunnel sent data before the real CONNECT")
+    return rest
+
+
+def _header(head: bytes, name: str) -> str:
+    """The value of header ``name`` in a reply head (``""`` when absent)."""
+    for raw in head.split(b"\r\n")[1:]:
+        key, _sep, value = raw.decode("latin-1", "replace").partition(":")
+        if key.strip().lower() == name:
+            return value.strip()
+    return ""
+
+
+def _socks5_connect(proxy: str, host: str, port: int) -> tuple[socket.socket, bytes]:
+    parts = urlsplit(proxy)
+    sock = socket.create_connection(
+        (parts.hostname or "127.0.0.1", parts.port or 1080), timeout=_DIAL_TIMEOUT_S
+    )
+    user = unquote(parts.username or "")
+    methods = b"\x00\x02" if user else b"\x00"
+    sock.sendall(b"\x05" + bytes([len(methods)]) + methods)
+    reply = _recv_exact(sock, 2)
+    if reply[1] == 0x02:
+        password = unquote(parts.password or "")
+        sock.sendall(
+            b"\x01"
+            + bytes([len(user)])
+            + user.encode()
+            + bytes([len(password)])
+            + password.encode()
+        )
+        if _recv_exact(sock, 2)[1] != 0:
+            sock.close()
+            raise ProxyRefused(407, "the SOCKS proxy refused the credentials")
+    elif reply[1] != 0x00:
+        sock.close()
+        raise ProxyRefused(0, "the SOCKS proxy offered no usable sign-in method")
+    name = host.strip("[]").encode("idna")
+    sock.sendall(b"\x05\x01\x00\x03" + bytes([len(name)]) + name + port.to_bytes(2, "big"))
+    head = _recv_exact(sock, 4)
+    if head[1] != 0:
+        sock.close()
+        # SOCKS5 0x02 is "connection not allowed by ruleset": the policy refused the host.
+        raise ProxyRefused(403 if head[1] == 0x02 else 502, f"SOCKS5 reply {head[1]}")
+    length = {1: 4, 4: 16}.get(head[3]) or _recv_exact(sock, 1)[0]
+    _recv_exact(sock, length + 2)
+    return sock, b""
+
+
+def _recv_exact(sock: socket.socket, size: int) -> bytes:
+    data = b""
+    while len(data) < size:
+        chunk = sock.recv(size - len(data))
+        if not chunk:
+            raise ProxyRefused(0, "the proxy closed the connection")
+        data += chunk
+    return data
+
+
+def open_tunnel(host: str, port: int, proxy: str, relay: str = "") -> tuple[socket.socket, bytes]:
+    """A socket joined to ``host:port``: through ``proxy`` when one is set, else direct.
+
+    ``relay`` (an HTTP proxy only) names the tunnel CLIO's proxy answers itself; the real
+    ``CONNECT`` then travels inside it.
+    """
+    if not proxy:
+        return socket.create_connection((host, port), timeout=_DIAL_TIMEOUT_S), b""
+    scheme = urlsplit(proxy).scheme.lower()
+    if scheme.startswith("socks"):
+        return _socks5_connect(proxy, host, port)
+    return _http_connect(proxy, host, port, relay)
+
+
+def _pump(sock: socket.socket, first: bytes) -> bool:
+    """Join standard input and output to ``sock`` until the far side closes.
+
+    Returns whether the far side sent anything at all.
+    """
+    sock.settimeout(None)
+    stdin, stdout = sys.stdin.fileno(), sys.stdout.fileno()
+
+    def upstream() -> None:
+        try:
+            while chunk := os.read(stdin, _CHUNK):
+                sock.sendall(chunk)
+        except OSError:
+            pass
+        try:
+            sock.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+    threading.Thread(target=upstream, daemon=True).start()
+    answered = bool(first)
+    if first:
+        os.write(stdout, first)
+    while chunk := sock.recv(_CHUNK):
+        answered = True
+        view = memoryview(chunk)
+        while view:
+            view = view[os.write(stdout, view) :]
+    return answered
+
+
+def connect_main(host: str, port_text: str) -> int:
+    """``connect <host> <port>``: the ``ProxyCommand`` body."""
+    try:
+        port = int(port_text)
+    except ValueError:
+        _say(f"port {port_text!r} is not a number")
+        return 2
+    proxy = proxy_from_environment(os.environ)
+    relay = (os.environ.get(RELAY_VARIABLE) or "").strip()
+    try:
+        sock, first = open_tunnel(host, port, proxy, relay)
+    except ProxyRefused as exc:
+        if exc.fence_error:
+            _say(
+                f"the Linux sandbox refused {_authority(host, port)} ({exc.fence_error}): it "
+                "reaches only public hosts, through CLIO's proxy; loopback, private and "
+                "unresolvable addresses are blocked"
+            )
+        elif exc.status == 403 and relay:
+            _say(
+                f"CLIO refused {_authority(host, port)}: its network policy does not allow it, "
+                "the request to allow it was declined, or it is CLIO's own service"
+            )
+        elif exc.status == 403:
+            _say(f"the sandbox network policy refused {_authority(host, port)} ({exc.line})")
+        else:
+            _say(f"the sandbox proxy did not open {_authority(host, port)} ({exc.line})")
+        return 1
+    except OSError as exc:
+        route = "through the sandbox proxy" if proxy else "directly"
+        _say(f"could not reach {_authority(host, port)} {route}: {exc}")
+        return 1
+    try:
+        answered = _pump(sock, first)
+    except OSError:
+        return 1
+    finally:
+        sock.close()
+    if proxy and not answered:
+        if relay:
+            _say(f"{_authority(host, port)} closed the connection before it answered")
+            return 1
+        # Behind the Linux fence Codex's proxy accepts the tunnel before CLIO decides, so a
+        # refusal or an unreachable host shows up here as a tunnel closed before any byte.
+        _say(
+            f"the tunnel to {_authority(host, port)} closed before the server answered: CLIO's "
+            "network policy refused it, the request was declined, or the host did not answer"
+        )
+        return 1
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# The ssh / scp / sftp launcher.
+# --------------------------------------------------------------------------- #
+
+
+def shim_ssh(shim_dir: str) -> str:
+    """The ssh shim in ``shim_dir``: on Windows its ``.exe`` when written, else its ``.cmd``."""
+    if os.name != "nt":
+        return os.path.join(shim_dir, "ssh")
+    exe = os.path.join(shim_dir, "ssh.exe")
+    return exe if os.path.isfile(exe) else os.path.join(shim_dir, "ssh.cmd")
+
+
+def real_program(name: str, shim_dir: str) -> str:
+    """The real ``name`` on ``PATH``, skipping the shim directory."""
+    shim = os.path.normcase(os.path.realpath(shim_dir))
+    path = os.pathsep.join(
+        entry
+        for entry in os.environ.get("PATH", "").split(os.pathsep)
+        if entry and os.path.normcase(os.path.realpath(entry)) != shim
+    )
+    return shutil.which(name, path=path) or ""
+
+
+def split_ssh_args(
+    args: list[str], value_flags: frozenset[str] = _SSH_VALUE_FLAGS
+) -> tuple[list[str], list[str]]:
+    """Split arguments into ``(options, operands)`` like getopt with ``value_flags``."""
+    options: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            return options, args[index + 1 :]
+        if not arg.startswith("-") or arg == "-":
+            break
+        options.append(arg)
+        index += 1
+        for position in range(1, len(arg)):
+            if arg[position] in value_flags:
+                if position == len(arg) - 1 and index < len(args):
+                    options.append(args[index])
+                    index += 1
+                break
+    return options, args[index:]
+
+
+def _option_items(
+    options: list[str], value_flags: frozenset[str] = _SSH_VALUE_FLAGS
+) -> list[tuple[str, str, list[str]]]:
+    """``(flag, value, raw tokens)`` for each option group, flag ``""`` for value-less groups."""
+    items: list[tuple[str, str, list[str]]] = []
+    index = 0
+    while index < len(options):
+        arg = options[index]
+        index += 1
+        flag, value, raw = "", "", [arg]
+        for position in range(1, len(arg)):
+            if arg[position] in value_flags:
+                flag = arg[position]
+                if position == len(arg) - 1 and index < len(options):
+                    value = options[index]
+                    raw.append(value)
+                    index += 1
+                else:
+                    value = arg[position + 1 :]
+                break
+        items.append((flag, value, raw))
+    return items
+
+
+def _is_proxy_option(flag: str, value: str) -> bool:
+    if flag == "J":
+        return True
+    if flag != "o":
+        return False
+    key = value.split("=", 1)[0].split(None, 1)[0].strip().lower()
+    return key in {"proxyjump", "proxycommand"}
+
+
+def _effective_config(real_ssh: str, args: list[str]) -> dict[str, str]:
+    """``ssh -G``'s view of these arguments; empty when ssh cannot say."""
+    options, rest = split_ssh_args(args)
+    if not rest:
+        return {}
+    try:
+        done = subprocess.run(
+            [real_ssh, "-G", *options, rest[0]],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if done.returncode != 0:
+        return {}
+    config: dict[str, str] = {}
+    for line in done.stdout.splitlines():
+        key, _sep, value = line.partition(" ")
+        config.setdefault(key.lower(), value.strip())
+    return config
+
+
+def _quote_command(argv: list[str]) -> str:
+    if os.name == "nt":
+        return subprocess.list2cmdline(argv)
+    return shlex.join(argv)
+
+
+def _escape_percent(text: str) -> str:
+    return text.replace("%", "%%")
+
+
+def _hop_destination(hop: str) -> str:
+    """A ProxyJump hop as an ssh destination (``user@host:port`` becomes an ``ssh://`` URI)."""
+    if hop.startswith("ssh://"):
+        return hop
+    user, at, hostport = hop.rpartition("@")
+    host, colon, port = hostport.rpartition(":")
+    if colon and port.isdigit() and (":" not in host or host.startswith("[")):
+        return f"ssh://{user}{at}{host}:{port}"
+    return hop
+
+
+def ssh_argv(real_ssh: str, shim_dir: str, args: list[str]) -> list[str]:
+    """The real ssh argv: the helper as ``ProxyCommand``, or the jump chain through the shims."""
+    options, rest = split_ssh_args(args)
+    flags = "".join(option[1:] for option in options if option.startswith("-"))
+    if not rest or "G" in flags or "V" in flags:
+        return [real_ssh, *args]
+    config = _effective_config(real_ssh, args)
+    proxy_command = config.get("proxycommand", "none")
+    if proxy_command.lower() != "none":
+        # A configured ProxyCommand stays; one that runs `ssh -W` meets these shims on PATH.
+        return [real_ssh, *args]
+    shim = shim_ssh(shim_dir)
+    jump = config.get("proxyjump", "none")
+    if jump.lower() != "none":
+        hops = [hop for hop in jump.split(",") if hop]
+        inner = [_escape_percent(shim)]
+        if len(hops) > 1:
+            inner += ["-J", _escape_percent(",".join(hops[:-1]))]
+        inner += ["-W", "[%h]:%p", _escape_percent(_hop_destination(hops[-1]))]
+    else:
+        inner = [
+            _escape_percent(sys.executable),
+            "-I",
+            _escape_percent(os.path.abspath(__file__)),
+            _escape_percent(shim_dir),
+            "connect",
+            "%h",
+            "%p",
+        ]
+    kept: list[str] = []
+    for flag, value, raw in _option_items(options):
+        if not _is_proxy_option(flag, value):
+            kept.extend(raw)
+    return [
+        real_ssh,
+        "-o",
+        "ProxyJump=none",
+        "-o",
+        f"ProxyCommand={_quote_command(inner)}",
+        *kept,
+        *(["--"] if "--" in args else []),
+        *rest,
+    ]
+
+
+def copy_argv(real: str, shim_dir: str, args: list[str], tool: str = "scp") -> list[str]:
+    """``scp``/``sftp`` with the ssh launcher as their transport, unless ``-S`` names one."""
+    value_flags = _COPY_VALUE_FLAGS.get(tool, _COPY_VALUE_FLAGS["scp"])
+    options, _rest = split_ssh_args(args, value_flags)
+    if any(flag == "S" for flag, _value, _raw in _option_items(options, value_flags)):
+        return [real, *args]
+    return [real, "-S", shim_ssh(shim_dir), *args]
+
+
+def _bind_to_launcher() -> object | None:
+    """Windows: put this launcher in a kill-on-close Job its descendants inherit.
+
+    The real ssh is a child here (Windows has no ``execv``), so stopping the shim would leave
+    ssh and its ``ProxyCommand`` running with the remote session open. Only this process holds
+    the Job's handle, so when it exits or is killed, Windows ends the whole chain with it.
+    Best effort: on any failure the launcher runs unbound, as before.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _Basic(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class _Extended(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", _Basic),
+                ("IoInfo", ctypes.c_uint64 * 6),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+        kernel.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        ]
+        kernel.SetInformationJobObject.restype = wintypes.BOOL
+        kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        job = kernel.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        limits = _Extended()
+        limits.BasicLimitInformation.LimitFlags = 0x00002000  # KILL_ON_JOB_CLOSE
+        if not kernel.SetInformationJobObject(
+            job, 9, ctypes.byref(limits), ctypes.sizeof(limits)
+        ) or not kernel.AssignProcessToJobObject(job, kernel.GetCurrentProcess()):
+            kernel.CloseHandle(job)
+            return None
+        return job
+    except (OSError, AttributeError, ValueError):
+        return None
+
+
+# Win32-OpenSSH reads this variable at start-up to learn how its stdio handles were opened.
+_WIN32_FD_STATE = "c28fc6f98a2c44abbbd89d6a3037d0d9_POSIX_FD_STATE"
+# struct std_fd_state {int num_inherited; char in_type, out_type, err_type, padding;}:
+# stdin is NONSOCK_FD (2, overlapped I/O), stdout and stderr stay NONSOCK_SYNC_FD (3).
+_ASYNC_STDIN_STATE = base64.b64encode((0).to_bytes(4, "little") + bytes((2, 3, 3, 0))).decode(
+    "ascii"
+)
+
+
+def _speaks_fd_state(program: str) -> bool:
+    """Whether ``program`` is a Win32-OpenSSH build that honours ``_WIN32_FD_STATE``."""
+    try:
+        with open(program, "rb") as handle:
+            return _WIN32_FD_STATE.encode("ascii") in handle.read()
+    except OSError:
+        return False
+
+
+def _feed(source: int, sink: int) -> None:
+    try:
+        while chunk := os.read(source, _CHUNK):
+            view = memoryview(chunk)
+            while view:
+                view = view[os.write(sink, view) :]
+    except OSError:
+        pass
+    finally:
+        os.close(sink)
+
+
+def _call_with_async_stdin(argv: list[str]) -> int | None:
+    """Run Win32-OpenSSH ``ssh`` with its stdin on an overlapped pipe this launcher feeds.
+
+    Win32-OpenSSH reads a piped stdin with a blocking ``ReadFile`` on a helper thread. When
+    the session ends it cancels that read and then waits, without a timeout, for the thread.
+    If the read has not reached the kernel when the cancel runs, the cancel misses it and
+    ``ssh`` hangs forever with the command's output still buffered: a held-open stdin, as a
+    caller that keeps stdin open for the remote command's lifetime does, triggers it. An
+    overlapped stdin is cancelled and closed without that wait. The caller's stdin is copied
+    across unchanged, and its EOF closes ``ssh``'s stdin. Returns None when stdin is not a
+    pipe or the pipe cannot be made, so the caller runs ``ssh`` with plain inherited stdio.
+    """
+    import _winapi
+    import msvcrt
+
+    try:
+        if _winapi.GetFileType(msvcrt.get_osfhandle(0)) != _winapi.FILE_TYPE_PIPE:
+            return None
+        name = rf"\\.\pipe\clio-ssh-stdin-{os.getpid()}-{os.urandom(8).hex()}"
+        reader = _winapi.CreateNamedPipe(
+            name,
+            _winapi.PIPE_ACCESS_INBOUND
+            | _winapi.FILE_FLAG_OVERLAPPED
+            | _winapi.FILE_FLAG_FIRST_PIPE_INSTANCE,
+            0x8,  # PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS
+            1,
+            _CHUNK,
+            _CHUNK,
+            _winapi.NMPWAIT_WAIT_FOREVER,
+            _winapi.NULL,
+        )
+    except OSError:
+        return None
+    try:
+        writer = _winapi.CreateFile(
+            name, _winapi.GENERIC_WRITE, 0, _winapi.NULL, _winapi.OPEN_EXISTING, 0, _winapi.NULL
+        )
+    except OSError:
+        _winapi.CloseHandle(reader)
+        return None
+    try:
+        _winapi.ConnectNamedPipe(reader, overlapped=True).GetOverlappedResult(True)
+    except OSError:
+        _winapi.CloseHandle(writer)
+        _winapi.CloseHandle(reader)
+        return None
+    read_fd = msvcrt.open_osfhandle(reader, os.O_RDONLY)
+    write_fd = msvcrt.open_osfhandle(writer, 0)
+    env = {**os.environ, _WIN32_FD_STATE: _ASYNC_STDIN_STATE}
+    try:
+        proc = subprocess.Popen(argv, stdin=read_fd, env=env)
+    except OSError:
+        os.close(write_fd)
+        raise
+    finally:
+        os.close(read_fd)
+    threading.Thread(target=_feed, args=(0, write_fd), daemon=True).start()
+    return proc.wait()
+
+
+def _run(argv: list[str], *, async_stdin: bool = False) -> int:
+    if os.name == "nt":
+        _bind_to_launcher()
+        try:
+            if async_stdin and _speaks_fd_state(argv[0]):
+                code = _call_with_async_stdin(argv)
+                if code is not None:
+                    return code
+            return subprocess.call(argv)
+        except KeyboardInterrupt:
+            return 130
+    os.execv(argv[0], argv)
+    return 127  # pragma: no cover - execv does not return
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 2:
+        _say(
+            "usage: net_connect.py <shim-dir> connect <host> <port> | ssh|scp|sftp [args]"
+            " | forward <bind:port=host:port>... -- <program>"
+        )
+        return 2
+    shim_dir, tool, args = argv[0], argv[1], argv[2:]
+    if tool == "forward":
+        return forward_main(args)
+    if tool == "connect":
+        if len(args) != 2:
+            _say("usage: net_connect.py <shim-dir> connect <host> <port>")
+            return 2
+        return connect_main(args[0], args[1])
+    if tool not in TOOLS:
+        _say(f"unknown tool {tool!r}")
+        return 2
+    real = real_program(tool, shim_dir)
+    if not real:
+        _say(f"{tool} is not installed on this machine")
+        return 127
+    if tool == "ssh":
+        return _run(ssh_argv(real, shim_dir, args), async_stdin=True)
+    return _run(copy_argv(real, shim_dir, args, tool))
+
+
+# --------------------------------------------------------------------------- #
+# The TCP forwarder: raw TCP clients (a batch scheduler's commands) through the proxy.
+# --------------------------------------------------------------------------- #
+
+
+def parse_forward(spec: str) -> tuple[str, int, str, int]:
+    """``bind-host:port=host:port`` (IPv6 hosts in brackets) as its four parts."""
+    local, sep, remote = spec.partition("=")
+    if not sep:
+        raise ValueError(f"{spec!r} is not bind-host:port=host:port")
+    bind_host, bind_port = _split_authority(local)
+    host, port = _split_authority(remote)
+    return bind_host, bind_port, host, port
+
+
+def _split_authority(text: str) -> tuple[str, int]:
+    host, colon, port = text.strip().rpartition(":")
+    if not colon or not host or not port.isdigit() or not 0 < int(port) < 65536:
+        raise ValueError(f"{text!r} is not host:port")
+    return host.strip("[]"), int(port)
+
+
+def _copy(source: socket.socket, sink: socket.socket) -> None:
+    try:
+        while chunk := source.recv(_CHUNK):
+            sink.sendall(chunk)
+    except OSError:
+        pass
+    try:
+        sink.shutdown(socket.SHUT_WR)
+    except OSError:
+        pass
+
+
+def _bridge(client: socket.socket, host: str, port: int, proxy: str, relay: str) -> None:
+    """Join one accepted connection to ``host:port`` through the proxy (the relay tunnel)."""
+    try:
+        upstream, first = open_tunnel(host, port, proxy, relay)
+    except ProxyRefused as exc:
+        _say(f"CLIO did not open {_authority(host, port)} ({exc.line})")
+        client.close()
+        return
+    except OSError as exc:
+        _say(f"could not reach {_authority(host, port)} through the sandbox proxy: {exc}")
+        client.close()
+        return
+    upstream.settimeout(None)
+    try:
+        if first:
+            client.sendall(first)
+        other = threading.Thread(target=_copy, args=(client, upstream), daemon=True)
+        other.start()
+        _copy(upstream, client)
+        other.join()
+    except OSError:
+        pass
+    finally:
+        client.close()
+        upstream.close()
+
+
+def _serve(listener: socket.socket, host: str, port: int, proxy: str, relay: str) -> None:
+    while True:
+        try:
+            client, _address = listener.accept()
+        except OSError:
+            return
+        threading.Thread(
+            target=_bridge, args=(client, host, port, proxy, relay), daemon=True
+        ).start()
+
+
+def _listen(bind_host: str, bind_port: int) -> socket.socket:
+    family = socket.AF_INET6 if ":" in bind_host else socket.AF_INET
+    listener = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind((bind_host, bind_port))
+        listener.listen(64)
+    except OSError:
+        listener.close()
+        raise
+    return listener
+
+
+def _die_with_parent(parent: int) -> None:
+    """Ask Linux to end this process when its parent does; exit now if it already has."""
+    try:
+        import ctypes  # noqa: PLC0415 - only in the forwarder
+        import signal  # noqa: PLC0415
+
+        ctypes.CDLL(None, use_errno=True).prctl(1, int(signal.SIGTERM), 0, 0, 0)  # SET_PDEATHSIG
+    except (OSError, AttributeError):
+        pass
+    if os.getppid() != parent:
+        os._exit(0)
+
+
+def _hosts_text(original: str, remap: dict[str, str]) -> str:
+    """``original`` (an ``/etc/hosts``) with each remapped name pointing only at its address."""
+    names = set(remap)
+    lines = [f"{address} {name}" for name, address in remap.items()]
+    for line in original.splitlines():
+        body, hashmark, comment = line.partition("#")
+        tokens = body.split()
+        if len(tokens) >= 2 and names.intersection(tokens[1:]):
+            kept = [token for token in tokens[1:] if token not in names]
+            if not kept:
+                continue
+            line = " ".join([tokens[0], *kept]) + (f" #{comment}" if hashmark else "")
+        lines.append(line)
+    return "\n".join(lines) + "\n"
+
+
+def _remap_hosts(remap: dict[str, str]) -> str:
+    """Give this process a private ``/etc/hosts`` naming the forwarder's addresses.
+
+    A user and mount namespace of its own (same uid and gid, no added privilege; mounts the
+    fence made read-only stay so) lets it bind a copy over ``/etc/hosts``, so a client that
+    looks the name up finds the listener. Returns ``""``, or why the kernel refused before
+    anything changed. A failure after the namespace exists raises ``OSError``.
+    """
+    import ctypes  # noqa: PLC0415 - only in the forwarder
+    import tempfile  # noqa: PLC0415
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    uid, gid = os.getuid(), os.getgid()
+    with open("/etc/hosts", encoding="utf-8", errors="surrogateescape") as handle:
+        text = _hosts_text(handle.read(), remap)
+    if libc.unshare(0x10000000 | 0x00020000) != 0:  # CLONE_NEWUSER | CLONE_NEWNS
+        return os.strerror(ctypes.get_errno())
+    for name, value in (("setgroups", "deny"), ("uid_map", f"{uid} {uid} 1")):
+        with open(f"/proc/self/{name}", "w", encoding="ascii") as handle:
+            handle.write(value)
+    with open("/proc/self/gid_map", "w", encoding="ascii") as handle:
+        handle.write(f"{gid} {gid} 1")
+    libc.mount(b"none", b"/", None, 0x4000 | 0x40000, None)  # MS_REC | MS_PRIVATE
+    fd, path = tempfile.mkstemp(prefix="clio-hosts-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape") as handle:
+            handle.write(text)
+        if libc.mount(path.encode(), b"/etc/hosts", None, 0x1000, None) != 0:  # MS_BIND
+            raise OSError(ctypes.get_errno(), "could not mount the forwarded /etc/hosts")
+    finally:
+        os.unlink(path)  # the mount keeps the file
+    return ""
+
+
+def forward_main(args: list[str]) -> int:
+    """``forward [--hosts=name=addr,...] <bind:port=host:port>... -- <program> [args]``.
+
+    Each pair listens on ``bind:port`` inside the sandbox and carries every connection to
+    ``host:port`` through the proxy, as the ssh helper does, so CLIO records it and asks the
+    person about a host its policy does not cover. A forked process serves the listeners and
+    ends with the program, which replaces this process (same pid, same standard streams).
+    ``--hosts`` names the forwarded hosts the program should find at those addresses.
+    """
+    if "--" not in args or args.index("--") == len(args) - 1:
+        _say("usage: net_connect.py <shim-dir> forward <bind:port=host:port>... -- <program>")
+        return 2
+    split = args.index("--")
+    specs, program = args[:split], args[split + 1 :]
+    remap: dict[str, str] = {}
+    for option in [spec for spec in specs if spec.startswith("--hosts=")]:
+        specs.remove(option)
+        for item in filter(None, option.removeprefix("--hosts=").split(",")):
+            name, _sep, address = item.partition("=")
+            remap[name] = address
+    proxy = proxy_from_environment(os.environ)
+    relay = (os.environ.get(RELAY_VARIABLE) or "").strip()
+    listeners: list[tuple[socket.socket, str, int]] = []
+    for spec in specs if proxy and hasattr(os, "fork") else ():
+        try:
+            bind_host, bind_port, host, port = parse_forward(spec)
+            listeners.append((_listen(bind_host, bind_port), host, port))
+        except (ValueError, OSError) as exc:
+            _say(f"not forwarding {spec}: {exc}")
+    if listeners:
+        parent = os.getpid()
+        if os.fork() == 0:
+            try:
+                _die_with_parent(parent)
+                null = os.open(os.devnull, os.O_RDWR)
+                os.dup2(null, 0)
+                os.dup2(null, 1)
+                for listener, host, port in listeners:
+                    threading.Thread(
+                        target=_serve, args=(listener, host, port, proxy, relay), daemon=True
+                    ).start()
+                while os.getppid() == parent:
+                    threading.Event().wait(1.0)
+            finally:
+                os._exit(0)
+        for listener, _host, _port in listeners:
+            listener.close()
+        if remap:
+            try:
+                refused = _remap_hosts(remap)
+            except OSError as exc:
+                _say(f"could not name the forwarded hosts: {exc}")
+                return 126
+            if refused:
+                _say(f"forwarded hosts keep their addresses ({refused}); see CLIO_FORWARDED_TCP")
+    try:
+        os.execvp(program[0], program)
+    except OSError as exc:
+        _say(f"could not run {program[0]}: {exc}")
+        return 127
+    return 127  # pragma: no cover - execvp does not return
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

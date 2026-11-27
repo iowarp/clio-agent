@@ -124,7 +124,10 @@ if sys.platform == "win32":  # pragma: no cover - win32 live gate only (CI runs 
             ]
             # The approved command uses this allow directory. Keep it alive
             # until the elevated helper finishes, including time spent in UAC.
-            return _launch_elevated_codex_setup(argv)
+            try:
+                return _launch_elevated_codex_setup(argv)
+            finally:
+                scx.release_codex_layer(layer)
 
 else:
 
@@ -384,7 +387,13 @@ def provision_codex_windows(
     # Re-prove an existing sandbox; never infer enforcement from account presence
     # or copy another installation's receipt. Only absent accounts need elevation,
     # or accounts this Codex last reported as needing its setup again.
-    elevated = reason != scx.REASON_CODEX_ENFORCEMENT_UNVERIFIED or (
+    reverify = (scx.REASON_CODEX_ENFORCEMENT_UNVERIFIED, scx.REASON_CODEX_SETUP_STALE_VERSION)
+    if reason == scx.REASON_CODEX_SETUP_STALE_VERSION and progress:
+        progress(
+            f"Codex changed since protected execution was verified "
+            f"({scx.codex_receipt_version()} -> {det.version}); re-verifying..."
+        )
+    elevated = reason not in reverify or (
         gate is None and scx.codex_setup_refresh_required(det.version)
     )
 
@@ -535,8 +544,31 @@ def run_sandbox_cli(
         return _sandbox_status_cli(json_output=json_output)
     if act == "setup":
         return _sandbox_setup_cli(json_output=json_output)
-    _print(f"unknown sandbox action: {act!r} (expected 'setup' or 'status')", json_output, err=True)
+    if act == "reclaim":
+        return _sandbox_reclaim_cli(json_output=json_output)
+    _print(
+        f"unknown sandbox action: {act!r} (expected setup, status or reclaim)",
+        json_output,
+        err=True,
+    )
     return 2
+
+
+def _sandbox_reclaim_cli(*, json_output: bool) -> int:
+    """Give the person full control of the current folder, through the fence's identity.
+
+    For files a fenced child made owner-only (Python's ``mkdtemp``), which the person can
+    neither open nor delete without administrator rights.
+    """
+    from clio_agent.runtime.fenced_removal import grant_person  # noqa: PLC0415
+    from clio_agent.runtime.sandbox import install_sandbox  # noqa: PLC0415
+
+    install_sandbox()
+    folder = Path.cwd()
+    ok = grant_person(folder, why="cli_reclaim")
+    verdict = "you now have full control of" if ok else "could not give you control of"
+    _print(f"{verdict} {folder} (details in the trace)", json_output, err=not ok)
+    return 0 if ok else 1
 
 
 def _sandbox_status_cli(*, json_output: bool) -> int:

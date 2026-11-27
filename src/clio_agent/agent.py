@@ -62,6 +62,7 @@ from clio_agent.tools.catalog import (
 from clio_agent.tools.execution import (
     create_sync_tool_executor,
 )
+from clio_agent.tools.fleet_key import fleet_root
 from clio_agent.tools.gateway import (
     build_gateway,
     build_tool_catalog,
@@ -142,10 +143,6 @@ class ClioAgent(dspy.Module):
                 environment independently (the dropped boot env-handoff). ``None``
                 reads :func:`load_config_from_env` directly — the standalone CLI / test
                 baseline, byte-identical to before.
-                default and per-workspace execution gateway.
-                default and per-workspace execution gateway.
-                (clio-relay#209 A2) added to every default and per-workspace
-                execution gateway.
         """
         super().__init__()
         self.verbose = verbose
@@ -221,8 +218,7 @@ class ClioAgent(dspy.Module):
         # #1281 F5 (adversarial review): create_sync_tool_executor's inner
         # AsyncMCPToolExecutor construction derives the direct-client factory
         # registry straight off `self._tool_gateway` -- no separate stamp
-        # call needed here (folding this into construction is what closes
-        # gact/relay_wiring.py's rebuild, which never called such a stamp).
+        # call needed here.
         self.tool_executor = create_sync_tool_executor(
             self._tool_gateway,
             preloaded_tools=self._tool_definitions,
@@ -230,6 +226,9 @@ class ClioAgent(dspy.Module):
             server_id="gateway:default",
             client_factory=_execution_client_factory(),
         )
+        from clio_agent.tools.fleet_server_merge import stamp_default_fleet  # noqa: PLC0415
+
+        stamp_default_fleet(self, self.tool_executor, self._tool_gateway)
         # Cache of workspace root -> sync tool executor (lazy, one per workspace).
         # Guarded by _workspace_executor_lock (shared with the #933 reaper);
         # _workspace_leases counts LIVE TURNS pinning a root (never reaped).
@@ -302,10 +301,6 @@ class ClioAgent(dspy.Module):
             # namespaces discover CONCURRENTLY in the background below — never
             # gating readiness on any of them (see _start_mcp_namespace_discovery).
             self._tool_definitions = list_builtin_tool_definitions()
-            # Relay federation projections are in-process too (#1232 gap): the
-            # discovered catalog already holds their Tool objects, so they seed
-            # synchronously with the builtins — only spawned MCP namespaces are
-            # deferred to the background pass.
             # v1.7.0 cold-boot gap: see list_jarvis_tool_definitions.
             catalog = build_tool_catalog(
                 tool_gateway, experts=experts, tools=list(self._tool_definitions.values())
@@ -338,13 +333,12 @@ class ClioAgent(dspy.Module):
         thread, merges answered namespaces' tools into ``self._tool_definitions``
         + rebuilds/installs the catalog, and hands every namespace that missed
         its deadline to a :class:`NamespaceDiscoveryHealer` that keeps
-        re-probing it. Called for every DEFAULT-gateway build (boot, and each
-        periodic relay-catalog refresh in ``gact/relay_wiring.py`` — never for
-        a per-workspace gateway, which discovers synchronously inline instead;
-        see ``_active_tool_executor``). A stale healer from a PRIOR default-
-        gateway build is stopped first — otherwise a refresh every
-        ``relay.tool_surfaces_ttl_seconds`` would leak one daemon thread per
-        refresh, forever re-probing namespaces against an abandoned gateway.
+        re-probing it. Called for every DEFAULT-gateway build (boot and each
+        rebuild), never for a per-workspace gateway, which discovers
+        synchronously inline instead; see ``_active_tool_executor``. A stale
+        healer from a PRIOR default-gateway build is stopped first; otherwise
+        every rebuild would leak one daemon thread, forever re-probing
+        namespaces against an abandoned gateway.
         """
 
         stale_healer = getattr(self, "_mcp_namespace_healer", None)
@@ -409,17 +403,16 @@ class ClioAgent(dspy.Module):
 
     @contextmanager
     def lease_workspace_fleet(self, root: str, *, wait: bool = True):
-        """Pin a workspace root against reaping for the caller's scope (#933).
+        """Pin a workspace root (or a fleet key's root) against reaping for the scope (#933).
 
-        Acquired per TURN (gact's ``_tool_session_context``): DSPy tools bind
-        the executor for the whole expert lifetime, so between-call idleness
-        inside a live turn must never count toward the reap TTL. During a
-        connected-data access change it waits for the change (bounded) unless
-        ``wait`` is false.
+        Acquired per TURN (gact's ``_tool_session_context``): DSPy tools bind the
+        executor for the whole expert lifetime, so between-call idleness inside a live
+        turn must never count toward the reap TTL. A rootless variant fleet's key leases
+        root "". During a connected-data access change it waits (bounded) unless ``wait``.
         """
 
-        root = canonical_workspace_root(root)
-        if not root:
+        root = fleet_root(key := canonical_workspace_root(root))
+        if not key:
             yield
             return
         lock, _executors, leases = self._workspace_state()
@@ -638,6 +631,9 @@ class ClioAgent(dspy.Module):
         # and clear() (not rebind) keeps every holder seeing the same registry.
         lock, workspace_executors, _leases = self._workspace_state()
         with lock:
+            # A fleet resolve in flight (its lock released across a loop wait) closes
+            # what it built instead of registering it (``tools.workspace_fleet``).
+            self._workspace_fleet_closed = True
             executors = [self.tool_executor, *workspace_executors.values()]
             workspace_executors.clear()
         close_tool_executors(executors)

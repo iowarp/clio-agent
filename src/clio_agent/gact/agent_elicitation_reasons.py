@@ -31,11 +31,11 @@ AGENT_AUDIENCE_VALUE = "agent"
 #: catalog keys, never a bare/unexplained field flip). Named per the owner's
 #: 2026-09-03 vocabulary refinement -- never "sampling"/"agent-fulfilled MRTR".
 ROUTED_REASON = "elicitation_routed_to_agent"
-#: A form-mode elicitation routed to the agent WITHOUT an explicit ``_meta`` tag:
-#: fastmcp's InputRequiredResult round-trip drops the nested ``_meta``, so the
-#: tag cannot survive MRTR. clio advertises the agent-driven-elicitation
-#: extension on every execution client, so under that contract an unhinted form
-#: elicitation reaching the handler is treated as agent-directed.
+#: A form-mode elicitation routed to the agent WITHOUT an explicit ``_meta`` tag.
+#: Off by default: an untagged ask is the person's. A deployment can opt in
+#: (``tools.mcp.elicitation.agent_audience.default_unhinted``) because fastmcp's
+#: InputRequiredResult round-trip drops the nested ``_meta``. Old rows may still
+#: carry this reason, so every reader must accept it.
 ROUTED_UNHINTED_REASON = "elicitation_routed_to_agent_unhinted"
 FALLBACK_REASON = "agent_elicitation_fallback_to_human"
 

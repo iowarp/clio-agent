@@ -1,0 +1,172 @@
+---
+title: Tapis
+description: Run jobs on TACC systems such as Vista and Stampede3 through TACC's Tapis API, or register your own host with Tapis. You sign in on TACC's page; relay never sees your password.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+import Capture from '../../../../components/overview/Capture';
+import { captureImage } from '../../../../lib/captures';
+import tapisAddStampede3 from '../../../../assets/captures/relay/tapis-add-stampede3.png';
+import tapisAddStampede3Phone from '../../../../assets/captures/relay/tapis-add-stampede3-phone.png';
+
+The **Tapis** protocol runs jobs through [Tapis](https://tapis.readthedocs.io/),
+TACC's web API for systems, jobs and files. Relay talks to Tapis over HTTPS, and Tapis
+logs in to the machine and runs the job. Your computer needs no ssh access to the
+machine while a job runs.
+
+It takes `describe`, `run` and `files`. `exec` and `serve` are not Tapis operations;
+an endpoint that needs them keeps [SSH](/docs/relay/ssh/) or
+[Worker](/docs/relay/worker/) as a second protocol, and `describe` says which
+protocol serves each tool.
+
+Install relay with the `tapis` extra when you run it yourself:
+`uv tool install --python 3.12 --no-config "clio-relay[tapis]"`. CLIO's plugin
+includes it.
+
+## Catalog endpoints
+
+| ID | Machine | How Tapis logs in | Security |
+| --- | --- | --- | --- |
+| `vista` | TACC Vista | TACC's trust manager | Secure |
+| `stampede3` | TACC Stampede3 | TACC's trust manager | Secure |
+| `ares-tapis` | IIT's Ares | A key relay makes for you | Open |
+| `chameleon-tapis` | A Chameleon node with a floating IP | A key relay makes for you | Open |
+
+Vista and Stampede3 need a TACC allocation on that machine, run only reviewed
+packages, and ask you before every job that spends allocation hours.
+
+## Sign in to TACC
+
+Relay uses TACC's device-code sign-in, so you sign in on TACC's own page and never
+type a password into relay or CLIO.
+
+<Steps>
+1. The first call that needs Tapis asks you to sign in. CLIO shows TACC's page and a
+   short code. In another client, the refusal `needs_sign_in` carries the same page.
+2. On TACC's page, enter the code and sign in with your TACC account and its second
+   factor.
+3. Relay sees the sign-in within a few seconds and carries on.
+</Steps>
+
+A code lasts 10 minutes. If it runs out first, relay gets a new one and shows it on
+the same page, with no limit on how long you take. TACC's sign-in lasts 30 days.
+
+From a terminal:
+
+```sh
+clio-relay asks sign-in tacc
+python -m clio_relay.adapters.tapis status --site vista
+python -m clio_relay.adapters.tapis lifetimes --site vista
+python -m clio_relay.adapters.tapis sign-out --site vista
+```
+
+`lifetimes` prints when each stored token expires, without the tokens.
+
+<Aside type="note" title="The OAuth client">
+The device-code sign-in needs an OAuth client in TACC's tenant. Until relay ships
+one, set `CLIO_RELAY_TACC_CLIENT_ID`, and `CLIO_RELAY_TACC_CLIENT_KEY` so relay can
+renew the sign-in, in the environment relay runs in. An endpoint's `client_id`
+setting takes precedence. `CLIO_RELAY_TACC_BASE_URL` and `CLIO_RELAY_TACC_TENANT_ID`
+pick another Tapis tenant.
+</Aside>
+
+<Capture client:visible image={await captureImage(tapisAddStampede3)}
+  alt="The output of clio-relay site add-from-catalog stampede3, ending in a set_up refusal that asks for CLIO_RELAY_TACC_CLIENT_ID"
+  caption="Adding Stampede3 when relay has no OAuth client for TACC. The endpoint is added, and set_up says what is missing."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(tapisAddStampede3Phone)}
+  alt="The output of clio-relay site add-from-catalog stampede3, ending in a set_up refusal that asks for CLIO_RELAY_TACC_CLIENT_ID, on a phone-width terminal"
+  sizes="(min-width: 50rem) 24rem, 100vw" />
+
+## Add a TACC machine
+
+<Steps>
+1. On the [Compute page](/docs/compute/), choose **Add endpoint** and pick **TACC
+   Vista** or **TACC Stampede3** under **From the catalog**.
+2. Choose **Connect** from its row and sign in to TACC.
+3. Relay registers your credential for that machine with TACC's trust manager. TACC
+   keeps the key; relay makes none.
+4. Choose **Probe**. **Missing an allocation** means your TACC account has no
+   allocation on that machine.
+</Steps>
+
+## Register your own host
+
+Tapis can also run jobs on a host you already reach over ssh, such as Ares or a
+Chameleon node. Relay registers it with Tapis as your own system, once, when you add
+the endpoint:
+
+1. Through the endpoint's SSH protocol, relay reads your login name, home folder and,
+   on a Slurm host, the partitions.
+2. It creates the Tapis system `clio-relay.<username>.<endpoint id>`. Each Slurm
+   partition becomes a Tapis queue with the partition's time limit. A host with no
+   scheduler runs jobs directly.
+3. It makes a new key pair, adds the public key to your `~/.ssh/authorized_keys` with
+   the comment `clio-relay-tapis:<system id>`, and gives the pair to Tapis.
+4. It deletes the private key from your computer. Only Tapis keeps it.
+5. Tapis checks that it can log in. If it cannot, relay takes the key line back out
+   and reports what Tapis said.
+
+The host must accept ssh logins from TACC with a key. A host that asks for a second
+factor on every login cannot be registered this way.
+
+If you are not signed in when you add the endpoint, it is kept and reads **Needs a
+sign-in**. Sign in, then probe it, or register by hand:
+
+```sh
+python -m clio_relay.adapters.tapis register-host --site ares-tapis
+python -m clio_relay.adapters.tapis unregister-host --site ares-tapis
+```
+
+`unregister-host` removes the credential, the system relay made, and the key line
+with relay's comment. It never removes a system relay did not make.
+
+In `sites.yaml`:
+
+```yaml
+- id: ares-tapis
+  name: Ares (through Tapis)
+  adapter: tapis
+  identity: tacc
+  config:
+    base_url: https://tacc.tapis.io
+    tenant_id: tacc
+    authn: pki
+  alternatives:
+    ssh:
+      ssh_profile: ares
+  policy: open
+  spend: {ask: never}
+```
+
+## Settings
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `base_url` | `https://tacc.tapis.io` | The Tapis tenant's address |
+| `tenant_id` | `tacc` | The tenant |
+| `authn` | `pki` | `pki`: relay makes a key for a host you reach over ssh. `tms`: TACC's trust manager makes and holds it. |
+| `system_id` | `clio-relay.<username>.<endpoint id>` | The Tapis system. Set it to use a system someone else registered. |
+| `work_dir` | the system's job folder | Relay's folder on the system |
+| `launcher` | `open` | `open` runs the job's command. `guarded` runs reviewed packages only. |
+| `client_id` | from the environment | Relay's OAuth client |
+
+## How a job runs
+
+Relay registers a small launcher with Tapis once per system, copies the job's inputs
+to the system by their content, and submits the job. The launcher runs the command,
+or on a Secure endpoint the reviewed package, and writes the exit code. Relay reads
+the job's status from Tapis, and `cancel` cancels it in Tapis.
+
+Tapis stops a job that runs past its time limit, so relay always gives one: the job's
+duration, else the queue's own limit, else a year.
+
+## Refusals you may see
+
+| Refusal | What it means |
+| --- | --- |
+| `needs_sign_in` | Sign in to TACC on the page it names. |
+| `invalid_config` | The endpoint has no Tapis system yet. Probe it after signing in, or run `register-host`. |
+| `policy_refused` | A command of the agent's own on a Secure endpoint. See [Guardrails](/docs/relay/guardrails/). |
+| `submit_failed` | Tapis refused the job or the credential. The message carries Tapis's own words. |

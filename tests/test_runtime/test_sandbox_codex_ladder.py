@@ -24,6 +24,7 @@ from clio_agent.runtime import sandbox
 from clio_agent.runtime import sandbox_codex as sc
 from clio_agent.runtime.sandbox_codex_probe import (
     REASON_CODEX_LINUX_FENCE_UNAVAILABLE,
+    REASON_CODEX_LINUX_NET_UNISOLATED,
     EnforcementVerdict,
 )
 from clio_agent.runtime.sandbox_landlock import LandlockProbe
@@ -98,6 +99,99 @@ def test_macos_codex_egress_is_labelled_env_cooperative() -> None:
     result = sandbox._resolve_backend(platform="darwin", codex_detection=_codex_ok())
     assert result.mechanism == sandbox.MECHANISM_CODEX and result.active is True
     assert sandbox_net.net_mechanism_label(result) == "env-cooperative"
+
+
+@pytest.mark.parametrize(
+    ("verdict", "label"),
+    [
+        (EnforcementVerdict(True, "codex_linux_fence_verified", net_isolated=True), "proxy"),
+        (
+            EnforcementVerdict(True, REASON_CODEX_LINUX_NET_UNISOLATED, "reached the host"),
+            "env-cooperative",
+        ),
+    ],
+)
+def test_linux_codex_claims_proxy_enforcement_only_when_isolated(
+    verdict: EnforcementVerdict, label: str
+) -> None:
+    """The fence still confines writes either way; only the network claim follows the probe."""
+    from clio_agent.runtime import sandbox_net  # noqa: PLC0415
+
+    result = sandbox._resolve_backend(
+        env={"CLIO_SANDBOX_ENABLED": "true"},
+        platform="linux",
+        codex_detection=_codex_ok(),
+        codex_linux_probe=lambda _binary: verdict,
+    )
+    assert result.mechanism == sandbox.MECHANISM_CODEX and result.active is True
+    assert result.details["net_enforcement"] == label
+    assert result.details["codex_net"] == {
+        "isolated": verdict.net_isolated,
+        "reason": verdict[1],
+    }
+    expected = "proxy-enforced" if verdict.net_isolated else "env-cooperative"
+    assert sandbox_net.net_mechanism_label(result) == expected
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_linux_fence_without_a_chokepoint_channel_stays_offline(
+    platform: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No per-child channel must not let Codex's proxy dial out directly on enforcing Linux."""
+    from clio_agent.runtime import net_chokepoint, sandbox_net  # noqa: PLC0415
+
+    monkeypatch.setattr(net_chokepoint, "open_child_channel", lambda *_a, **_k: None)
+    state = sandbox._resolve_backend(platform=platform, codex_detection=_codex_ok())
+    child, port, overlay = sandbox_net.open_child_egress(state, ["/ws"])
+    assert (child, port) == ("", None)
+    if platform == "linux":
+        assert overlay["HTTPS_PROXY"] == overlay["all_proxy"] == "http://127.0.0.1:9"
+    else:
+        assert overlay == {}
+
+
+@pytest.mark.parametrize(("given", "recorded"), [(None, "/scratch"), ("/ws", "/ws")])
+def test_egress_channel_belongs_to_the_childs_workspace(
+    given: str | None, recorded: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deny mode looks the workspace up from the channel, not from a leading scratch root."""
+    from clio_agent.runtime import net_chokepoint, sandbox_net  # noqa: PLC0415
+
+    opened: dict[str, str] = {}
+
+    def channel(child_id: str, *, mechanism: str = "", workspace_root: str = "") -> int:
+        opened["root"] = workspace_root
+        return 4321
+
+    monkeypatch.setattr(net_chokepoint, "open_child_channel", channel)
+    state = sandbox._resolve_backend(platform="linux", codex_detection=_codex_ok())
+    sandbox_net.open_child_egress(state, ["/scratch", "/ws"], workspace_root=given)
+    assert opened["root"] == recorded
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_only_the_linux_proxy_fence_names_the_relay_tunnel(
+    platform: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex's Linux proxy passes only public hosts on, so the SSH helper needs the relay."""
+    from clio_agent.runtime import (  # noqa: PLC0415
+        fence_service,
+        net_chokepoint,
+        net_connect,
+        sandbox_net,
+    )
+
+    monkeypatch.setattr(net_chokepoint, "open_child_channel", lambda *_a, **_k: 4321)
+    state = sandbox._resolve_backend(platform=platform, codex_detection=_codex_ok())
+    child, port, overlay = sandbox_net.open_child_egress(state, ["/ws"])
+    assert port == 4321
+    assert overlay["HTTPS_PROXY"] == "http://127.0.0.1:4321"
+    if platform == "linux":
+        assert overlay[net_connect.RELAY_VARIABLE] == "[2001:db8::c110]:443"
+        assert overlay[fence_service.FENCE_CHILD_VARIABLE] == child
+    else:
+        assert net_connect.RELAY_VARIABLE not in overlay
+        assert fence_service.FENCE_CHILD_VARIABLE not in overlay
 
 
 @pytest.mark.parametrize(

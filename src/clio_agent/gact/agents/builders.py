@@ -20,7 +20,6 @@ from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents import skill_runtime as _skill_runtime
 from clio_agent.gact.agents import toolset_inventory
 from clio_agent.gact.agents.agent_prompt import final_agent_prompt
-from clio_agent.gact.agents.always_load_tools import attach_always_load_tools
 from clio_agent.gact.agents.live_tool_refresh import (
     LiveToolScope,
     agent_tool_refresher,
@@ -37,6 +36,7 @@ from clio_agent.gact.agents.native_tool_registry import (
     build_native_tools,
     declared_native_capabilities,
 )
+from clio_agent.gact.agents.person_servers import attach_person_servers, executor_person_servers
 from clio_agent.gact.agents.prompt_basis import unlisted_tool_names
 from clio_agent.gact.agents.resolution import session_workflow_state_schema
 from clio_agent.gact.agents.tool_executor_resolution import (
@@ -236,13 +236,12 @@ def _agent_tools(
                 tool_executor, gateway_names, namespaces
             )
         whole = set(namespaces) - set(mount_failures)
-        if not agent_def.parent_id:
-            with _build_phase("tools.always_load"):
-                whole |= attach_always_load_tools(
-                    tool_executor, picked, mount_failures, list(picked)
-                )
+        if root := not agent_def.parent_id:
+            with _build_phase("tools.person_servers"):
+                whole |= attach_person_servers(tool_executor, picked, mount_failures, list(picked))
         if live is not None:
             live.executor, live.namespaces = tool_executor, whole
+            live.person_servers = executor_person_servers(tool_executor) if root else {}
         mounted = toolset_inventory.mounted_namespace_set(tool_executor)
         for name in picked:
             prefix, sep, bare = name.partition("_")
@@ -535,14 +534,16 @@ def _workflow_editor() -> dict[str, Any] | None:
     return dict(editor) if isinstance(editor, Mapping) else None
 
 
-def _deferred_tools_entry(program: Any, resolution: "Resolution", config: Any) -> str:
+def _deferred_tools_entry(program: Any, resolution: "Resolution", config: Any, person: Any) -> str:
     """Defer the program's large tool groups; the prompt entry naming them."""
     from clio_agent.gact.agents.deferred_tools import apply_disclosure  # noqa: PLC0415
     from clio_agent.gact.search_tools import listed_loaded_tools  # noqa: PLC0415
 
     loaded = listed_loaded_tools(_ctx.active_app(), _ctx.active_session_id() or "")
     window = _resolve_expert_context_window(config) or 0
-    return apply_disclosure(program, resolution, context_tokens=int(window), loaded=loaded)
+    return apply_disclosure(
+        program, resolution, context_tokens=int(window), loaded=loaded, person_servers=person
+    )
 
 
 def _build_phase(name: str) -> Any:
@@ -672,7 +673,9 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
                 object.__setattr__(self.program, "_clio_bare", True)
                 object.__setattr__(self.program, "_clio_unlisted", frozenset({"submit"}))
             with _build_phase("build.deferred"):
-                deferred_entry = _deferred_tools_entry(self.program, resolution, self.config)
+                deferred_entry = _deferred_tools_entry(
+                    self.program, resolution, self.config, live.person_servers
+                )
             # A spawn-requested BestOfN / Refine strategy wraps the program.
             strategy = _module_variants.session_strategy()
             if strategy is not None:

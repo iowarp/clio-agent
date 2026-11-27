@@ -51,7 +51,7 @@ def server_set_spec_changed(agent: Any, executor: Any, root: str, server_set: st
     if not server_set or server_set in _mounted_server_sets(executor):
         return False
     existing = getattr(executor, "_clio_namespace_specs", None) or {}
-    gateway = agent._build_tool_gateway(cwd=root, server_set=server_set)
+    gateway = agent._build_tool_gateway(cwd=root or None, server_set=server_set)
     changed = [
         namespace
         for namespace, spec in namespace_specs(gateway).items()
@@ -218,6 +218,23 @@ def stamp_fresh_fleet(
     inner = getattr(executor, "_async_executor", None)
     if inner is not None:
         _stamp(inner, "_clio_namespace_specs", declared_specs)
+
+
+def stamp_default_fleet(agent: Any, executor: Any, gateway: Any) -> None:
+    """Stamp the default (no-root) executor like a fresh workspace fleet.
+
+    A workspace without a root folder runs on this executor when its session has no
+    plugin servers. Its declared specs carry the user-scope ``mcp.yaml`` servers, so
+    ``always_load`` services mount there too; a rootless session's plugin server set
+    has a fleet of its own (:mod:`clio_agent.tools.fleet_own_set`).
+    """
+
+    stamp_fresh_fleet(
+        executor,
+        server_set="",
+        mcp_configuration_revision=getattr(agent, "_mcp_configuration_revision", 0),
+        declared_specs=dict(namespace_specs(gateway)),
+    )
 
 
 def _mounted_server_sets(executor: Any) -> set[str]:

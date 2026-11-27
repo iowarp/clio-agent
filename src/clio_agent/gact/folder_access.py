@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import permission_timeout
+from clio_agent.gact.permission_comment import AllowDecision, person_comment
 from clio_agent.gact.permission_delivery import publish_permission_event, publish_waiting_call
 from clio_agent.gact.permission_evidence import permission_identity
 from clio_agent.gact.runtime.retention import enforce_dict_bound
@@ -214,16 +215,22 @@ def request_folder_access(
         app, pid, row, event, tool_name=name, cancelled=cancelled
     ):
         return decision
+    comment = person_comment(row.get("comment"))
     if row.get("action") == "allow_workspace":
         # Recheck immediately before dispatch; a concurrent revoke is not an approval.
         if not requested_folders(name, args):
             if running and call_id:  # a call already running reads as running again
                 publish_waiting_call(app, row, resumed=True)
-            return "allow"
+            return (
+                AllowDecision(f"The person allowed the folder access and commented: {comment}")
+                if comment
+                else "allow"
+            )
         return DenyDecision("Folder access was revoked before the operation could start")
+    said = f" They said: {comment}" if comment else ""
     return DenyDecision(
         "The user declined folder access. Do not retry that path without a new user request; "
-        "continue with permitted files or explain the alternative."
+        f"continue with permitted files or explain the alternative.{said}"
     )
 
 
@@ -242,11 +249,13 @@ def apply_folder_permission(app: FastAPI, row: dict[str, Any], action: str, gran
 
     if app.state.workspaces.get(row["workspace_id"]) is None:
         raise HTTPException(status_code=409, detail="This workspace no longer exists")
+    if _reissue_if_moved(app, row):
+        raise HTTPException(
+            status_code=409,
+            detail="This folder resolves to a different place now. The request shows the "
+            "folder it reaches; review it and answer again.",
+        )
     for folder in row["access"]["folders"]:
-        if Path(folder).resolve() != Path(folder):
-            raise HTTPException(
-                status_code=409, detail="The folder target changed. Request access again."
-            )
         if (
             resolve(
                 "fs_root",
@@ -273,3 +282,27 @@ def apply_folder_permission(app: FastAPI, row: dict[str, Any], action: str, gran
             )
         )
     row["access_results"] = results
+
+
+def _reissue_if_moved(app: FastAPI, row: dict[str, Any]) -> bool:
+    """Re-ask the same request for the folders its paths reach now; whether it moved.
+
+    A grant applies to the canonical folder, so a shown path that resolves elsewhere
+    (a symlink, or a target swapped since the ask) is never granted on the old answer.
+    The card stays open and answerable: it is published again under its own id with the
+    folders it would grant, and a held call keeps waiting on the same request.
+    """
+    shown = list(row["access"]["folders"])
+    reached = list(dict.fromkeys(str(Path(folder).resolve()) for folder in shown))
+    if reached == shown:
+        return False
+    row["access"]["folders"] = reached
+    row["access"]["requested_folders"] = shown
+    row["summary"] = (
+        "Allow access to another folder?" if len(reached) == 1 else "Allow access to these folders?"
+    )
+    row["reissued_at"] = datetime.now(timezone.utc).isoformat()
+    publish_permission_event(
+        app, "permission.requested", owner_session_id=str(row["session_id"]), payload=row
+    )
+    return True

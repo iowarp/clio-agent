@@ -560,6 +560,7 @@ async def _run_turn_in_background(
             state.error_info = ErrorInfo(
                 error="agent_error", message=f"agent.forward raised: {exc}", recoverable=True
             )
+    _stop_wins(state)
 
     # #756 / #1339 / L1: everything finalize does (answer grounding, part assembly,
     # diff indexing, nanoagent spawn, publishes, persistence) reads prologue-derived
@@ -584,6 +585,33 @@ async def _run_turn_in_background(
         context=getattr(state.pred, "clio_context_boundary", None),
         error=state.error_info.model_dump(mode="json") if state.error_info is not None else None,
     )
+
+
+def _stop_wins(state: Any) -> None:
+    """A stop asked for this turn is its outcome, over an error that lands after it.
+
+    The person's Stop sets the turn's cancel event; a provider error the model call
+    raises afterwards (or a flow outcome, or a timeout) would otherwise settle the run
+    ``failed``. The error stays in the log and in the cancellation's details.
+    """
+    from clio_agent.gact.runtime.turn_cancellation_info import (  # noqa: PLC0415
+        stopped_error_info,
+    )
+
+    event = getattr(state, "turn_cancel_event", None)
+    requested = bool(event is not None and event.is_set()) or (
+        state.sid in state.app.state.cancel_flags
+    )
+    info = stopped_error_info(state.sid, state.error_info, stop_requested=requested, app=state.app)
+    if info is None:
+        return
+    logger.warning(
+        "turn error after stop session=%s settled cancelled: %s",
+        state.sid,
+        info.details.get("diagnostic", ""),
+    )
+    state.app.state.cancel_flags.discard(state.sid)
+    state.error_info = info
 
 
 def _start_background_user_turn(

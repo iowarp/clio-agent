@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any
 
 from clio_schemas.connected_resources import HostStorageLocations
 
+from clio_agent.gact.infrastructure import saved_ssh_config
 from clio_agent.gact.infrastructure.model_registry import ModelAcquisition
 from clio_agent.gact.infrastructure.models import (
     CreateTargetRequest,
@@ -23,6 +25,7 @@ from clio_agent.gact.infrastructure.models import (
 from clio_agent.platform_paths import atomic_write_text
 
 _SCHEMA_VERSION = 1
+logger = logging.getLogger(__name__)
 
 
 class InfrastructureStore:
@@ -45,9 +48,17 @@ class InfrastructureStore:
         self._model_roots: dict[str, list[str]] = {}
         self._model_acquisitions: dict[str, ModelAcquisition] = {}
         self._removed_deployments: dict[str, dict[str, str]] = {}
+        self._saved_ssh_text: str | None = None
         self._load()
         self._interrupt_unfinished_operations()
         self._reset_ssh_transport_state()
+        with self._lock:
+            self._write_saved_ssh_config()
+
+    def saved_ssh_config_path(self) -> Path | None:
+        """The OpenSSH config file of the saved SSH hosts (``None`` for a memory-only store)."""
+
+        return self._path.with_name(saved_ssh_config.FILE_NAME) if self._path else None
 
     def targets(self) -> list[InfrastructureTarget]:
         """Return every target with the built-in local target first."""
@@ -478,3 +489,21 @@ class InfrastructureStore:
         # Retries while another process (antivirus, an indexer, a monitoring
         # script) holds the file open, then fails typed; never a partial file.
         atomic_write_text(self._path, json.dumps(payload, indent=2, sort_keys=True))
+        self._write_saved_ssh_config()
+
+    def _write_saved_ssh_config(self) -> None:
+        """Rewrite the saved-hosts OpenSSH file when the SSH hosts it lists changed."""
+
+        path = self.saved_ssh_config_path()
+        if path is None:
+            return
+        ordered = sorted(self._targets.values(), key=lambda row: (row.label.casefold(), row.id))
+        text = saved_ssh_config.render(ordered)
+        if text == self._saved_ssh_text and path.is_file():
+            return
+        try:
+            saved_ssh_config.write(path, ordered)
+        except OSError as exc:  # the hosts are saved; only the readable copy is stale
+            logger.warning("saved SSH config not written path=%s error=%r", path, exc)
+            return
+        self._saved_ssh_text = text

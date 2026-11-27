@@ -26,6 +26,7 @@ import json
 import re
 import secrets
 import threading
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -34,8 +35,10 @@ from urllib.parse import quote
 from clio_agent import conf
 from clio_agent.runtime import trace
 
-#: A stream's name: what its artifact is called.
+#: A stream's name: what its artifact is called. A human name ("Pressure probe 2") is
+#: accepted and keyed by its slug (``stream_slug``); the stream keeps it as its title.
 NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$"
+NAME_MAX = 80
 #: The clio-core kind (tag ``<namespace>/stream``) a stream's blobs live under.
 STREAM_KIND = "stream"
 JSON_TYPE = "application/json"
@@ -44,6 +47,8 @@ TEXT_TYPE = "text/plain"
 WINDOW_MAX = 1000
 #: Typed reason: a stream was open when the server stopped, so its writer is gone.
 WRITER_ENDED = "writer_ended"
+#: How a stream's writer may end it: done, or on an error it wrote as the last entry.
+CLOSE_REASONS = ("stopped", "failed")
 
 
 class StreamError(ValueError):
@@ -56,6 +61,18 @@ class StreamError(ValueError):
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def stream_slug(name: str) -> str:
+    """The key a stream ``name`` is stored under: the name itself when it already matches
+    ``NAME_PATTERN``, else its letters and digits joined by ``-`` (accents dropped), so
+    "Pressure probe 2" is ``Pressure-probe-2``. Empty when nothing of it is usable."""
+    name = (name or "").strip()
+    if re.match(NAME_PATTERN, name):
+        return name
+    ascii_name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^A-Za-z0-9_.]+", "-", ascii_name).strip("-_.")
+    return slug[:NAME_MAX].rstrip("-_.")
 
 
 def stream_namespace() -> str:
@@ -142,6 +159,8 @@ class Stream:
     closed_reason: str = ""
     task: str = ""
     artifact_id: str = ""
+    #: The name as it was given when it is not a valid key itself ("Pressure probe 2").
+    title: str = ""
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
     @property
@@ -164,6 +183,7 @@ class Stream:
             return {
                 "stream_id": self.id,
                 "name": self.name,
+                "title": self.title or self.name,
                 "workspace_id": self.workspace_id,
                 "session_id": self.session_id,
                 "state": self.state,
@@ -247,7 +267,12 @@ class StreamStore:
         return None
 
     def by_name(self, workspace_id: str, name: str) -> Stream | None:
-        blob = self.backend.get(STREAM_KIND, _index_name(workspace_id, name))
+        """The stream called ``name``, given as its key or as the human name it was opened
+        with."""
+        key = stream_slug(name)
+        if not key:
+            return None
+        blob = self.backend.get(STREAM_KIND, _index_name(workspace_id, key))
         return self.get(blob.decode("utf-8"), workspace_id) if blob else None
 
     def streams(self, workspace_id: str) -> list[Stream]:
@@ -275,17 +300,24 @@ class StreamStore:
 
         Reopening a stream open in this session keeps its writer (key and task, unless
         ``task`` names a new one). Reopening a closed stream starts a new writer (a fresh
-        key) and keeps its entries. A stream open in another session is refused."""
-        if not re.match(NAME_PATTERN, name or ""):
+        key) and keeps its entries. A stream open in another session is refused. A human
+        name is keyed by its slug (``stream_slug``) and kept as the stream's title."""
+        given = (name or "").strip()
+        name = stream_slug(given)
+        if not name:
             raise StreamError(
                 "stream_name_invalid",
-                "A stream name is letters, digits, '-', '_' or '.', up to 80 characters.",
+                "A stream name needs a letter or digit; it is keyed by its letters, digits,"
+                " '-', '_' and '.', up to 80 characters.",
             )
+        title = given if given != name else ""
         if not 1 <= window <= WINDOW_MAX:
             raise StreamError(
                 "stream_window_invalid", f"window is the entries kept, 1 to {WINDOW_MAX:,}."
             )
         existing = self.by_name(workspace_id, name)
+        if existing is not None and title:
+            existing.title = title
         if existing is not None and existing.state == "open":
             if existing.session_id != session_id:
                 raise StreamError(
@@ -320,6 +352,7 @@ class StreamStore:
                 window=window,
                 media_type=media_type,
                 task=task,
+                title=title,
             )
             stream.artifact_id = self._mint(stream, turn_id)
             self.backend.put(
@@ -434,14 +467,23 @@ class StreamStore:
         )
         return entry_bytes(blob) if blob else None
 
-    def stop(self, stream_id: str, token: str = "", *, session_id: str = "") -> Stream:
-        """Close the stream: no more writes; its entries stay, shown as closed."""
+    def stop(
+        self, stream_id: str, token: str = "", *, session_id: str = "", reason: str = "stopped"
+    ) -> Stream:
+        """Close the stream: no more writes; its entries stay, shown as closed.
+
+        ``reason`` is ``stopped`` or ``failed`` (the writer ended it on an error it wrote
+        as the stream's last entry)."""
+        if reason not in CLOSE_REASONS:
+            raise StreamError(
+                "stream_reason_invalid", f"A stream ends 'stopped' or 'failed', not {reason!r}."
+            )
         stream = self.get(stream_id)
         if stream is None:
             raise StreamError("stream_not_found", f"No stream {stream_id!r}.")
         if token != stream.token and session_id != stream.session_id:
             raise StreamError("stream_not_owned", "Only the stream's session stops it.")
-        self._close(stream, "stopped")
+        self._close(stream, reason)
         return stream
 
     def _close(self, stream: Stream, reason: str) -> bool:
@@ -506,6 +548,7 @@ def stream_store(app: Any) -> StreamStore:
 __all__ = [
     "JSON_TYPE",
     "NAME_PATTERN",
+    "stream_slug",
     "STREAM_KIND",
     "TEXT_TYPE",
     "WINDOW_MAX",

@@ -8,7 +8,10 @@ from typing import NoReturn
 
 from fastapi import FastAPI, HTTPException
 
-from clio_agent.gact.routes.workspace_file_listing import resolve_managed_input
+from clio_agent.gact.routes.workspace_file_listing import (
+    resolve_managed_input,
+    resolve_workspace_plan_file,
+)
 from clio_agent.gact.routes.workspace_file_policy import workspace_read_redaction_reason
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.runtime import trace
@@ -44,7 +47,11 @@ def readable_workspace_file(
 
     try:
         additional = resolve_folder_location(root, path)
-        managed = additional or resolve_managed_input(app, workspace_id, root, path)
+        managed = (
+            additional
+            or resolve_managed_input(app, workspace_id, root, path)
+            or resolve_workspace_plan_file(root, path)
+        )
         target = managed or (root / path).resolve()
     except PermissionError as exc:
         refuse(403, "folder_access_denied", str(exc))

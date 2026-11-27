@@ -77,6 +77,32 @@ async def prepare_protection(app: FastAPI, *, windows: bool) -> None:
         raise
 
 
+def wire_egress_policy(app: FastAPI) -> None:
+    """Wire the chokepoint's egress recorder and deny-mode gate to THIS app, then replay grants.
+
+    Runs once the fence is selected, before any agent exists. Every path that later builds an
+    agent (boot, a provider bind, a per-session host) and every child it fences is then
+    recorded and gated; wiring this only on the boot-built agent left deny mode silently
+    open whenever the agent came from a bind.
+    """
+    from clio_agent.gact.artifacts.ingest_edges import install_egress_recorder  # noqa: PLC0415
+    from clio_agent.gact.runtime.grants import (  # noqa: PLC0415
+        install_egress_gate,
+        replay_persisted_root_grants,
+    )
+
+    app.state.egress_hooks = (install_egress_gate(app), install_egress_recorder(app))
+    replay_persisted_root_grants(app)
+
+
+def unwire_egress_policy(app: FastAPI) -> None:
+    """Clear this app's egress gate/recorder at shutdown (a newer app's hooks are kept)."""
+    from clio_agent.runtime.net_chokepoint import clear_egress_hooks  # noqa: PLC0415
+
+    gate, recorder = getattr(app.state, "egress_hooks", (None, None))
+    clear_egress_hooks(gate, recorder)
+
+
 def start_plugin_sync(app: FastAPI) -> asyncio.Task:
     """Install or refresh the shipped default marketplace off the loop, as a timed step.
 
@@ -127,9 +153,15 @@ def mark_real_server(app: "FastAPI") -> None:
     """Mark the app ``run_server`` serves: it attaches clio-core and runs the boot doctor
     (``server_boot``), and it owns its process (``owns_process``), so only it may be
     ended by the shutdown budget. Tests that set ``server_boot`` share their process.
+    It also seeds the shipped network rules CLIO has not seeded before (default_network_rules).
     """
     app.state.server_boot = True
     app.state.owns_process = True
+    from clio_agent.gact.runtime.default_network_rules import (  # noqa: PLC0415
+        seed_default_network_rules,
+    )
+
+    seed_default_network_rules(app)  # the served product's shipped rules; test apps get none
 
 
 async def close_request_owners(app: "FastAPI") -> None:
@@ -148,6 +180,9 @@ async def close_request_owners(app: "FastAPI") -> None:
     from clio_agent.gact import shared_result  # noqa: PLC0415
 
     shared_result.close_all(app)  # polled-route collections (health, MCP inventory)
+    from clio_agent.gact import host_semantics_boot  # noqa: PLC0415
+
+    await host_semantics_boot.stop(app)  # HS4 grant sync, before the stores it reads close
     from clio_agent.gact.routes.session_creation import close_creation_executor  # noqa: PLC0415
 
     close_creation_executor(app)
@@ -316,7 +351,11 @@ def start(app: "FastAPI") -> None:
 
     A construction failure is logged with its reason here and is also visible on the
     ``clio_core_attach`` row; the next :func:`process_arc_off_loop` caller retries.
+    The plugin account grant sync (HS4) starts for every app.
     """
+    from clio_agent.gact import host_semantics_boot  # noqa: PLC0415
+
+    host_semantics_boot.start(app)
     if not getattr(app.state, "server_boot", False):
         return
     from clio_agent.arc import history_mode  # noqa: PLC0415

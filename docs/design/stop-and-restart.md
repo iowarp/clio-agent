@@ -40,6 +40,28 @@ answer as an explicit parameter.**
   already ended while its children ran on, each open child is cancelled
   instead. The intervention is recorded with `reason: "conversation_stop"`.
 
+With either choice, the stopped turn's own in-flight MCP call (one the server
+answers inline, not a task it accepted) is cancelled on the wire with
+`notifications/cancelled`. Its record is typed `mcp_call_cancelled_by_stop`: the
+call was cancelled and whether the service acted on it is not known. The
+server itself stays up with its state, because it is the conversation's
+(`gact/external_task_connections.py` `abandon_call`). A hold that kept the
+conversation's servers resident while it waited on its person ends with the
+Stop, so they idle out with the fleet.
+
+When a child agent settles (completed, failed or cancelled, including by
+`stop`), the MCP servers only its agent mounted close with it, with their
+processes and sandboxes, instead of idling until the fleet's reaper. Servers
+the conversation, an open sibling or another busy session of the workspace
+also declares stay up (`gact/child_servers.py`, logged `child_servers_closed`).
+
+A cancelled shell command settles with its cleanup confirmed, so the subtree
+it belongs to can settle and be deleted. A progress report the teardown cancels
+under it no longer ends its output reader (`tools/servers/shell_output.py`), and
+a kill the OS refuses for one descendant does not abort the sweep of the rest
+(`runtime/task_process_tree.py`). Either used to record the cleanup as `unknown`,
+which held the subtree at "Descendant cancellation settlement is unconfirmed".
+
 `GET /v1/sessions/{sid}/stop-scope` lists the open work Stop could reach: the
 top-level open tasks started by the conversation, with handle, kind, label and
 status. The UI reads it when Stop is pressed:

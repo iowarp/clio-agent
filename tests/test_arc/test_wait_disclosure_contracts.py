@@ -118,7 +118,9 @@ async def test_status_only_wait_rechecks_rights_without_failing_its_assignment(
         assert value.observe_handles == (handle,) and value.read_handles == ()
         assert value.notification_ids == () and "PRIVATE OWNER EVIDENCE" not in str(value)
         rows = value["outcomes"] if tool_name == "wait_tasks" else value["results"]
-        assert (value["pending"] == [handle]) is (stage != "completed")
+        assert ([row["handle"] for row in value["unfinished"]] == [handle]) is (
+            stage != "completed"
+        )
         if stage == "completed":
             assert rows[0]["status"] == "completed" and "result" not in rows[0]
 

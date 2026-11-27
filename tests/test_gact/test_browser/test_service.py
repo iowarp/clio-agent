@@ -119,6 +119,22 @@ def test_strictness_is_a_typed_reason(browser: Any, site: dict[str, Any]) -> Non
     assert "11 elements" in ambiguous.value.message
 
 
+def test_a_missing_target_fails_once_the_page_settles(browser: Any, site: dict[str, Any]) -> None:
+    from clio_agent.gact.browser.presence import REASON_MISSING, resolve
+
+    record = browser.wait(browser.open("sess_a", ""))
+    _goto(browser, record, site["a"] + "/table")
+    target = {"steps": [{"by": "css", "css": "#no-such-element"}]}
+
+    async def read(r: Any) -> str:
+        return await (await resolve(r.page, target)).inner_text()
+
+    with pytest.raises(BrowserError) as missing:
+        browser.run(record, "read text", read)
+    assert missing.value.reason == REASON_MISSING
+    assert "#no-such-element" in missing.value.message
+
+
 def test_a_download_lands_in_session_scratch_and_is_reported_once(
     browser: Any, site: dict[str, Any], tmp_path: Path
 ) -> None:
@@ -229,3 +245,19 @@ def test_a_gate_error_block_grants_no_host() -> None:
         host_gate.grant = original  # type: ignore[assignment]
     assert granted == []
     assert record.navigation_blocked is not None
+
+
+def test_the_card_names_the_page_the_request_comes_from_not_the_tab() -> None:
+    """The "Page" fact is the page's title or address, never the tab's conversation label."""
+    from types import SimpleNamespace
+
+    from clio_agent.gact.browser import host_gate
+
+    def page(title: str, at: str) -> Any:
+        return SimpleNamespace(label="Open example.org", title=title, url=lambda: at)
+
+    to = "https://example.org/"
+    assert host_gate._page_shown(page("Docs", "https://a.test/"), to) == "Docs"
+    assert host_gate._page_shown(page("", "https://a.test/x"), to) == "https://a.test/x"
+    assert host_gate._page_shown(page("", "about:blank"), to) == ""
+    assert host_gate._page_shown(page("", to), to) == ""

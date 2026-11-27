@@ -46,6 +46,7 @@ import logging
 import threading
 import traceback
 import uuid
+import weakref
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -117,6 +118,18 @@ _CONTINUING: contextvars.ContextVar[bool] = contextvars.ContextVar(
 def active_loop() -> "_Loop | None":
     """The :class:`ClioReAct` loop running in this context, if any."""
     return _ACTIVE_LOOP.get()
+
+
+#: Every loop running now, in any context: a conversation tree's connector values
+#: moving reaches the turns of all its sessions (``connector_values.move_tree_turns``).
+_RUNNING: "weakref.WeakSet[_Loop]" = weakref.WeakSet()
+_RUNNING_LOCK = threading.Lock()
+
+
+def running_loops() -> "list[_Loop]":
+    """The loops running now, over every session."""
+    with _RUNNING_LOCK:
+        return list(_RUNNING)
 
 
 @contextlib.contextmanager
@@ -291,6 +304,8 @@ class _Loop:
         self.bare = bool(getattr(agent, "_clio_bare", False))
         self.system = "" if self.bare else _system(agent.signature, self.inputs, agent.tools)
         self.head = _head(agent.signature, self.inputs)
+        # The loaded tools this loop lists (a backend that calls only the tools it is sent).
+        self._loaded: frozenset[str] = self._session_loaded()
         self.tools = self._listed_tools()
         self.config = _with_cache_key(config_from_lm_kwargs(sendable_lm_kwargs(self.lm)), self.lm)
         self.tool_media = str(getattr(self.lm, "_clio_tool_result_media", "native"))
@@ -349,6 +364,8 @@ class _Loop:
             self.recorder.user_message(self.head)
         parent_token = _ctx.set_parent_span(expert_span)
         loop_token = _ACTIVE_LOOP.set(self)
+        with _RUNNING_LOCK:
+            _RUNNING.add(self)
         try:
             # A call whose result was never recorded gets the truth (outcome unknown)
             # before the first fold, which would otherwise refuse this scope every turn.
@@ -378,6 +395,8 @@ class _Loop:
             self.recorder.failed(exc, self.step, self.span)
             raise
         finally:
+            with _RUNNING_LOCK:
+                _RUNNING.discard(self)
             _ACTIVE_LOOP.reset(loop_token)
             _ctx.reset(parent_token)
             if continue_token is not None:
@@ -386,8 +405,43 @@ class _Loop:
     def _listed_tools(self) -> tuple[FunctionTool, ...]:
         from clio_agent.gact.agents.tool_settings import unlisted_tools  # noqa: PLC0415
 
-        unlisted = unlisted_tools(self.agent)
+        unlisted = unlisted_tools(self.agent) - getattr(self, "_loaded", frozenset())
         return tuple(_function_tool(t) for t in self.agent.tools.values() if t.name not in unlisted)
+
+    def _reads_unlisted_calls(self) -> bool:
+        """Whether the engine reads a call to a tool it was not sent (a text call block).
+
+        A native function-calling engine (codex, LiteLLM) calls only the tools in its
+        request, so a tool ``search_tools`` loaded must be listed there to be called.
+        """
+        return getattr(self.lm, "tool_protocol", "") == "text_block"
+
+    def _session_loaded(self) -> frozenset[str]:
+        """The session's loaded tools this loop lists from its first step."""
+        if self._reads_unlisted_calls():
+            return frozenset()
+        from clio_agent.gact import context as _ctx  # noqa: PLC0415
+        from clio_agent.gact.search_tools import loaded_tools  # noqa: PLC0415
+
+        app, session_id = _ctx.active_app(), _ctx.active_session_id() or ""
+        if app is None or not session_id:
+            return frozenset()
+        return loaded_tools(app, session_id) & frozenset(self.agent.tools)
+
+    def list_loaded(self, names: Iterable[str]) -> None:
+        """``search_tools`` loaded ``names``: list them from the next step, for an engine
+        that calls only the tools it is sent (a text call-block engine calls them unlisted
+        and keeps its cached tool list)."""
+        if self._reads_unlisted_calls():
+            return
+        new = (frozenset(names) & frozenset(self.agent.tools)) - self._loaded
+        if not new:
+            return
+        self._loaded |= new
+        self.tools = self._listed_tools()
+        from clio_agent.runtime import trace  # noqa: PLC0415
+
+        trace.event("TOOLS", "tools_loaded_listed names=%s", ",".join(sorted(new)))
 
     def _refresh_tools(self) -> None:
         """A plugin joining with ``compact``, then MCP ``tools/list_changed`` (owner:
@@ -487,7 +541,10 @@ class _Loop:
         record_collapsed(active_app(), self.recorder.session, calls, repeats)
         thought_token = _ctx.set_step_thought(text, "".join(t.text for t in thinking))
         try:
-            self.recorder.step_open(self.step, self.span, text, calls)
+            from clio_agent.tools.stall_watch import watch  # noqa: PLC0415
+
+            with watch("react_step_open", ",".join(c.name for c in calls)):
+                self.recorder.step_open(self.step, self.span, text, calls)
             _raise_if_cancelled()
             outcomes = with_repeat_notes(calls, self._execute(calls), repeats)
         finally:
@@ -567,7 +624,7 @@ class _Loop:
             collected_observation,
         )
         from clio_agent.injections.tool_guidance import after_tool_result  # noqa: PLC0415
-        from clio_agent.tools.tool_observation import call_identity_scope  # noqa: PLC0415
+        from clio_agent.tools import tool_observation as calls  # noqa: PLC0415
 
         slot: dict[str, str] = {"model_call_id": str(call.id or "")}  # links started work
         carried: list[Any] = []
@@ -578,11 +635,11 @@ class _Loop:
         script_token = SCRIPT_MEDIA.set(None)  # this call is direct, whatever ran it
         try:
             with (
-                call_identity_scope(),
+                calls.call_identity_scope(),
                 injections.collect() as told,
                 native_gate(tool, call.name, call.input) as no,
             ):
-                outcome = _CallOutcome(no, True) if no else self._run_tool(call, tool)
+                outcome = _CallOutcome(no, True) if no else calls.noted(self._run_tool(call, tool))
         finally:
             SCRIPT_MEDIA.reset(script_token)
             CALL_MEDIA.reset(media_token)
@@ -607,12 +664,20 @@ class _Loop:
         from clio_agent.gact.runtime.globals import _TurnCancelled  # noqa: PLC0415
         from clio_agent.tools.file_policy import FilePolicyError  # noqa: PLC0415
         from clio_agent.tools.mcp_errors import typed_mcp_protocol_error  # noqa: PLC0415
+        from clio_agent.tools.result_errors import (  # noqa: PLC0415
+            declared_failure,
+            observed_value,
+        )
 
         try:
             if inspect.iscoroutinefunction(getattr(tool, "func", None)):
                 # The worker thread has no running loop; the task copies this context.
-                return _CallOutcome(run_in_new_loop(tool.acall(**call.input)), False)
-            return _CallOutcome(tool(**call.input), False)
+                value = run_in_new_loop(tool.acall(**call.input))
+            else:
+                value = tool(**call.input)
+            # The call's own verdict: a native ToolFailure or an MCP isError, never its words.
+            # The verdict lives on the outcome; the recorded value is plain.
+            return _CallOutcome(observed_value(value), declared_failure(value))
         except Exception as err:  # noqa: BLE001 - a tool error is the model's observation
             refusal = err if isinstance(err, MCPProtocolError) else typed_mcp_protocol_error(err)
             escalate = (

@@ -36,6 +36,7 @@ from clio_agent.tools.file_policy import (
     _active_workspace_root,
     validate_non_empty_string,
 )
+from clio_agent.tools.result_errors import ToolFailure
 
 #: Most committed files a result lists; the total is always given.
 MAX_LISTED_FILES = 200
@@ -72,7 +73,9 @@ class _GitStepError(Exception):
         self.result = result
 
 
-def _error(code: str, message: str, path: str, next_action: str = "", **details: Any) -> dict:
+def _error(
+    code: str, message: str, path: str, next_action: str = "", **details: Any
+) -> ToolFailure:
     """A typed refusal the model reads as the tool result."""
 
     error: dict[str, Any] = {"type": "git_commit", "code": code, "message": message}
@@ -80,7 +83,7 @@ def _error(code: str, message: str, path: str, next_action: str = "", **details:
         error["next_action"] = next_action
     if details:
         error["details"] = details
-    return {"ok": False, "path": path, "error": error}
+    return ToolFailure({"ok": False, "path": path, "error": error})
 
 
 class _Git:

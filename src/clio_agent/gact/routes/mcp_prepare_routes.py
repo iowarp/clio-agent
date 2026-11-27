@@ -1,7 +1,9 @@
 """Reconnect a conversation's plugin MCP server.
 
 ``POST /v1/sessions/{sid}/mcp/{namespace}/reconnect`` stops the server's current
-connection in the session's workspace fleet, clears its preparation state (a ``failed``
+process by every route it runs on (the executor's connection, a pooled one and the
+proxy's kept-alive backend; the answer's ``stopped`` counts them), clears its preparation
+state (a ``failed``
 one included) and prepares it again in the background: provision, then start once and
 list over that connection. The answer is immediate; ``GET /v1/mcp/servers?session_id=``
 shows the preparation (``preparing`` with its phase, then ``ready`` or ``failed`` with a
@@ -19,6 +21,8 @@ from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 #: The declared namespace is not among the session agent's MCP servers.
 MCP_SERVER_NOT_DECLARED = "mcp_server_not_declared"
+#: The stop reason recorded when the person asks for a server to be reconnected.
+MCP_RECONNECT_REQUESTED = "mcp_reconnect_requested"
 
 
 def _not_found(error: str, message: str, details: dict[str, Any]) -> HTTPException:
@@ -54,6 +58,10 @@ def reconnect_session_server(app: Any, sid: str, namespace: str) -> dict[str, An
                 f"MCP server {namespace!r} is not declared for this conversation",
                 {"session_id": sid, "namespace": namespace},
             )
+        stop = getattr(executor, "stop_namespace_instance", None)
+        # The server itself, by every route: a plain server runs behind its proxy's
+        # kept-alive backend, which closing the executor's own connection leaves running.
+        stopped = stop(namespace, MCP_RECONNECT_REQUESTED) if callable(stop) else 0
         reset = getattr(executor, "reset_namespace", None)
         if callable(reset):
             reset(namespace)
@@ -63,6 +71,7 @@ def reconnect_session_server(app: Any, sid: str, namespace: str) -> dict[str, An
         "session_id": sid,
         "namespace": namespace,
         "state": mcp_prepare.PREPARING,
+        "stopped": stopped,
         "preparation": mcp_prepare.preparation_state(namespace),
     }
 

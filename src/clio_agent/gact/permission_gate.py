@@ -70,6 +70,7 @@ from clio_agent.gact.cancellation_check import (
 from clio_agent.gact.code_mode import grants as script_grants
 from clio_agent.gact.code_task_context import question_cancel_token
 from clio_agent.gact.folder_access import bind_folder_gate
+from clio_agent.gact.permission_comment import person_decision
 from clio_agent.gact.permission_context import (
     _external_mcp_permission_context as _external_mcp_permission_context,
 )
@@ -97,6 +98,7 @@ from clio_agent.gact.runtime import tool_permission_layers as layers
 from clio_agent.gact.runtime.globals import _resolve_tool_session
 from clio_agent.gact.runtime.grant_resolver import (
     EXTERNAL_MCP_CONTEXT_KIND,
+    is_closed_world_write,
     is_read_only,
     resolve,
     resolve_detail,
@@ -107,12 +109,14 @@ from clio_agent.gact.runtime.permission_policies import (
     _append_permission_policy_from_resolution,
     _flush_permission_policies,
     _permission_path_from_args,
+    append_surface_consent_policies,
+    standing_scope,
 )
 from clio_agent.gact.runtime.retention import enforce_dict_bound
-from clio_agent.gact.side_sessions import policy_deny_reason, policy_mode
+from clio_agent.gact.side_sessions import policy_deny_reason, policy_deny_source, policy_mode
 from clio_agent.gact.spotter_permission import enforce_spotter_clearance as _spotter_clearance
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
-from clio_agent.tools.catalog import action_subject, get_tool_entry
+from clio_agent.tools.catalog import action_subject
 from clio_agent.tools.tool_observation import call_identity_claimed, peek_call_identity
 
 if TYPE_CHECKING:
@@ -142,14 +146,15 @@ class DenyDecision(str):
     raises to the model in place of the generic ``"denied by permission gate"`` string
     (read via ``getattr`` at the execution boundary, so the low ``tools`` layer never
     imports gact). The typed audit reason (``policy_deny``) is decided separately and is
-    NOT affected — this class only enriches the human/model-facing wording.
+    NOT affected; :attr:`decided_by` names, for the person, what blocked it when no person did.
     """
 
     deny_message: str
+    decided_by: str
 
-    def __new__(cls, deny_message: str = "") -> "DenyDecision":
+    def __new__(cls, deny_message: str = "", decided_by: str = "") -> "DenyDecision":
         obj = super().__new__(cls, "deny")
-        obj.deny_message = deny_message
+        obj.deny_message, obj.decided_by = deny_message, decided_by
         return obj
 
 
@@ -158,6 +163,7 @@ def default_decision(
     kind: str,
     name: str,
     args: Mapping[str, Any],
+    context: Mapping[str, Any] | None = None,
 ) -> str:
     """Decide a non-read tool call at the gate's PROMPT boundary from the approval mode (#1034).
 
@@ -168,8 +174,9 @@ def default_decision(
     the existing interactive prompt; it never manufactures a denial (that stays with the lock and
     explicit deny policies above). Returns:
 
-    * ``allow`` — ``bypass`` (any non-read call), ``auto-edits`` for an fs WRITE (a call whose
-      static catalog entry carries the ``write`` tag), or the server-owned
+    * ``allow`` — ``bypass`` (any non-read call), ``auto-edits`` for a bounded closed-world
+      WRITE (:func:`is_closed_world_write`: the catalog ``write`` tag, or the same projection of
+      the call ``context``'s MCP annotations for a tool joined after boot), or the server-owned
       ``spotter-watcher`` profile for CLIO's native ``raise_alert_card`` (containment itself
       is CLIO's SPOTTER clearance, not a tool call);
     * ``ask``   — ``ask`` (default), ``auto-edits`` for a non-write (e.g. ``shell_bash``, whose
@@ -182,7 +189,7 @@ def default_decision(
     this default) is what can still stop a call it has contained.
 
     ``kind``/``args`` are accepted for a stable signature (a future kind may inspect them) but the
-    two current signals (mode + the catalog ``write`` tag) do not consult them.
+    current signals (mode, the catalog ``write`` tag, the call's annotations) do not consult them.
     """
 
     _ = (kind, args)
@@ -191,10 +198,7 @@ def default_decision(
     if approval_mode in ("bypass", "spotter-ai"):
         return "allow"
     if approval_mode == "auto-edits":
-        entry = get_tool_entry(name)
-        if entry is not None and "write" in entry.tags:
-            return "allow"
-        return "ask"
+        return "allow" if is_closed_world_write(name, context) else "ask"
     if approval_mode in ("ask", "ai-review"):
         # ask (default) and ai-review route to the existing interactive prompt.
         return "ask"
@@ -361,21 +365,22 @@ def resolve_permission(
     *,
     grantor: str = GRANTOR_USER,
     intercept: Mapping[str, Any] | None = None,
+    comment: str = "",
 ) -> dict[str, Any] | None:
-    """Resolve a request, serializing folder grants against duplicate responses."""
+    """Resolve a request (with the person's ``comment``), serializing folder grants."""
     from clio_agent.gact.folder_access import FOLDER_RESOLUTION_LOCK
 
     with FOLDER_RESOLUTION_LOCK:
-        return _resolve_permission(app, pid, action, grantor=grantor, intercept=intercept)
+        return _resolve_permission(app, pid, action, grantor, intercept, comment)
 
 
 def _resolve_permission(
     app: "FastAPI",
     pid: str,
     action: str,
-    *,
     grantor: str = GRANTOR_USER,
     intercept: Mapping[str, Any] | None = None,
+    comment: str = "",
 ) -> dict[str, Any] | None:
     """Resolve one pending permission row and wake any blocked bridge thread.
 
@@ -401,7 +406,7 @@ def _resolve_permission(
     history = getattr(app.state, "task_history", None)
     task = history.task_snapshot(pid) if history is not None else None
     if task is not None and task.kind == "Question" and task.tool == SOURCE:
-        return respond(app, task, action, grantor)
+        return respond(app, task, action, grantor, comment)
     row = app.state.permissions.get(pid)
     if row is not None and row.get("kind") == "turn_defer":
         raise ValueError(
@@ -417,6 +422,7 @@ def _resolve_permission(
     row["action"] = action
     row["resolved_at"] = datetime.now(timezone.utc).isoformat()
     row["grantor"] = grantor
+    row.update({"comment": comment.strip()} if comment.strip() else {})  # the person's words
     # P2.6: an APPROVED PreToolUse defer may carry the modify/synthesize the approval
     # decides — stashed on the row BEFORE the event wake below so the parked call reads
     # it and drives the ``tool_interceptor`` (run-with-modified-args / synthesize).
@@ -432,6 +438,8 @@ def _resolve_permission(
     )
     if policy is not None:
         row["policy"] = policy
+        if consented := append_surface_consent_policies(app, row=row, policy=policy):
+            row["consent_policies"] = consented
         # iowarp/clio-agent#759: sticky grants must survive a server restart, so flush
         # the derived policy to disk.
         _flush_permission_policies(app)
@@ -491,6 +499,10 @@ def _ask_person(
     """Publish a pending permission and wait for the answer (or the AI reviewer's)."""
     if (refused := unattended.refuse_ask(app, sid, name, args, approval_mode)) is not None:
         return refused  # nobody to ask in an unattended run: denied, typed
+    from clio_agent.gact import mcp_server_confirm  # noqa: PLC0415
+
+    if mcp_server_confirm.may_defer(app, sid, context, approval_mode, policy_action):
+        return mcp_server_confirm.defer(app, sid, name, args, subject)  # one ask: its card
     running, holder = call_identity_claimed(), dict[str, Any]()
     decision = _ask_and_wait(
         app, sid, name, args, context, subject, approval_mode, policy_action, cancelled, holder
@@ -534,7 +546,14 @@ def _ask_and_wait(
     }
     if _is_external_mcp_permission_context(context):
         row["kind"] = _EXTERNAL_MCP_PERMISSION_CONTEXT_KIND
+        from clio_agent.gact import surface_consent  # noqa: PLC0415
+
+        # A person acting on a server's surface answers once for all its view-only tools.
+        if (consent := surface_consent.covering(name)) is not None:
+            row["summary"] = consent.summary
+            row["consent"] = consent.wire()
     row.update(answer_fields(context))  # its answers, and a run_code script's grant
+    row.update(standing_scope(args, row.get("actions")))  # where a lasting allow reaches
     # #1044: the ai-review reviewer runs only when there is no explicit ``ask`` policy —
     # an explicit ``ask`` is a deliberate "always confirm THIS tool with a HUMAN" and beats
     # the mode (uniform with #1034: explicit policy > mode), so it must NOT be reviewer-
@@ -581,11 +600,8 @@ def _ask_and_wait(
         app, pid, row, evt, tool_name=name, cancelled=cancelled
     ):
         return decision
-    action = row.get("action", "deny")
-    script_grants.answered(row)
-    if allows(action):
-        return "allow"
-    return "deny"
+    script_grants.answered(row, name, args)
+    return person_decision(row)  # carries the comment the person wrote, if any
 
 
 def _layered_deny(
@@ -611,8 +627,31 @@ def _layered_deny(
         + ("permission policy" if by_rule else "its default permission"),
         reason=policy_deny_reason(mode) if by_rule else layers.REASON_DEFAULT_DENY,
     )
-    # P1.2 #1064: a plan_acl-authored deny carries a mode-aware message for the model.
-    return DenyDecision(plan_deny_message) if plan_deny_message else "deny"
+    # P1.2 #1064: a plan_acl deny's message is mode-aware; ``decided_by`` is for the person.
+    return DenyDecision(plan_deny_message, policy_deny_source(mode, plan_deny_message, by_rule))
+
+
+def _page_click_allows(
+    app: "FastAPI", sid: str, name: str, args: Mapping[str, Any], subject: str
+) -> bool:
+    """Allow, on the record, an app-only tool a click on its plugin's own page runs."""
+
+    from clio_agent.gact import surface_consent  # noqa: PLC0415
+
+    consent = surface_consent.page_click(name)
+    if consent is None:
+        return False
+    _record_resolved_permission(
+        app,
+        session_id=sid,
+        tool_name=name,
+        args=args,
+        status="auto_approved",
+        action="allow",
+        summary=f"{subject} {name!r} allowed by a click on {consent.server_title}'s page",
+        reason=surface_consent.REASON_PAGE_CLICK,
+    )
+    return True
 
 
 def _make_permission_gate(app: "FastAPI"):
@@ -635,6 +674,9 @@ def _make_permission_gate(app: "FastAPI"):
         from clio_agent.gact.hooks import stash_pre_tool_intercept  # noqa: PLC0415
 
         stash_pre_tool_intercept(None)
+        from clio_agent.gact.connector_outside import ask_if_needed  # noqa: PLC0415
+
+        ask_if_needed(app, name, args, context)  # where the server runs, asked once
         if (answered := answered_or_outside(app, name, args, context)) is not None:
             return answered  # a person approved this very call, or must for outside_sandbox
         # #1032: reads inside permitted territory need no action approval. A provably read-only call (MCP
@@ -648,7 +690,7 @@ def _make_permission_gate(app: "FastAPI"):
 
         folders = requested_folders(name, args)
         external = _is_external_mcp_permission_context(context)
-        subject = "external MCP tool" if external else action_subject(name)
+        subject = "external MCP tool" if external else action_subject(name, args)
         # Prefer the session currently driving the turn. Recency is
         # only a fallback for truly out-of-band tool calls.
         sid, current = _resolve_tool_session(app)
@@ -703,9 +745,8 @@ def _make_permission_gate(app: "FastAPI"):
                 summary=f"{subject} {name!r} blocked by a PreToolUse hook",
                 reason="hook_deny",
             )
-            return DenyDecision(
-                hook_outcome.reason or f"tool call {name!r} denied by a PreToolUse hook"
-            )
+            hook_reason = hook_outcome.reason or f"tool call {name!r} denied by a PreToolUse hook"
+            return DenyDecision(hook_reason, "a hook blocked it")
         # P2.6: a PreToolUse ``defer`` PARKS this call for out-of-band approval (the
         # headline durable-defer path). deny beats defer (tighten-only): a policy deny
         # is evaluated FIRST so a matching deny-rule still blocks rather than parks;
@@ -728,7 +769,7 @@ def _make_permission_gate(app: "FastAPI"):
                     summary=f"{subject} {name!r} blocked by permission policy",
                     reason=policy_deny_reason(mode),
                 )
-                return DenyDecision(defer_plan_msg) if defer_plan_msg else "deny"
+                return DenyDecision(defer_plan_msg, policy_deny_source(mode, defer_plan_msg, True))
             from clio_agent.gact.hooks.defer import park_pretool_defer  # noqa: PLC0415
 
             return park_pretool_defer(
@@ -784,7 +825,7 @@ def _make_permission_gate(app: "FastAPI"):
         decision_posture = approval_profile or approval_mode
         if (
             policy_action != "ask"
-            and default_decision(decision_posture, "tool", name, args) == "allow"
+            and default_decision(decision_posture, "tool", name, args, context) == "allow"
         ):
             # bypass or auto-edits: auto-approve, still on the record (the OS fence is untouched).
             _record_resolved_permission(
@@ -807,7 +848,9 @@ def _make_permission_gate(app: "FastAPI"):
             )
             return "allow"
         with script_grants.question():
-            if policy_action != "ask" and script_grants.covers(decision_posture):
+            if policy_action != "ask" and _page_click_allows(app, sid, name, args, subject):
+                return "allow"
+            if policy_action != "ask" and script_grants.covers(decision_posture, name, args):
                 _record_resolved_permission(
                     app,
                     session_id=sid,

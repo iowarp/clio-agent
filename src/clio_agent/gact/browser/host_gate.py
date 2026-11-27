@@ -39,7 +39,7 @@ from urllib.parse import urlsplit
 
 from clio_agent.gact.browser import settings
 from clio_agent.gact.browser.settings import BrowserError
-from clio_agent.runtime import trace
+from clio_agent.runtime import net_refusals, trace
 
 if TYPE_CHECKING:
     from clio_agent.gact.browser.service import BrowserService, PageRecord
@@ -67,7 +67,8 @@ _questions: dict[tuple[str, str], "asyncio.Future[bool]"] = {}
 
 
 def decision_for(app: Any, session_id: str, host: str) -> str:
-    """``allow``, ``deny`` or ``""`` (ask) for ``host`` in this session."""
+    """``allow``, ``deny``, ``ask`` (a rule says ask every time) or ``""`` (no rule: ask)
+    for ``host`` in this session."""
     host = host.strip().lower()
     if any(fnmatch.fnmatchcase(host, pattern) for pattern in settings.granted_hosts()):
         return "allow"
@@ -86,7 +87,36 @@ def decision_for(app: Any, session_id: str, host: str) -> str:
     )
     if action in POLICY_ALLOWING:
         return "allow"
-    return "deny" if action == "deny" else ""
+    return action if action in {"deny", "ask"} else ""
+
+
+def _allowed_in_call(record: "PageRecord", host: str, decision: str) -> bool:
+    """Whether the person already allowed ``host`` once during the agent call running on
+    the page: the rest of that call (the script, or a call outside one) loads it unasked,
+    unless a rule asks every time."""
+    from clio_agent.gact.code_mode import grants as script_grants  # noqa: PLC0415
+    from clio_agent.gact.runtime.grant_resolver import KIND_BROWSER_HOST  # noqa: PLC0415
+
+    inflight = record.inflight
+    if inflight is None or decision in {"ask", "deny"}:
+        return False
+    if host in inflight.allowed_hosts:
+        return True
+    grant = script_grants.grant_in(inflight.context)
+    return script_grants.allowed_once(KIND_BROWSER_HOST, host, grant) if grant else False
+
+
+def _remember(record: "PageRecord", host: str) -> None:
+    from clio_agent.gact.code_mode import grants as script_grants  # noqa: PLC0415
+    from clio_agent.gact.runtime.grant_resolver import KIND_BROWSER_HOST  # noqa: PLC0415
+
+    inflight = record.inflight
+    if inflight is None:
+        return
+    inflight.allowed_hosts.add(host)
+    grant = script_grants.grant_in(inflight.context)
+    if grant is not None:
+        script_grants.allow_once(KIND_BROWSER_HOST, host, grant)
 
 
 def grant(app: Any, session_id: str, host: str, *, grantor: str) -> None:
@@ -110,6 +140,19 @@ def grant(app: Any, session_id: str, host: str, *, grantor: str) -> None:
     )
     _flush_permission_policies(app)
     trace.event("BROWSER", "host granted host=%s session=%s by=%s", host, session_id, grantor)
+
+
+def _page_shown(record: "PageRecord", url: str) -> str:
+    """The card's "Page" fact: the page the request comes from, by its title or address.
+
+    The record's ``label`` names the tab (by default the conversation's title), not the page.
+    A blank tab, or one already at ``url``, has nothing to add to the card's address.
+    """
+
+    if title := record.title.strip():
+        return title
+    current = record.url()
+    return current if urlsplit(current).scheme.lower() in _WEB_SCHEMES and current != url else ""
 
 
 def _ask(app: Any, record: "PageRecord", host: str, url: str) -> bool:
@@ -137,7 +180,12 @@ def _ask(app: Any, record: "PageRecord", host: str, url: str) -> bool:
         "kind": BROWSER_HOST_REQUEST_KIND,
         "tool_call": {
             "tool_name": BROWSER_HOST_REQUEST_KIND,
-            "input": {"host": host, "url": url, "page": record.id, "label": record.label},
+            "input": {
+                "host": host,
+                "url": url,
+                "page": record.id,
+                "label": _page_shown(record, url),
+            },
         },
         "summary": f"Let the browser load {host}",
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -175,6 +223,7 @@ async def _decide(service: "BrowserService", record: "PageRecord", url: str) -> 
         _blocked(service, record, scheme + ":", url, reason="browser_scheme_refused")
         return False
     host = (parts.hostname or "").lower()
+    record.admitted_host = ""  # a new document: admitted only by the answer below
     inflight = record.inflight
     if inflight is not None:
         inflight.navigated = True
@@ -194,9 +243,14 @@ async def _decide(service: "BrowserService", record: "PageRecord", url: str) -> 
     if decision == "deny":
         inflight.denied_host = host
         return False
+    if _allowed_in_call(record, host, decision):
+        record.admitted_host = host
+        return True
     allowed = await _ask_for_call(service, record, host, url)
     if not allowed:
         inflight.denied_host = host
+    elif not decision:  # a rule that asks every time asks for every call too
+        record.admitted_host = host
     return allowed
 
 
@@ -220,9 +274,16 @@ async def admit_call(
     """Before an agent call acts on the page: its host must be one the agent may use.
 
     The person, or the page, may have taken the page to a host the agent was never
-    allowed; the agent asks before reading or acting on it, as for a navigation. Its
+    allowed; the agent asks before reading or acting on it, as for a navigation. A page
+    still on the document the person let the agent load is not asked about again: the
+    answer was for that load, and later calls only use what it loaded. Its
     certificate must be one this conversation trusts (:func:`certificates.check_call`).
     """
+    profile = service.profiles.get(record.profile)
+    if record.inflight is not None and profile is not None and profile.egress_channel:
+        # The browser's refused egress (a fenced subresource host) reaches this call's result.
+        # The profile's pages share it with other calls.
+        record.inflight.context.run(net_refusals.join, profile.egress_channel, label="the browser")
     parts = urlsplit(record.url())
     if parts.scheme.lower() not in _WEB_SCHEMES:
         return
@@ -231,7 +292,9 @@ async def admit_call(
     certificates.check_call(service, record, navigates=navigates)
     host = (parts.hostname or "").lower()
     decision = decision_for(service.app, record.session_id, host)
-    if decision == "allow":
+    if decision == "allow" or _allowed_in_call(record, host, decision):
+        return
+    if not decision and host == record.admitted_host:
         return
     if decision != "deny" and await _ask_for_call(service, record, host, record.url()):
         return
@@ -254,17 +317,21 @@ async def _ask_for_call(
     try:
         pending = _questions.get(key)
         if pending is not None:  # another page of this conversation is asking already
-            return await asyncio.shield(pending)
-        context = inflight.context.copy()
-        question = asyncio.get_running_loop().run_in_executor(
-            None, lambda: context.run(_ask, service.app, record, host, url)
-        )
-        _questions[key] = question
-        try:
-            return await asyncio.shield(question)
-        finally:
-            if _questions.get(key) is question:
-                del _questions[key]
+            allowed = await asyncio.shield(pending)
+        else:
+            context = inflight.context.copy()
+            question = asyncio.get_running_loop().run_in_executor(
+                None, lambda: context.run(_ask, service.app, record, host, url)
+            )
+            _questions[key] = question
+            try:
+                allowed = await asyncio.shield(question)
+            finally:
+                if _questions.get(key) is question:
+                    del _questions[key]
+        if allowed:  # the same host, for the rest of this call: one answer, one question
+            _remember(record, host)
+        return allowed
     finally:
         inflight.paused_s += time.monotonic() - started
         inflight.waiting = False

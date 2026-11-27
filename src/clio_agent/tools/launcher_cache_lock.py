@@ -1,10 +1,17 @@
 """Liveness-driven wait around the shared uvx/uv-run launcher cache.
 
 Every clio-spawned ``uvx``/``uv run`` stdio MCP launcher shares ONE dedicated cache dir
-(``mcp_config._mcp_uv_cache_dir``); concurrent cold-cache spawns building the same
+(``mcp_config._mcp_uv_cache_dir``); concurrent cold-cache spawns building the SAME
 ephemeral env can truncate ``pyvenv.cfg`` (astral-sh/uv#11694). Every stdio spawn onto
-that cache therefore acquires a clio-owned file lock (``filelock.FileLock``) first, and
-the wait follows the holder, never a clock:
+that cache therefore acquires a clio-owned file lock (``filelock.FileLock``) first.
+
+The lock is per environment (:func:`launcher_environment_key`): spawns that build the
+same environment queue behind each other, while servers with independent environments
+build, start and list concurrently. uv itself keeps its shared cache consistent across
+concurrent processes; only a same-environment build needs CLIO's lock. A launcher shape
+this module does not model takes one shared fallback lock, as every spawn used to.
+
+The wait follows the holder, never a clock:
 
 * While the lock's recorded holder PID names a LIVE process, keep waiting —
   no matter how long, because that holder is doing the shared cold-spawn
@@ -25,17 +32,21 @@ the wait follows the holder, never a clock:
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import time
 import uuid
 from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager, contextmanager, suppress
+from contextlib import ExitStack, asynccontextmanager, contextmanager, suppress
 from pathlib import Path
+from typing import ContextManager
 
 from filelock import FileLock, Timeout
 
 from clio_agent.errors import LAUNCHER_CACHE_LOCK_STALE_BROKEN, LAUNCHER_CACHE_LOCK_TIMEOUT
+from clio_agent.tools.preparation_threads import run_preparation_step
 
 logger = logging.getLogger(__name__)
 
@@ -116,12 +127,85 @@ class _HolderClock:
         raise LauncherCacheLockTimeoutError(self._server_id, self._ceiling_s, holder_pid)
 
 
-def _lock_path() -> Path:
+def _lock_path(environment_key: str | None = None) -> Path:
+    """The lock file for ``environment_key`` (``None``: the shared fallback lock)."""
+
     from clio_agent.tools.mcp_config import _mcp_uv_cache_dir  # noqa: PLC0415
 
     cache_dir = _mcp_uv_cache_dir()
     cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir / _LOCK_FILENAME
+    if environment_key is None:
+        return cache_dir / _LOCK_FILENAME
+    return cache_dir / f".clio-launcher-{environment_key}.lock"
+
+
+#: ``uvx`` options whose values add requirements to the ephemeral environment.
+_WITH_FLAGS = frozenset({"--with", "--with-editable", "--with-requirements"})
+#: ``uv run`` options naming the project whose environment is built.
+_PROJECT_FLAGS = frozenset({"--project", "--directory"})
+
+
+def launcher_environment_key(spec: object) -> str | None:
+    """A stable key for the uv environment ``spec``'s launcher builds on the shared cache.
+
+    ``uvx`` / ``uv tool run``: uv keys the ephemeral environment on its requirements, so
+    the key is the package source (``--from``, else the first positional) plus every
+    ``--with*`` requirement. ``uv run --project``: the project's environment, whatever
+    ``--with`` overlay is added on top of it. Options that could only make two keys share
+    an environment are left out, so two launches of one environment always share a key.
+
+    ``None`` when the launcher is neither shape, or uses an option the argv model does not
+    know: the caller then takes the shared fallback lock.
+    """
+
+    from clio_agent.tools.uv_launcher import _BOOL_FLAGS, _VALUE_FLAGS, _is_uv  # noqa: PLC0415
+
+    command = str(getattr(spec, "command", "") or "")
+    tokens = [str(arg) for arg in (getattr(spec, "args", None) or ())]
+    if _launcher_name(command) == "uvx":
+        kind = "tool"
+    elif _is_uv(command) and tokens[:2] == ["tool", "run"]:
+        kind, tokens = "tool", tokens[2:]
+    elif _is_uv(command) and tokens[:1] == ["run"]:
+        kind, tokens = "run", tokens[1:]
+    else:
+        return None
+    parts: list[tuple[str, str]] = []
+    source = ""
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if not token.startswith("-") or token in ("-", "--"):
+            break
+        flag, equals, inline = token.partition("=")
+        if flag == "--from" or flag in _VALUE_FLAGS:
+            if equals:
+                value, index = inline, index + 1
+            elif index + 1 < len(tokens):
+                value, index = tokens[index + 1], index + 2
+            else:
+                return None
+            if flag == "--from":
+                source = value
+            elif kind == "tool" and flag in _WITH_FLAGS:
+                parts.append((flag, value))
+            elif kind == "run" and flag in _PROJECT_FLAGS:
+                parts.append(("--project", str(Path(value).expanduser())))
+            continue
+        if flag in _BOOL_FLAGS and not equals:
+            index += 1
+            continue
+        return None
+    if kind == "tool":
+        if not source:
+            if index >= len(tokens) or tokens[index] == "--":
+                return None
+            source = tokens[index]
+        parts.append(("--from", source.strip()))
+    elif not parts:
+        return None  # ``uv run`` without a project: its environment follows the cwd
+    payload = json.dumps([kind, sorted(parts)], separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def _owner_path(lock_path: Path) -> Path:
@@ -221,6 +305,17 @@ def _break_stale_lock(lock_path: Path, owner_path: Path, server_id: str, holder_
         lock_path.unlink(missing_ok=True)
 
 
+def _queued_in_server_wait() -> ContextManager[None]:
+    """Tell an enclosing MCP connect wait that its server queues behind this lock.
+
+    No process of that server exists until the lock is ours, so the wait's no-progress
+    check must not read the queue as a dead server; this module's holder rules govern it.
+    """
+    from clio_agent.tools.mcp_server_progress import queued_behind  # noqa: PLC0415
+
+    return queued_behind("launcher_cache_lock")
+
+
 def uses_shared_launcher_cache(spec: object) -> bool:
     """True when ``spec`` (an :class:`MCPServerSpec`) spawns onto the SHARED
     dedicated uv cache — the only spawns this lock needs to serialize.
@@ -258,9 +353,12 @@ def _launcher_name(command: str) -> str:
 
 @contextmanager
 def acquire_launcher_cache_lock(
-    server_id: str, *, timeout_s: float | None = None
+    server_id: str, *, spec: object | None = None, timeout_s: float | None = None
 ) -> Iterator[None]:
-    """Liveness-driven wait for the shared uv-launcher cache lock (#1237).
+    """Liveness-driven wait for the uv-launcher cache lock of ``spec``'s environment (#1237).
+
+    ``spec`` selects the per-environment lock (:func:`launcher_environment_key`); without
+    one, or for a launcher shape that is not modelled, the shared fallback lock is used.
 
     While the current holder is a LIVE process, this waits — however long
     the holder's legitimate cold-spawn work takes; never a deadline race
@@ -272,31 +370,35 @@ def acquire_launcher_cache_lock(
     """
 
     bound = timeout_s if timeout_s is not None else launcher_cache_lock_hold_ceiling_s()
-    lock_path = _lock_path()
+    environment_key = launcher_environment_key(spec) if spec is not None else None
+    lock_path = _lock_path(environment_key)
     owner_path = _owner_path(lock_path)
     lock = FileLock(str(lock_path), timeout=0)
     clock = _HolderClock(server_id, bound)
     logged_wait = False
-    while True:
-        try:
-            lock.acquire(timeout=0)
-            break
-        except Timeout:
-            pass
-        holder_pid = _read_owner_pid(owner_path)
-        if holder_pid is not None and not _pid_alive(holder_pid):
-            _break_stale_lock(lock_path, owner_path, server_id, holder_pid)
-            continue
-        clock.check(_read_owner_record(owner_path), holder_pid)
-        if not logged_wait:
-            logger.info(
-                "launcher_cache_lock_waiting server=%s holder_pid=%s -- holder is alive, "
-                "waiting (never racing a deadline; #1237)",
-                server_id,
-                holder_pid,
-            )
-            logged_wait = True
-        time.sleep(_POLL_INTERVAL_S)
+    with ExitStack() as queue:
+        while True:
+            try:
+                lock.acquire(timeout=0)
+                break
+            except Timeout:
+                pass
+            holder_pid = _read_owner_pid(owner_path)
+            if holder_pid is not None and not _pid_alive(holder_pid):
+                _break_stale_lock(lock_path, owner_path, server_id, holder_pid)
+                continue
+            clock.check(_read_owner_record(owner_path), holder_pid)
+            if not logged_wait:
+                queue.enter_context(_queued_in_server_wait())
+                logger.info(
+                    "launcher_cache_lock_waiting server=%s environment=%s holder_pid=%s -- "
+                    "holder is alive, waiting (never racing a deadline; #1237)",
+                    server_id,
+                    environment_key or "shared",
+                    holder_pid,
+                )
+                logged_wait = True
+            time.sleep(_POLL_INTERVAL_S)
     try:
         _write_owner_pid(owner_path, os.getpid())
         yield
@@ -308,7 +410,7 @@ def acquire_launcher_cache_lock(
 
 @asynccontextmanager
 async def aacquire_launcher_cache_lock(
-    server_id: str, *, timeout_s: float | None = None
+    server_id: str, *, spec: object | None = None, timeout_s: float | None = None
 ) -> AsyncIterator[None]:
     """Async twin of :func:`acquire_launcher_cache_lock` (#1237).
 
@@ -317,13 +419,14 @@ async def aacquire_launcher_cache_lock(
     tool call, as opposed to the discovery/listing pass) -- the identical
     liveness-driven wait, but polling via ``await asyncio.sleep`` and
     running the (fast, non-blocking-in-practice since ``timeout=0``, but
-    still real file I/O) ``FileLock.acquire`` off the event loop via
-    :func:`asyncio.to_thread` so a long wait here never stalls this
-    executor's event loop (other executors/sessions are unaffected either
-    way -- each has its own loop).
+    still real file I/O) ``FileLock.acquire`` off the event loop on the
+    preparation pool (:mod:`clio_agent.tools.preparation_threads`) so a long
+    wait here never stalls this executor's event loop. Not the loop's default
+    executor: the callers waiting for this very server can fill that pool, and
+    the acquire would then never run.
 
     ``thread_local=False`` is LOAD-BEARING: ``acquire`` runs on a worker
-    thread (via ``to_thread``) but ``release`` runs directly on the event
+    thread (the preparation pool) but ``release`` runs directly on the event
     loop thread in the ``finally`` below -- filelock's default
     ``thread_local=True`` tracks acquisition per-thread, so a release from a
     DIFFERENT thread than the one that acquired silently fails to free the
@@ -336,31 +439,35 @@ async def aacquire_launcher_cache_lock(
     """
 
     bound = timeout_s if timeout_s is not None else launcher_cache_lock_hold_ceiling_s()
-    lock_path = _lock_path()
+    environment_key = launcher_environment_key(spec) if spec is not None else None
+    lock_path = _lock_path(environment_key)
     owner_path = _owner_path(lock_path)
     lock = FileLock(str(lock_path), timeout=0, thread_local=False)
     clock = _HolderClock(server_id, bound)
     logged_wait = False
-    while True:
-        try:
-            await asyncio.to_thread(lock.acquire, timeout=0)
-            break
-        except Timeout:
-            pass
-        holder_pid = _read_owner_pid(owner_path)
-        if holder_pid is not None and not _pid_alive(holder_pid):
-            _break_stale_lock(lock_path, owner_path, server_id, holder_pid)
-            continue
-        clock.check(_read_owner_record(owner_path), holder_pid)
-        if not logged_wait:
-            logger.info(
-                "launcher_cache_lock_waiting server=%s holder_pid=%s -- holder is alive, "
-                "waiting (never racing a deadline; #1237)",
-                server_id,
-                holder_pid,
-            )
-            logged_wait = True
-        await asyncio.sleep(_POLL_INTERVAL_S)
+    with ExitStack() as queue:
+        while True:
+            try:
+                await run_preparation_step(lock.acquire, timeout=0)
+                break
+            except Timeout:
+                pass
+            holder_pid = _read_owner_pid(owner_path)
+            if holder_pid is not None and not _pid_alive(holder_pid):
+                _break_stale_lock(lock_path, owner_path, server_id, holder_pid)
+                continue
+            clock.check(_read_owner_record(owner_path), holder_pid)
+            if not logged_wait:
+                queue.enter_context(_queued_in_server_wait())
+                logger.info(
+                    "launcher_cache_lock_waiting server=%s environment=%s holder_pid=%s -- "
+                    "holder is alive, waiting (never racing a deadline; #1237)",
+                    server_id,
+                    environment_key or "shared",
+                    holder_pid,
+                )
+                logged_wait = True
+            await asyncio.sleep(_POLL_INTERVAL_S)
     try:
         _write_owner_pid(owner_path, os.getpid())
         yield
@@ -375,5 +482,6 @@ __all__ = [
     "aacquire_launcher_cache_lock",
     "acquire_launcher_cache_lock",
     "launcher_cache_lock_hold_ceiling_s",
+    "launcher_environment_key",
     "uses_shared_launcher_cache",
 ]

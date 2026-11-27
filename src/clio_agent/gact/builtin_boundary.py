@@ -15,8 +15,10 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from fastmcp import Client, FastMCP
+from fastmcp.exceptions import ToolError
 from fastmcp.tools import Tool, ToolResult
 from jsonschema import Draft202012Validator
+from mcp.types import TextContent
 from pydantic import PrivateAttr
 from referencing import Registry
 
@@ -37,6 +39,7 @@ from clio_agent.gact.tool_observation import (
     PresentedToolResult,
     note_inline_collection,
 )
+from clio_agent.tools.result_errors import ToolFailure
 from clio_agent.tools.task_call_context import TASK_CALL, permission_snapshot
 
 _PRESENTATION_META = "io.iowarp.clio/presentation"
@@ -61,6 +64,7 @@ class Invocation:
     observe_handles: tuple[str, ...] = ()
     collect: bool = True
     claimed: bool = False
+    failed: bool = False
     error: BaseException | None = None
     retired: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -109,6 +113,15 @@ class BuiltinTool(Tool):
                 invocation.observe_handles = value.observe_handles
                 invocation.collect = value.collect
             result = self.convert_result(value)
+            if isinstance(value, ToolFailure):
+                # The tool declared it could not do what was asked: MCP's isError carries it.
+                invocation.failed = True
+                result = ToolResult(
+                    content=result.content,
+                    structured_content=result.structured_content,
+                    meta=result.meta,
+                    is_error=True,
+                )
             if presentation is not None:
                 result.meta = {**(result.meta or {}), _PRESENTATION_META: presentation}
             return result
@@ -261,16 +274,25 @@ class BuiltinBoundary:
         try:
             try:
                 reply = await self.client.call_tool(
-                    registered, {**arguments, "_clio_submission": reference}
+                    registered, {**arguments, "_clio_submission": reference}, raise_on_error=False
                 )
             except BaseException as error:
                 if invocation.error is not None:
                     raise invocation.error from error
                 raise
+            if invocation.error is not None:
+                raise invocation.error
+            if reply.is_error and not invocation.failed:
+                text = next((b.text for b in reply.content if isinstance(b, TextContent)), "")
+                raise ToolError(text or f"Built-in {tool.name} failed")
             Draft202012Validator(_OUTPUT_SCHEMA, registry=Registry()).validate(
                 reply.structured_content
             )
-            value: Any = reply.data
+            value: Any = (
+                ToolFailure((reply.structured_content or {})["result"])
+                if invocation.failed
+                else reply.data
+            )
             if invocation.notifications or invocation.read_handles or invocation.observe_handles:
                 if not isinstance(value, dict):
                     raise TypeError("A collected task observation must contain an object")
@@ -308,6 +330,7 @@ class BuiltinBoundary:
         """Route task-capable built-ins to their own native root without a gateway queue."""
         from clio_agent.gact.native_work import SUBMISSION_ARGUMENT
         from clio_agent.gact.permission_gate import _invoke_permission_gate
+        from clio_agent.gact.spawn_invocation import spawn_invocation_id
         from clio_agent.gact.tool_dispatch import run_owned_callable
         from clio_agent.tools.result_room import result_room, room_limits
         from clio_agent.tools.task_call_context import safe_description
@@ -376,6 +399,7 @@ class BuiltinBoundary:
                 _record_resolved_permission,
                 _spotter_clearance,
             )
+            from clio_agent.tools.shell_read_only import shell_call_subject
 
             denial = await run_owned_callable(
                 functools.partial(
@@ -385,7 +409,7 @@ class BuiltinBoundary:
                     session,
                     name,
                     public,
-                    "destructive tool",
+                    shell_call_subject(public),
                     _record_resolved_permission,
                 ),
                 captured=captured.copy(),
@@ -457,7 +481,7 @@ class BuiltinBoundary:
                 assignment_id=assignment.handle,
                 parent_handle=assignment.handle,
             ),
-            invocation_id=call.invocation_id or uuid4().hex,
+            invocation_id=call.invocation_id or captured.run(spawn_invocation_id),
             workspace=workspace.root_path,
             permissions=permission_snapshot(self.app, sid),
             # An isolated workflow node's shell writes only its folder (node_folders.py).

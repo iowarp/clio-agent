@@ -19,6 +19,7 @@ Codex-specific detection / provisioning / ladder-gate coverage lives in
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -301,7 +302,7 @@ def test_wrap_confined_active_fence_redirects_child_cache_env(
     monkeypatch.setattr(
         sandbox_net,
         "open_child_egress",
-        lambda state, roots: ("child_x", 4321, {"HTTP_PROXY": "http://127.0.0.1:4321"}),
+        lambda state, roots, **kwargs: ("child_x", 4321, {"HTTP_PROXY": "http://127.0.0.1:4321"}),
     )
     composed: list[tuple[list[str], str, Path | str | None]] = []
 
@@ -336,7 +337,10 @@ def test_wrap_confined_active_fence_redirects_child_cache_env(
     assert cache_dir.is_dir()
     assert not (ws / sandbox.CHILD_CACHE_DIRNAME).exists()
     for key in sandbox.CHILD_CACHE_DIR_ENV_KEYS:
-        assert confined.env_overlay[key] == str(cache_dir)
+        assert Path(confined.env_overlay[key]).resolve() == cache_dir.resolve()
+    # Unix sockets under TEMP/TMP must fit: a deep cache dir is reached by a short alias.
+    if os.name == "posix":
+        assert all(len(confined.env_overlay[key]) <= 64 for key in ("TEMP", "TMP"))
     assert confined.env_overlay["FASTMCP_CHECK_FOR_UPDATES"] == "off"
     # The redirect is ADDITIVE — the per-child net proxy overlay still lands.
     assert confined.env_overlay["HTTP_PROXY"] == "http://127.0.0.1:4321"
@@ -374,7 +378,7 @@ def test_landlock_abi_one_fleet_keeps_native_uv_cache_paths(
     monkeypatch.setattr(
         sandbox_net,
         "open_child_egress",
-        lambda state, roots: ("child_x", 4321, {}),
+        lambda state, roots, **kwargs: ("child_x", 4321, {}),
     )
     state = sandbox.SandboxResult(
         mechanism=sandbox.MECHANISM_LANDLOCK,

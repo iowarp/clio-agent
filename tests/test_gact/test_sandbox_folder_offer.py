@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -106,6 +107,30 @@ def test_allowing_the_card_grants_the_folder(world: Any) -> None:
     answer = client.post(f"/v1/permissions/{row['id']}", json={"action": "allow_workspace"})
     assert answer.status_code == 204, answer.text
     assert app.state.permissions[row["id"]]["status"] == "resolved"
+    granted = app.state.workspaces.get(wid).config.get("granted_write_roots") or []
+    assert any(Path(g) == outside.resolve() for g in granted)
+
+
+def test_a_folder_that_resolves_elsewhere_is_asked_again_not_dead(world: Any) -> None:
+    """Dry 20b: a card naming a symlinked spelling refused every Allow ("target changed")
+    and could only be denied. Now the first Allow re-asks the same card for the folder it
+    reaches, and that answer grants it. SABOTAGE: drop ``_reissue_if_moved`` -> red."""
+    if os.name == "nt":
+        pytest.skip("symlinks need privileges on Windows")
+    app, client, wid, sid, outside = world
+    link = outside.parent / "Linked"
+    link.symlink_to(outside)
+    row = _offer(app, sid, wid, _shell_result(outside, request_roots=[str(link)]))
+    assert row is not None
+    first = client.post(f"/v1/permissions/{row['id']}", json={"action": "allow_workspace"})
+    assert first.status_code == 409, first.text
+    assert "answer again" in first.text
+    live = app.state.permissions[row["id"]]
+    assert live["status"] == "pending" and live["actions"] == ["deny", "allow_workspace"]
+    assert live["access"]["folders"] == [str(outside.resolve())]
+    assert live["access"]["requested_folders"] == [str(link)]
+    second = client.post(f"/v1/permissions/{row['id']}", json={"action": "allow_workspace"})
+    assert second.status_code == 204, second.text
     granted = app.state.workspaces.get(wid).config.get("granted_write_roots") or []
     assert any(Path(g) == outside.resolve() for g in granted)
 

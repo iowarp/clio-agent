@@ -14,8 +14,11 @@ explanation instead of a bare exit code:
 
 from __future__ import annotations
 
+import logging
 import os
+import socket
 import subprocess
+import sys
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -23,6 +26,8 @@ from pathlib import Path
 from typing import Any
 
 import psutil
+
+logger = logging.getLogger(__name__)
 
 #: The most of Codex's stderr kept for a receipt, a log line or a message.
 STDERR_TAIL_CHARS = 1500
@@ -51,13 +56,19 @@ class EnforcementVerdict(tuple[bool, str]):
     """``(enforced, reason)`` that also carries the probe's ``detail`` for the message.
 
     It unpacks like the plain pair, so injected verifiers returning a tuple still fit.
+    ``net_isolated`` is set only by the Linux probe once it has proven the child's network
+    is isolated behind Codex's managed proxy.
     """
 
     detail: str
+    net_isolated: bool
 
-    def __new__(cls, enforced: bool, reason: str, detail: str = "") -> EnforcementVerdict:
+    def __new__(
+        cls, enforced: bool, reason: str, detail: str = "", *, net_isolated: bool = False
+    ) -> EnforcementVerdict:
         verdict = super().__new__(cls, (enforced, reason))
         verdict.detail = detail
+        verdict.net_isolated = net_isolated
         return verdict
 
 
@@ -119,7 +130,23 @@ def kill_tree(pid: int) -> None:
 #: Codex is installed on Linux but its bubblewrap fence cannot start a confined child here
 #: (typically: unprivileged user namespaces are disabled or blocked by seccomp/AppArmor).
 REASON_CODEX_LINUX_FENCE_UNAVAILABLE = "codex_linux_fence_unavailable"
+#: The fence started a child, but that child still shared the host network: it reached a
+#: host loopback listener directly, or Codex's managed proxy was not active. Egress through
+#: CLIO's proxy is then only cooperative and is recorded as such.
+REASON_CODEX_LINUX_NET_UNISOLATED = "codex_linux_net_unisolated"
 _LINUX_FENCE_PROBE_TIMEOUT_S = 20
+#: Run inside the fence: mark the start, then try the host listener directly. Only a refused
+#: connect inside Codex's managed proxy proves the child has no route but the proxy.
+_LINUX_NET_WITNESS = (
+    "import os, socket, sys\n"
+    "open('started', 'w').close()\n"
+    "try:\n"
+    "    socket.create_connection(('127.0.0.1', int(sys.argv[1])), 3).close()\n"
+    "    open('net-reached', 'w').close()\n"
+    "except OSError:\n"
+    "    if os.environ.get('CODEX_NETWORK_PROXY_ACTIVE') == '1':\n"
+    "        open('net-isolated', 'w').close()\n"
+)
 
 
 def probe_codex_linux_fence(binary: str) -> EnforcementVerdict:
@@ -127,21 +154,53 @@ def probe_codex_linux_fence(binary: str) -> EnforcementVerdict:
 
     Codex wraps children in bubblewrap, which needs a new user namespace. Containers with
     the default seccomp profile and hosts that restrict unprivileged user namespaces refuse
-    that, and every wrapped tool would then fail at spawn. The probe runs ``/bin/sh`` through
+    that, and every wrapped tool would then fail at spawn. The probe runs CLIO's Python through
     the same composition real spawns use and requires it to write a witness inside its root.
+
+    The same child also tries to reach a listener on the host's loopback without the proxy.
+    ``net_isolated`` is true only when that fails inside Codex's managed proxy, so CLIO claims
+    proxy-enforced egress only where the child has no other route out.
     """
-    from .sandbox_codex import compose_codex_spawn  # noqa: PLC0415 - sandbox_codex imports this
+    from .sandbox_codex import (  # noqa: PLC0415 - sandbox_codex imports this
+        compose_codex_spawn,
+        composed_layer,
+        release_codex_layer,
+    )
 
     try:
-        with tempfile.TemporaryDirectory(
-            prefix="clio-agent-codex-probe-", ignore_cleanup_errors=True
-        ) as allow:
+        with (
+            tempfile.TemporaryDirectory(
+                prefix="clio-agent-codex-probe-", ignore_cleanup_errors=True
+            ) as allow,
+            socket.socket() as listener,
+        ):
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            port = str(listener.getsockname()[1])
             command, args = compose_codex_spawn(
-                [allow], "/bin/sh", ["-c", ": > started"], binary=binary, platform="linux"
+                [allow],
+                sys.executable,
+                ["-I", "-c", _LINUX_NET_WITNESS, port],
+                binary=binary,
+                platform="linux",
             )
             run = run_probe([command, *args], timeout=_LINUX_FENCE_PROBE_TIMEOUT_S)
+            release_codex_layer(composed_layer(args))
             if run.returncode == 0 and (Path(allow) / "started").is_file():
-                return EnforcementVerdict(True, "codex_linux_fence_verified")
+                if (Path(allow) / "net-isolated").is_file():
+                    return EnforcementVerdict(True, "codex_linux_fence_verified", net_isolated=True)
+                reached = (Path(allow) / "net-reached").is_file()
+                detail = (
+                    "the fenced child reached the host loopback directly"
+                    if reached
+                    else "Codex's managed network proxy was not active in the fenced child"
+                )
+                logger.warning(
+                    "codex fence shares the host network reason=%s detail=%s",
+                    REASON_CODEX_LINUX_NET_UNISOLATED,
+                    detail,
+                )
+                return EnforcementVerdict(True, REASON_CODEX_LINUX_NET_UNISOLATED, detail)
             return EnforcementVerdict(False, REASON_CODEX_LINUX_FENCE_UNAVAILABLE, run.describe())
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         return EnforcementVerdict(
@@ -164,6 +223,7 @@ def _tail(raw: bytes) -> str:
 
 __all__ = [
     "REASON_CODEX_LINUX_FENCE_UNAVAILABLE",
+    "REASON_CODEX_LINUX_NET_UNISOLATED",
     "RETRY_SETUP_ACTION",
     "STDERR_TAIL_CHARS",
     "EnforcementVerdict",

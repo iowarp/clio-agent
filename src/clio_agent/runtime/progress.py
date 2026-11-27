@@ -72,7 +72,13 @@ def process_work(pid: int) -> float | None:
     except psutil.AccessDenied:
         return cpu
     # 1 MiB of I/O counts as one CPU second: a process flushing to a slow disk is busy.
-    return cpu + (io.read_bytes + io.write_bytes) / float(1 << 20)
+    # Linux's byte counters see only block devices; its char counters also see a server
+    # importing from a network filesystem (an NFS home), which is busy, not stuck.
+    read = getattr(io, "read_chars", None)
+    written = getattr(io, "write_chars", None)
+    if read is None or written is None:
+        read, written = io.read_bytes, io.write_bytes
+    return cpu + (read + written) / float(1 << 20)
 
 
 def tree_work(pid: int) -> float | None:
@@ -97,6 +103,7 @@ class ProcessTreeWork:
 
     def __init__(self, *roots: int) -> None:
         self._roots: list[int] = list(roots)
+        self._followed: list[ProcessTreeWork] = []
         self._seen: dict[tuple[int, float], float] = {}
         self._live: set[tuple[int, float]] = set()
 
@@ -105,19 +112,44 @@ class ProcessTreeWork:
         if pid not in self._roots:
             self._roots.append(pid)
 
+    def follow(self, other: ProcessTreeWork) -> None:
+        """Measure ``other``'s roots too, including any it gains later.
+
+        A wait that joins another wait's in-flight start measures the server that start
+        spawns, not an empty tree of its own.
+        """
+        if other is not self and other not in self._followed:
+            self._followed.append(other)
+
     @property
     def roots(self) -> tuple[int, ...]:
         """The root pids measured."""
-        return tuple(self._roots)
+        roots = list(self._roots)
+        for other in self._followed:
+            roots.extend(pid for pid in other.roots if pid not in roots)
+        return tuple(roots)
+
+    def alive(self) -> bool:
+        """Whether any measured root process is still running (not a zombie)."""
+        import psutil  # noqa: PLC0415
+
+        for root in self.roots:
+            try:
+                if psutil.Process(root).status() != psutil.STATUS_ZOMBIE:
+                    return True
+            except psutil.Error:
+                continue
+        return False
 
     def sample(self) -> float | None:
         """The trees' cumulative work, ``None`` while there is no root to measure."""
         import psutil  # noqa: PLC0415
 
-        if not self._roots:
+        roots = self.roots
+        if not roots:
             return None
         live: set[tuple[int, float]] = set()
-        for root in self._roots:
+        for root in roots:
             try:
                 proc = psutil.Process(root)
                 members = [proc, *proc.children(recursive=True)]

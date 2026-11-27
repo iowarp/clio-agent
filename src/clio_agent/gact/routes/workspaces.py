@@ -61,6 +61,7 @@ from clio_agent.gact.types import (
     Workspace,
 )
 from clio_agent.gact.workspace_roots import WorkspaceRootConflict
+from clio_agent.gact.workspace_warmup import start_workspace_warmup
 from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
@@ -315,6 +316,8 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
             await run_off_loop(
                 lambda: _emit_boundary_root(app, ws.id, ws.root_path, grantor=_GRANTOR_USER)
             )
+            # Its default-agent servers start now, off this request (and are reaped idle).
+            start_workspace_warmup(app, ws.root_path)
         return project_for_request(
             request,
             v3=lambda: JSONResponse(content=workspace_to_v3(ws), status_code=201),

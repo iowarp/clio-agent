@@ -1,7 +1,7 @@
 """Reuse preflight: verify what a target already holds before installing it again.
 
 One helper for every infrastructure install (model runtimes, Flowcept, CMF,
-web search, remote CLIO, Relay, model downloads). An install step asks it
+web search, remote CLIO, model downloads). An install step asks it
 whether the thing it is about to produce is already present under the SAME
 verified identity -- a digest-keyed SIF in the shared image store, a local
 Docker/Podman image addressed by its digest, a uv environment built from the

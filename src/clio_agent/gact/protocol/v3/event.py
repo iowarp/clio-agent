@@ -321,6 +321,8 @@ def _tool_presentation_delta(event: Event, payload: dict[str, Any], session: Any
 
 
 def _permission_requested(event: Event, payload: dict[str, Any], session: Any) -> _Projection:
+    from clio_agent.gact.permission_delivery import permission_title  # noqa: PLC0415
+
     del session
     tool_call = _mapping(payload.get("tool_call"))
     entity_id = str(payload.get("permission_id") or payload.get("id") or "")
@@ -341,6 +343,7 @@ def _permission_requested(event: Event, payload: dict[str, Any], session: Any) -
         ),
         "input": tool_call.get("input", payload.get("input")),
         "summary": str(payload.get("summary") or "Protected action requires approval"),
+        **({"title": title} if (title := permission_title(payload)) else {}),
         "status": "pending",
         "created_at": str(payload.get("created_at") or event.occurred_at),
         **({"reason": str(payload["reason"])} if payload.get("reason") else {}),
