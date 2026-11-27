@@ -150,9 +150,13 @@ def register(
 
     ``launch`` (:func:`launch_key`) lets a fleet share a sibling's server of the same
     launch; without it the proxy is never shared. ``owner`` (:func:`connector_owner`)
-    tells two connectors of one name apart.
+    tells two connectors of one name apart. The proxy also takes its server's egress
+    channel from the transport (:func:`clio_agent.tools.fleet_serving.stamp_net_child`).
     """
 
+    from clio_agent.tools.fleet_serving import net_child_of, stamp_net_child  # noqa: PLC0415
+
+    stamp_net_child(proxy, net_child_of(transport))
     if not root or proxy is None:
         return
     key = (_folder(root), namespace, owner)

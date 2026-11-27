@@ -39,7 +39,7 @@ class _Agent:
             self._workspace_executor_lock,
             leases=self.leases,
             ttl_s=ttl_s,
-            channel_closer=lambda _root: 0,
+            channel_closer=lambda _key, _executor: 0,
         )
 
     def _workspace_state(self) -> tuple[threading.Lock, dict[str, Any], dict[str, int]]:

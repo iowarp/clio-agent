@@ -14,7 +14,6 @@ name the child (no timing heuristic).
 from __future__ import annotations
 
 import logging
-import threading
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
@@ -27,104 +26,6 @@ logger = logging.getLogger(__name__)
 
 #: The loopback host every confined child reaches the chokepoint on (clio-private).
 _LOOPBACK_HOST = "127.0.0.1"
-
-
-# --------------------------------------------------------------------------- #
-# Fleet namespace → serving child map (B5 #979.7 — the deferred B4 WRITER).
-# --------------------------------------------------------------------------- #
-#
-# A confined MCP-fleet proxy is ONE persistent child per (workspace, namespace): its
-# ``net_child_id`` is minted at ``transport_for`` (proxy build) and is stable for the child's
-# life. The gact tool-observer mints the ``call_id`` on a DIFFERENT thread and only knows the
-# tool NAME (``<namespace>_<tool>``), so this runtime-layer registry bridges the two: the
-# spawn seam registers ``(workspace_root, namespace) -> net_child_id`` here, and the observer
-# resolves it to call ``register_serving_child(app, call_id, net_child_id)`` — completing the
-# ``egress -> child -> call-window -> transform`` join (#978 pt 5). Keyed by workspace_root +
-# namespace (NOT process-global by namespace alone), so two workspaces' identically-named
-# namespaces never cross-attribute; the fleet child is workspace-shared, so a workspace key is
-# the child's real scope (a session key would be too narrow — sessions share the child). A
-# rebuilt gateway overwrites the entry with the fresh child; the floor leaves it empty
-# (net_child_id="" → the observer no-ops → the mint abstains: precision preserved).
-_NAMESPACE_CHILD: dict[tuple[str, str], str] = {}
-_NAMESPACE_CHILD_LOCK = threading.Lock()
-
-
-def _ns_key(workspace_root: Optional[str], namespace: str) -> tuple[str, str]:
-    root = ""
-    if workspace_root:
-        try:
-            root = str(Path(workspace_root).expanduser().resolve(strict=False))
-        except OSError:
-            root = str(Path(workspace_root).expanduser())
-    return root, (namespace or "").strip()
-
-
-def register_namespace_child(
-    workspace_root: Optional[str], namespace: str, net_child_id: str
-) -> None:
-    """Associate a fleet namespace's persistent confined child with its ``net_child_id`` (B5).
-
-    No-op for an empty ``net_child_id`` (the floor / unfenced case) or empty ``namespace``.
-    """
-    child = (net_child_id or "").strip()
-    ns = (namespace or "").strip()
-    if not child or not ns:
-        return
-    with _NAMESPACE_CHILD_LOCK:
-        _NAMESPACE_CHILD[_ns_key(workspace_root, ns)] = child
-
-
-def resolve_namespace_child(workspace_root: Optional[str], namespace: str) -> str:
-    """Return the confined ``net_child_id`` serving ``namespace`` in ``workspace_root``, or ``""``."""
-    ns = (namespace or "").strip()
-    if not ns:
-        return ""
-    with _NAMESPACE_CHILD_LOCK:
-        return _NAMESPACE_CHILD.get(_ns_key(workspace_root, ns), "")
-
-
-def clear_namespace_children() -> None:
-    """Drop all namespace→child associations (test isolation seam)."""
-    with _NAMESPACE_CHILD_LOCK:
-        _NAMESPACE_CHILD.clear()
-
-
-def close_namespace_children(workspace_root: Optional[str]) -> int:
-    """Close + drop every per-child net channel serving ``workspace_root`` (#1033).
-
-    The stop half of a drain-aware fleet restart: when a workspace's resident fleet is
-    torn down (reaped for idle/LRU, or restarted to pick up a widened write territory), its
-    per-child chokepoint listeners must go with it — otherwise they leak toward the bounded
-    ``_MAX_CHILD_CHANNELS`` cap (the previously-UNWIRED :func:`close_child_channel` seam). Pops
-    each ``(root, namespace) -> net_child_id`` entry for the root and closes that specific
-    channel by id (compare-and-close is unnecessary here because the pop removes exactly the
-    ids we then close; a subsequent lazy respawn registers fresh ids). Returns the count of
-    channels closed. Guarded per channel with a typed reason — a close error never leaves a
-    half-popped registry.
-    """
-    root = _ns_key(workspace_root, "")[0]
-    if not root:
-        return 0
-    with _NAMESPACE_CHILD_LOCK:
-        keys = [key for key in _NAMESPACE_CHILD if key[0] == root]
-        children = [_NAMESPACE_CHILD.pop(key) for key in keys]
-    if not children:
-        return 0
-    from clio_agent.runtime.net_chokepoint import close_child_channel  # noqa: PLC0415
-
-    closed = 0
-    for child in children:
-        try:
-            close_child_channel(child)
-        except Exception as exc:  # noqa: BLE001 — a channel-close error is typed, never silent
-            logger.warning(
-                "net child channel close skipped reason=net_child_close_failed child=%s error=%r",
-                child,
-                exc,
-            )
-            continue
-        closed += 1
-    return closed
 
 
 def net_mechanism_label(state: "SandboxResult") -> str:
@@ -238,10 +139,6 @@ def _proxy_overlay(proxy_url: str) -> dict[str, str]:
 
 
 __all__ = [
-    "clear_namespace_children",
-    "close_namespace_children",
     "net_mechanism_label",
     "open_child_egress",
-    "register_namespace_child",
-    "resolve_namespace_child",
 ]

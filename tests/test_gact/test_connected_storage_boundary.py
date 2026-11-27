@@ -57,7 +57,7 @@ def _agent_with_fleet(root: str) -> tuple[ClioAgent, SimpleNamespace]:
     executor.close = lambda: setattr(executor, "closed", True)
     executors[canonical_workspace_root(root)] = executor
     agent._workspace_reaper = WorkspaceExecutorReaper(
-        executors, lock, leases=leases, tick_s=3600, channel_closer=lambda _root: 0
+        executors, lock, leases=leases, tick_s=3600, channel_closer=lambda _key, _executor: 0
     )
     return agent, executor
 

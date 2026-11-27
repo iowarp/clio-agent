@@ -270,14 +270,19 @@ def test_a_turn_lease_on_the_workspace_protects_every_fleet_there() -> None:
     leases = {"/ws": 1}
     closed_channels: list[str] = []
     reaper = WorkspaceExecutorReaper(
-        registry, lock, leases=leases, ttl_s=1.0, channel_closer=closed_channels.append
+        registry,
+        lock,
+        leases=leases,
+        ttl_s=1.0,
+        channel_closer=lambda key, _executor: closed_channels.append(key) or 0,
     )
     assert reaper.reap_once() == ["/other"]
     assert sorted(registry) == ["/ws", "/ws|cv=abc"]
     leases.clear()
     registry["/ws"].busy = True  # one fleet of the workspace still in use
     assert reaper.reap_once() == ["/ws|cv=abc"]
-    assert closed_channels == ["/other"]  # /ws's channels stay while its plain fleet runs
+    # The reaped fleet's own channels close; the plain fleet's stay with it.
+    assert closed_channels == ["/other", "/ws|cv=abc"]
 
 
 # ---------------------------------------------------------- setting values

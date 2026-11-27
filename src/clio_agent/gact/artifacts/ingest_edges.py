@@ -211,10 +211,10 @@ def join_call_to_serving_child(
 ) -> None:
     """Join a fleet ``call_id`` to its confined child's ``net_child_id`` (B5 #979.7, guarded).
 
-    A namespaced tool name is ``<namespace>_<tool>``; the fleet proxy for that namespace is one
-    persistent confined child whose ``net_child_id`` was registered at spawn (mcp_config
-    ``transport_for`` → :func:`clio_agent.runtime.sandbox_net.register_namespace_child`), keyed
-    by the workspace root. Resolve the child and record ``call_id -> net_child_id`` via
+    A namespaced tool name is ``<namespace>_<tool>``; the server the conversation's fleet
+    routes that namespace to carries its own ``net_child_id`` (stamped at spawn,
+    :mod:`clio_agent.tools.fleet_serving`), so two fleets of one folder running a namespace
+    of the same name are told apart. Record ``call_id -> net_child_id`` via
     :func:`register_serving_child` so the egress-only ingest mint (:func:`attach_ingest_edges`)
     can attribute THIS call's egress deterministically (#978 pt 5). Empty child (floor /
     built-in namespace) is a no-op — the mint abstains (precision over recall). Never raises.
@@ -224,13 +224,9 @@ def join_call_to_serving_child(
     """
     try:
         namespace = tool_name.split("_", 1)[0] if "_" in tool_name else tool_name
-        session = app.state.sessions.get(session_id) if session_id else None
-        workspace_id = str(getattr(session, "workspace_id", "") or "")
-        ws = app.state.workspaces.get(workspace_id) if workspace_id else None
-        workspace_root = str(getattr(ws, "root_path", "") or "")
-        from clio_agent.runtime.sandbox_net import resolve_namespace_child  # noqa: PLC0415
+        from clio_agent.gact.session_fleet import session_net_child  # noqa: PLC0415
 
-        child = resolve_namespace_child(workspace_root, namespace)
+        child = session_net_child(app, session_id, namespace)
         if child:
             register_serving_child(app, call_id, child)
     except Exception:  # noqa: BLE001 — a linkage note must never break the tool call

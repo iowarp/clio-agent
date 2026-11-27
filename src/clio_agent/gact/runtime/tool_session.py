@@ -40,10 +40,9 @@ def _rootless_lease_target(server_set: str) -> str:
     A workspace without a root folder runs on the default executor, which is never
     reaped, unless its server set has a fleet of its own (``fleet_own_set``).
     """
-    from clio_agent.tools.fleet_key import fleet_key  # noqa: PLC0415
-    from clio_agent.tools.fleet_own_set import fleet_variant  # noqa: PLC0415
+    from clio_agent.tools.fleet_serving import serving_fleet_key  # noqa: PLC0415
 
-    return fleet_key("", fleet_variant(server_set.strip(), ""))
+    return serving_fleet_key("", server_set)
 
 
 async def _finish_fleet_lease_change(change: asyncio.Task[Any]) -> bool:

@@ -72,12 +72,9 @@ def _serving_fleet(cwd: Path | None, server_set: str) -> str:
     ``""`` is the default executor, which serves a workspace without a root folder.
     """
 
-    from clio_agent.tools.fleet_key import fleet_key  # noqa: PLC0415
-    from clio_agent.tools.fleet_own_set import fleet_variant  # noqa: PLC0415
-    from clio_agent.tools.workspace_root import canonical_workspace_root  # noqa: PLC0415
+    from clio_agent.tools.fleet_serving import serving_fleet_key  # noqa: PLC0415
 
-    root = canonical_workspace_root(str(cwd) if cwd is not None else "")
-    return fleet_key(root, fleet_variant(server_set.strip(), root))
+    return serving_fleet_key(str(cwd) if cwd is not None else "", server_set)
 
 
 @dataclass(frozen=True)

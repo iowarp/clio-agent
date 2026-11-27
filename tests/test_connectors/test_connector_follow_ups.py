@@ -232,7 +232,7 @@ def test_the_reaper_tells_listeners_which_fleet_it_closed() -> None:
     try:
         registry: dict[str, Any] = {"/ws": Fleet()}
         reaper = WorkspaceExecutorReaper(
-            registry, threading.Lock(), ttl_s=1.0, channel_closer=lambda _r: 0
+            registry, threading.Lock(), ttl_s=1.0, channel_closer=lambda _key, _executor: 0
         )
         assert reaper.reap_once() == ["/ws"]
     finally:
