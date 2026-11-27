@@ -1,0 +1,174 @@
+---
+title: "Follow work in progress"
+description: "See what is running, what is waiting for you and which results are ready to inspect."
+source: https://clio.iowarp.ai/docs/following-work/
+---
+
+# Follow work in progress
+
+See what is running, what is waiting for you and which results are ready to inspect.
+
+> **Preview:** The compact activity rows, current todos and child follow-ups shown here (in development builds). Availability depends on your build.
+
+While CLIO works, its latest activity group opens so you can follow its operations.
+A newer visible entry folds the earlier automatic group. Groups you open or close
+yourself keep that choice, including when you reopen a panel. Completed history
+starts folded; expand a group to inspect it.
+You can read a command, inspect a result, and open the details of delegated work.
+The **Work** summary on the right keeps ongoing work accessible while you read
+the conversation.
+
+![Collapsed Run tool row showing a command, exit code zero, duration and disclosure arrow](plugin-asset://guide/captures/docs-tool-collapsed.webp)
+*Start with the compact receipt: what ran, its exit code and its duration. Open the row for the command and output; the information icon opens technical details.*
+
+## Tools, tasks, and todos
+
+| Item | What it represents | Where to look |
+| --- | --- | --- |
+| Tool call | One operation requested by the agent, such as reading a file, running a command, or asking a question. | The conversation's activity collection and **Tool calls**. |
+| Background task | Work that can continue after the operation that started it returns. Examples include a shell job, a delegated agent, or a task from a connected tool. | **Background tasks**, its linked details, and recorded task results. |
+| Child agent | A delegated agent carrying out an assignment with its own conversation and operations. | **Child agents** and the child's conversation. |
+| Todo | A checklist item describing planned work. Its status is maintained by the agent. | **Todos** in the Work summary and full Work view. |
+
+A tool call can start a task. For example, delegation returns an accepted
+assignment while the child agent continues working. A todo can describe that
+assignment, but marking a todo complete does not independently verify the task's
+output.
+
+## Inspect a tool call
+
+Tool calls start collapsed. Open a row when you need its details. A **Run** row
+separates the **Command** from the **Output**. Long output may offer a full saved
+version; use that link when the preview is insufficient. Other tools show their
+input and the returned result.
+
+![A recorded tool call expanded to show the input and returned result](plugin-asset://guide/captures/docs-tool-command-output.webp)
+*The same Run row, opened. Command is what CLIO executed; Output is what the process returned. Show more expands the retained preview.*
+
+An exit code or failure belongs to that operation. Read its output and CLIO's
+explanation to see whether it recovered, needs your input, or left work incomplete.
+A later successful call does not erase an earlier failure from the record.
+
+The activity collection also includes [injections](docs/injections.md), such as a
+todo reminder or a background result delivered to the agent. Expand one to see
+the context CLIO supplied.
+
+## Follow background work
+
+Open a task's details to inspect its assignment, status, and available result.
+For a child agent, follow its conversation to inspect the operations behind the
+returned summary. The parent may continue independent work while a task runs.
+
+| Status or result | What it tells you |
+| --- | --- |
+| Accepted or queued | CLIO accepted the work; a final result is not yet available. |
+| Running | The operation or delegated agent is still working. |
+| Input required | Work needs a response or approval before it can proceed. |
+| Completed or turn ended | The operation or agent turn ended. Inspect the returned result to learn whether the assignment succeeded. |
+| Failed, cancelled, or interrupted | Work ended without ordinary completion. Inspect the reason and any retained output. |
+
+For an audit, look for the actual checks and their outcomes. “Completed” alone
+does not establish that data passed validation or that every requested file was
+created.
+
+## Send a follow-up to a child agent
+
+Click a child agent to open its conversation in a **workspace tab**, keeping the
+parent visible. **Shift-click** opens the child in the center. Keyboard activation
+works the same way: **Enter** opens a tab; **Shift+Enter** opens the center. The
+child tab also has a **Make central** button.
+
+![A child-agent conversation open in a workspace tab beside its parent, with Make central and its own follow-up box](plugin-asset://guide/captures/docs-child-tab.webp)
+*The parent stays visible when you open a child. Use Make central to give the child conversation more room.*
+
+Open the child from **Child agents**, then type in its follow-up box and select
+**Send**. This works in the side panel and when the child's conversation is
+central. Your message goes to that child using its configured model and behavior.
+
+While the child is running, the message joins its work at the next supported
+boundary. After its turn ends, a follow-up starts another turn in the same
+conversation. The child keeps its relationship to the parent; **Return to parent**
+takes you back there.
+
+![Delegated conversation footer with a follow-up about calibration, Send, and Return to parent](plugin-asset://guide/captures/docs-child-followup.webp)
+*Send a follow-up from the child's central view or side panel. Return to parent takes you back to the owning conversation.*
+
+An unsent draft survives closing and reopening the child view or moving it
+between the side panel and the central column. **Enter** sends; **Shift+Enter**
+adds a line. If a send fails, retrying the unchanged draft preserves its request
+identity so a lost acknowledgement does not create a second message.
+
+## Understand a wait
+
+A wait observes work already started. It does not launch another copy of the task.
+**Wait for all tasks** waits for every selected task to settle; **Wait for any
+task** returns when one settles. A bounded wait can return with tasks still pending.
+An immediate status check can therefore show no collected results while work runs.
+
+The agent's ordinary task wait has no deadline by default. If a task remains
+pending after a wait returns, inspect whether the agent requested a timeout or an
+immediate check. Stopping a wait and cancelling its background task are separate
+actions. Use the task's cancellation control when you intend to stop that work.
+
+![Expanded Wait for all tasks receipt showing No deadline, one result collected, and the subagent's mean calculation](plugin-asset://guide/captures/docs-wait-all-result.webp)
+*This recorded wait had no deadline and returned one collected result. Turn ended describes the child agent's status; the text beneath it is the result to inspect.*
+
+Long-running goals can also park until a task finishes and resume when its result
+arrives. See [Goals, loops and scheduled work](docs/long-running-work.md).
+
+## Follow the session plan
+
+For larger work the agent can keep a **session plan**: a Markdown document with its
+approach, the threads of work and what it has found. It is separate from the todo
+list, which tracks individual steps.
+
+- **Planning first.** In Plan mode, or when the agent decides you should approve an
+  approach before anything changes, it writes the plan while only reading, then asks
+  you to approve it.
+- **Planning while working.** Outside Plan mode the agent can write a plan to carry out
+  itself and keep it current as findings change its direction.
+
+The plan appears in the **Plan** section of **Work**, with its status, the plan file's
+name and the plan itself:
+
+| Status | Meaning |
+| --- | --- |
+| **Draft, in plan mode** | Being written in Plan mode. |
+| **Approved, being worked on** | You approved it, and the agent is carrying it out. |
+| **active** | The agent wrote it outside Plan mode to carry out itself. Nobody approved it. |
+| **Done** or **Abandoned** | The agent closed it. |
+
+Choose **Edit plan** to change it yourself, then **Save plan**. The agent receives your
+version at its next step, marked as your edit, and treats it as your direction.
+
+While a plan is open, the agent is reminded of it when it changes and after its context
+is compacted. If an active plan goes 25 steps without an update to it or to the todo
+list, the agent gets a
+one-line note and decides whether the plan needs one. When the agent marks a plan done,
+CLIO tells it how many threads the plan still marks as open or active, or that no thread
+carries a state such as `[open]` or `[closed]`.
+
+## Focus on current todos
+
+Pending and in-progress items appear first. **Show completed** reveals finished
+items when you need the history. A count such as **3/5 current** means three items
+remain open out of five total.
+
+![Todos showing three current items and a Show completed control for two finished items](plugin-asset://guide/captures/docs-todos-current.webp)
+*Keep attention on the three open items. The yellow icon marks work in progress; empty boxes mark pending work. Two completed items stay under Show completed.*
+
+Open **Show completed** when you need the history. The current items remain
+above the finished ones, and **Hide completed** returns to the focused list.
+
+![The same todo list with completed dashboard and capacity-check items revealed below the current work](plugin-asset://guide/captures/docs-todos-completed.webp)
+*The same checklist after opening completed history. Revealing these items changes the display, not their status.*
+
+Use the checklist to understand the plan and the tool results to check the work.
+You can ask:
+
+```text
+Show what is still running, what needs my answer, and the evidence for the checks that finished.
+```
+
+- [Your workspace](docs/workspace-panels.md): Choose Work, Evidence, Timeline, Gantt, or Context for the detail you need.
+- [Answer an open question](docs/questions.md): Respond without losing track of the work that asked.

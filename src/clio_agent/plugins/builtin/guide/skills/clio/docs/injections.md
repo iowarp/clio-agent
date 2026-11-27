@@ -1,0 +1,123 @@
+---
+title: "Updates during a conversation"
+description: "Understand reminders, background results and recovered context that appear while CLIO works."
+source: https://clio.iowarp.ai/docs/injections/
+---
+
+# Updates during a conversation
+
+Understand reminders, background results and recovered context that appear while CLIO works.
+
+> **Preview:** The grouped update rows pictured here (in development builds). Availability depends on your build.
+
+CLIO can receive an update while it is working: a background check finishes, a
+scheduled instruction becomes due, or an earlier decision is brought back into
+context. These updates appear in the activity record as **Injection** rows.
+Open one when you want to understand why the agent continued or changed direction.
+
+![Activity collection labelled Received loop wake, ran commands, containing an Injection Loop wake row followed by Run](plugin-asset://guide/captures/docs-injection-collection.webp)
+*An injection belongs to the activity collection. Here, a loop wake supplies the instruction and the Run row records the command used to check the files.*
+
+## Understand an update
+
+Expand the activity collection and find the syringe icon followed by
+**Injection** and its description. Open the row to read the supplied text. Use
+**Open exact details** for the recorded data when you need to inspect the full
+record.
+
+![The same activity collection with Injection Loop wake expanded to show its instruction and Open exact details](plugin-asset://guide/captures/docs-injection-collection-open.webp)
+*Open Injection Loop wake to read what the agent received. Open exact details exposes the recorded data; expanding the row does not run the command again.*
+
+An injection is not a message you typed or the agent's final answer. Its presence
+also does not mean the requested work succeeded. A background completion notice
+delivers an outcome for the agent to inspect; the task's actual result provides
+the evidence.
+
+## Common updates and what they mean
+
+| Type | Why CLIO supplies it |
+| --- | --- |
+| Background task completion; Results from background tasks | A previously started operation ended, or its retained result is being delivered. |
+| Todo list reminder | Keeps the current checklist available to the agent. |
+| Recovered conversation context; Summarization | Restores earlier context or carries a condensed record forward. |
+| Memory search results | Provides relevant retained information found through memory search. |
+| Plan mode; Replanning suggestion | Supplies the rules of Plan mode, or suggests reconsidering the plan after a stall. |
+| Session plan; Session plan (shortened) | Offers the [session plan](docs/following-work.md#follow-the-session-plan) while it is a draft, approved or active: when it changed and after a compaction. A plan too long for its share of the context is cut, with where to read the rest. |
+| Plan edited by you | Offers the plan as you edited it in Work, once, at the agent's next step, as your direction. |
+| Plan not updated lately | One line when an active plan has gone 25 steps without an update. The agent decides whether it needs one. |
+| Explore suggestion | After several reading calls in one response, notes that a separate explore agent could take the rest of the search. At most once per response. |
+| Session facts | The conversation's own facts: its workspace folder, where to write, the computer, its scratch folder, connected sources and uploaded files. Offered when they change and after a compaction. |
+| Report instructions | Tells a subagent that its final answer goes to the agent that started it, as written. |
+| Compaction failed; Compaction skipped | A notice for you that summarizing the context failed, or that the next automatic compaction waits for more room. The agent does not see these. |
+| Notice from a background task; Message from a script | A message sent by a running task, such as a [background script](docs/scripts.md#messages-from-a-script), naming the task. **Show the script in Work** opens its row. |
+| Task result; Answer to a question | Heads each result or answer the agent receives with who sent it, the task and its status. |
+| Goal judgment | Reports the goal check and guidance for continued work. |
+| Loop wake; Scheduled wake | Delivers an instruction from a monitoring loop or scheduled action. |
+| Repeated-failure warning | Calls attention to repeated unsuccessful operations. |
+| Large result saved to a file | A tool result longer than the agent is shown: the agent reads its beginning, and the note says how long it was and which file holds the rest. |
+| Path suggestion | Supplies a relevant file or folder location. |
+| Hook | Supplies context produced by a configured hook. |
+| Tool use | Supplies guidance about using the available tools. |
+| Drafting alternatives; Advice for this draft | Supplies instructions or feedback while generating and reviewing alternatives. |
+
+Not every conversation uses every type. Goals, loops, schedules, hooks, and
+connected tools determine which additions are relevant.
+
+## Reminders
+
+Most of these updates are **reminders**: short texts CLIO adds to what the agent
+reads, each with a rule for when it appears. Open **Settings → Prompts and commands**
+and choose the **Reminders** tab to see them. Each row has its title, what it does, when
+it appears, any settings such as the number of steps before the stale-plan note, and
+whether it is **On** or **Off**.
+
+- **Switch one off** with its switch. It is no longer added from then on. A switch
+  keeps following the built-in wording, so later improvements to the text still reach
+  you.
+- **Edit its text** by opening it. Your change is saved as a visible override of the
+  built-in text, and the editor's **Rendered preview** shows the result against the
+  connected service.
+- **Plugins' reminders** are listed beside CLIO's own and can be switched off the same
+  way. A plugin cannot make its reminder always on.
+- **Some are always on.** A reminder the agent cannot work correctly without, such as
+  the note that a tool result was cut or the heading of each notification, shows
+  **Always on** and a line saying why it cannot be turned off.
+
+## Example: a goal still needs work
+
+A **Goal judgment** can explain why work should continue. Read the reason before
+treating a finished turn as a finished assignment. Here,
+two files had confirmed saves and the third still needed to be saved.
+
+![Expanded Goal judgment explaining that plan.md and results.md were saved but report.md still needed a successful save](plugin-asset://guide/captures/docs-injection-goal.webp)
+*The judgment names the missing deliverable and carries the goal's continuation instructions. It records the controller's guidance at that point in the workflow.*
+
+## Example: a task returns while you read
+
+You ask CLIO to check several files. It delegates one check and continues with
+the others. When the delegated check ends, CLIO records a background completion
+injection. The parent reads the result and can incorporate it into its answer.
+
+Follow the task or child-agent details to inspect the returned check. If the
+result says verification is incomplete, the completion notice does not change
+that conclusion.
+
+![Expanded Wait for all tasks showing one collected result and the child agent's calculation](plugin-asset://guide/captures/docs-wait-all-result.webp)
+*Open the returned task result to read the check. Turn ended describes the child agent's status; the calculation beneath it is the result.*
+
+## Example: a scheduled check begins
+
+You ask CLIO to inspect a job later. A **Scheduled wake** carries that saved
+instruction into the conversation when it is due. A **Loop wake** does the same
+for a repeated check. Open the injection to see the instruction, then inspect
+the following operations for what actually happened.
+
+The row records supplied context. To change or stop future scheduled work, use
+the controls in **Work**; collapsing an injection only changes its display.
+
+![Scheduled wake expanded above the resulting saved report](plugin-asset://guide/captures/docs-schedule-injection.webp)
+*Scheduled wake carries the saved instruction into the conversation. The following response and output show what happened after it arrived.*
+
+- [Goals, loops and scheduled work](docs/long-running-work.md): Set up continued work and inspect its controls.
+- [Follow work in progress](docs/following-work.md): Find the operation and result behind a notification.
+- [What CLIO remembers](docs/memory.md): Inspect retained information used in a conversation.

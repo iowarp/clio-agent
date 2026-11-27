@@ -10,7 +10,9 @@ URL-valued property (``url`` / ``uri`` / ``dataUri``,
 * a workspace file path -- exported as an artifact when the surface is
   produced, so it renders for every viewer, local or remote;
 * an ``artifact://`` / ``resource://`` reference -- resolved through the
-  service, the same way.
+  service, the same way;
+* a ``plugin-asset://<plugin>/<path>`` reference -- a file under the ``assets/``
+  folder of a plugin the conversation's agent carries, resolved the same way.
 
 This is a property of CLIO's runtime (the producer's export boundary and the
 clients' loaders), not of any one catalog, so it is stated HERE and rendered
@@ -89,6 +91,11 @@ def media_source_lines(file: Mapping[str, Any]) -> list[str]:
             "or remote."
         ),
         "- An `artifact://` reference a tool returned renders the same way.",
+        (
+            "- `plugin-asset://<plugin>/<path>` names a file under the `assets/` folder "
+            "of a plugin this conversation carries (a bundled screenshot or diagram); "
+            "it renders the same way, offline."
+        ),
         (
             f"To show media that lives on the web, {DOWNLOAD_RECOVERY}; CLIO exports "
             "it as an artifact."

@@ -1,0 +1,143 @@
+---
+title: "Messages and feedback"
+description: "Deliver feedback at the next model iteration, wake an idle recipient, and coordinate with an authorized session."
+source: https://clio.iowarp.ai/docs/tasks/messages/
+---
+
+# Messages and feedback
+
+Deliver feedback at the next model iteration, wake an idle recipient, and coordinate with an authorized session.
+
+Give feedback while an agent works. The message can join its next model iteration;
+it does not have to wait for the whole answer to your original request. An
+authorized agent can use the same durable mailbox to coordinate with another session.
+
+> **Development preview:** these guides describe the task updates under review. Availability depends on your build.
+
+## Busy, idle and paused recipients
+
+| Recipient | Message delivery |
+| --- | --- |
+| Busy | Queued before its next model call at a safe iteration boundary. An active foreground tool call must return first. |
+| Idle | The queued message can wake the recipient automatically. |
+| Paused | The message remains queued. Sending ordinary peer mail does not remove the hold. |
+| Terminal subagent | Addressing the child can create a linked successor while preserving the earlier run and result. |
+
+A durable acknowledgement means CLIO accepted the message. It does not mean the
+recipient has read or acted on it. Messages carry source and target identities;
+replies can refer to the original message and correlation ID.
+
+## Find an earlier conversation, then address it exactly
+
+```text
+Find the session where we investigated the calibration mismatch. Read its summary
+and ask that session to check whether its conclusions apply to this dataset.
+Use the exact session returned by the search, and report the reply here.
+```
+
+This is an example request. Discovery and messaging require the corresponding
+tools among the conversation's plugins and the permitted session scope.
+
+You can also ask without knowing the session's name:
+
+```text
+The other day we talked about catering costs and contingency. Find the agents
+that worked on it, read what they decided, and show me the relevant note.
+```
+
+The model chooses topic words for the search, then checks the returned
+transcripts. It should identify matching sessions with dates and source passages;
+it should not treat the first match as proof of the remembered decision.
+
+1. Discover readable sessions with `query_tasks(kind="Session", scope="authorized", query="relevant words")`.
+2. Read the returned handle with `observe_tasks(view="transcript")` or
+   `observe_tasks(view="summary")`. Use `view="artifacts"` for linked deliverables.
+3. Address the exact authorized handle or stable session with `send_agent_message`.
+4. Continue other work. The recipient can reply through the mailbox; an idle
+   sender can wake to receive that reply.
+
+### Search a discussion within a date range
+
+`scope="authorized"` searches across the sessions you can read, not just the
+current conversation. `kind="Session"` limits results to root assignments;
+include Subagents by omitting `kind` when searching message dates.
+
+For example, the agent can narrow the topic search to October 19 in Chicago:
+
+```python
+query_tasks(
+    scope="authorized",
+    query="catering contingency",
+    message_after="2026-10-19T00:00:00-05:00",
+    message_before="2026-10-20T00:00:00-05:00",
+)
+```
+
+Both timestamps are optional. The start is inclusive and the end is exclusive;
+each must include a timezone. The filters select **when retained messages were
+written**, so a recent discussion inside an older session can match. With a date
+filter, topic words must occur in the selected messages; an old description or
+title cannot make an unrelated recent discussion match. A date-only query finds
+readable Session/Subagent assignments with messages in the window.
+
+Results still identify finite assignments. Read their transcripts to verify the
+passages and group multiple assignments belonging to the same conversation.
+They retain assignment creation order, rather than relevance or discussion-date
+order. Follow each cursor with the same query and time bounds; changing them is
+an error. An empty or reversed date window is also an error.
+Time filters narrow lexical search; they do not add semantic similarity retrieval
+or grant access to another session.
+
+<details>
+<summary>Current task reads and retained compatibility names</summary>
+
+- **Query tasks** searches readable descriptions and retained transcript text and
+  returns handles usable by the shared controls. Search is lexical: all supplied
+  search terms must occur in an assignment's searchable text. It is not semantic
+  similarity retrieval. The agent can broaden a query or try alternate wording.
+  Optional `message_after` and `message_before` narrow the retained conversation
+  messages being searched. Omit them to retain description and title matching.
+- **Observe transcript, summary or artifacts** reads original typed transcript
+  rows, recorded summaries/outcomes with coverage, or linked deliverables. Follow
+  returned cursors; a recorded summary is not a new whole-session summary.
+- The old `session_search`, `session_read_summary` and
+  `session_read_context_frame` names remain explicitly selectable compatibility
+  interfaces, not default tools. The old summary still means recent activity;
+  the context-frame reader still inspects assembly provenance rather than all
+  referenced contents. Their presence does not establish long-term memory.
+
+Use exact source references for deeper reading. A short summary is a starting
+point, not proof that every earlier decision is represented.
+
+</details>
+
+## Scope and ownership
+
+Knowing a session ID does not grant access to it. Peer messaging checks the
+recipient's human-recorded coordination rights. Model-supplied intent grants no
+access. Reading another session does not grant
+permission to pause, restart or cancel it. Recipient execution retains its own
+permissions; a peer message is not new human authority.
+
+Task observation and waits default to the caller's own task tree. Explicit,
+authorized broader reads can discover finite `Session` run handles, observe or
+wait on them, and subscribe independently to their results. A stable session
+address is a mailbox; a run handle identifies one execution and its outcome.
+
+## Retention and backpressure
+
+Core retains message bodies, assignment history and delivery records in the
+existing session hierarchy. Delivered messages do not count against pending
+message capacity and are not deleted to make room for new messages.
+
+`gact.mailbox.max_pending_messages=0`, or leaving it unset, allows an unlimited
+pending mailbox. A positive value limits undelivered peer messages, including
+messages staged for an iteration whose input has not committed. A full mailbox
+returns retryable backpressure for new peer messages. Accepted task results,
+human feedback and human controls continue to be admitted.
+
+Full native-replacement qualification remains incomplete. Recorded root and
+child demonstrations cover messaging, observation-only privacy, revocation and
+independent completion delivery. A later two-workflow run also passed busy-peer
+delivery and historical-handle reads. Provider, recovery and current lifecycle/UI
+gates remain. See [Session coordination](docs/tasks/session-coordination.md).

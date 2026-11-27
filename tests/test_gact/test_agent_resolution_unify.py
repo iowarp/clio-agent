@@ -124,7 +124,13 @@ def test_single_resolution_seam_serves_agent_and_defined_subagents(
         stranger = resolve_session_agent(app, "standard", session_id=sid)
 
     # The memory plugin's internal curator resolves too but is never offered.
-    assert [row["id"] for row in delegable_subagents(resolution)] == ["critic"]
+    # The base agent's guide and builder subagents come first, then the plugin's own.
+    assert [row["id"] for row in delegable_subagents(resolution)] == [
+        "clio-guide",
+        "capture-reviewer",
+        "optimize-scanner",
+        "critic",
+    ]
     assert by_id is not None and by_ref is not None
     assert by_id.model_dump() == by_ref.model_dump()
     assert by_id.id == "reviewer" and by_id.tier == 1

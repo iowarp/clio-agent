@@ -537,6 +537,7 @@ async def spawn(
     model: str = "",
     standing: bool = False,
     fork_of: str | None = None,
+    plugins: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     """Persist the original assignment before enrichment or child inference starts.
 
@@ -592,7 +593,9 @@ async def spawn(
         await warm_model_catalog(self.app)
 
     prepared_child = (
-        await join_off_loop(self.prepare_child, caller.session_id, agent_id, target_scope, model)
+        await join_off_loop(
+            self.prepare_child, caller.session_id, agent_id, target_scope, model, plugins
+        )
         if prepared_parent is not None
         else None
     )

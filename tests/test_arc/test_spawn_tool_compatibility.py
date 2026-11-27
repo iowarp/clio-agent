@@ -21,9 +21,15 @@ def record_child_preparation(owner: Any, monkeypatch: pytest.MonkeyPatch) -> lis
     prepared: list[str] = []
     original = owner.prepare_child
 
-    def prepare(parent: str, agent: str, scope: dict[str, Any] | None, model: str = "") -> Any:
+    def prepare(
+        parent: str,
+        agent: str,
+        scope: dict[str, Any] | None,
+        model: str = "",
+        plugins: dict[str, list[str]] | None = None,
+    ) -> Any:
         prepared.append(agent)
-        return original(parent, agent, scope, model)
+        return original(parent, agent, scope, model, plugins)
 
     monkeypatch.setattr(owner, "prepare_child", prepare)
     return prepared

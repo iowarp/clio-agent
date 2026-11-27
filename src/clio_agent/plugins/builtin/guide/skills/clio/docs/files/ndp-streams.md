@@ -1,0 +1,153 @@
+---
+title: "Sample and analyze NDP streams"
+description: "Ask CLIO to analyze stream observations, check available history and explain the limits of the evidence."
+source: https://clio.iowarp.ai/docs/files/ndp-streams/
+---
+
+# Sample and analyze NDP streams
+
+Ask CLIO to analyze stream observations, check available history and explain the limits of the evidence.
+
+Ask the agent a scientific question. It should discover the appropriate source,
+retrieve and analyze the available observations, and explain which historical
+comparisons the data supports. You approve a connection or finish private sign-in
+when needed; you should not have to collect samples or copy continuation tokens
+for the agent.
+
+```text
+What do the available observations tell us about ground movement at this station?
+Compare the recent stream with its historical record and show the evidence.
+```
+
+Measurements and historical coverage vary by service. CLIO first checks what is
+available for the requested station, variables and dates.
+
+## What data supports the analysis?
+
+A catalog entry or a working connection does not establish what the values mean.
+CLIO should inspect the producing source, variable definitions, units, time
+encoding, reference frame and documented processing before drawing conclusions.
+
+| Data supplied | How to use it |
+| --- | --- |
+| Traceable instrument observations | Analyze their actual coverage, quality flags and uncertainty. |
+| Derived or preprocessed observations | Check and report the transformations, units and limits relevant to the question. |
+| Simulation or demonstration data | Identify it as such; it does not establish what a real instrument observed. |
+| Values with unverified provenance | Explain what is missing before using them as evidence about the physical phenomenon. |
+
+The label “raw,” a CSV filename, or columns called east, north and up do not
+establish instrument provenance or physical displacement. Station metadata
+describes an instrument and its operating epochs; it is not its measurement time
+series.
+
+## Is historical data available?
+
+The agent should inspect the service's historical-query or retention capabilities
+and check actual measurement timestamps. A short sample does not establish the
+full available history. If a corresponding NDP archive is available, CLIO can
+compare it after checking instrument, variables, processing and units, while
+keeping that archive's identity separate from the stream.
+
+- **History is available:** report the verified dates, coverage and gaps, then
+  analyze the supported comparison.
+- **Only a limited window is available:** state which requested periods it covers.
+- **The inspected stream provides current data only and no compatible archive was
+  found:** say that historical data is unavailable through those checked sources.
+- **Access or a service error prevents checking:** say that historical availability
+  could not be verified, with the actual reason.
+
+When history is unavailable, a new bounded capture may still answer a question
+about current observations. Replaying an unrelated CSV does not supply the missing
+historical record.
+
+## Acquire, continue and analyze
+
+Once the source is connected through **Attach → National Data Platform**, the
+agent uses the service's advertised operations to capture a bounded interval,
+inspect its bytes and produce useful analysis and figures. Opening a saved
+connection does not start a producer. Starting a producer does not establish that
+measurements were received.
+
+Captures become ordinary files in **Sources**. Their receipts retain the Endpoint,
+operation, filters, capture times, status, byte count, SHA-256 and stop reason.
+The agent can read the retained bytes and keep the original separate from its
+derived tables, figures and report.
+
+For the next segment, ask the agent to continue. It should retain and reuse the
+service's exact continuation position, check for repeated or skipped observations,
+and keep opaque cursors out of the ordinary answer. A missing completion position
+must be reported before assuming a safe resume point. An SSE event ID, a replay
+row cursor and a broker offset are different concepts.
+
+Default request limits are **30 seconds and 100 SSE events**; maxima are
+**30 seconds, 1,000 events and 2 MiB**. These bounds do not promise that many
+scientific observations: control messages count as events too. A limit may leave
+the final event incomplete, which must not be counted as a complete observation.
+The request budget includes connection and authentication. A stream's own record
+limit and waiting interval are separate controls.
+
+## Explore a catalog change stream
+
+```text
+What scientific streams are available on this Endpoint? Read a small sample,
+explain what the records represent, then show me where and when events occurred.
+```
+
+In the USGS earthquake example, the Endpoint publishes new and revised catalog
+entries. Its producer polls the official provider and preserves the
+original GeoJSON features, retrieval times and hashes. These are derived event
+estimates, not raw seismic waveforms. The producer is prepared by the service;
+opening a reader in CLIO does not deploy or start it.
+
+CLIO can read retained messages, continue from its checkpoint, stop and resume
+the reader, and analyze event versions. Count distinct event identities rather
+than messages: a revised magnitude or location can produce another message for
+the same earthquake. Keep origin time, catalog revision time and retrieval time
+separate when assessing freshness.
+
+![Actual exported scientific map of 161 USGS earthquake event estimates, with 54 rows selected and a saved offline land outline](plugin-asset://guide/captures/stream-earthquake-map.webp)
+*Select captured event estimates by location. Saved maps remain inspectable offline; reopening this figure does not acquire new observations.*
+
+A rolling provider window and a broker retention limit are not a historical
+archive. Ask CLIO to read the earliest available position and check the actual
+timestamps and gaps. An empty watch can mean that the provider has no changes;
+it does not establish producer health by itself.
+
+## Replay and live acquisition
+
+A CSV replay service emits rows from a file, possibly at a chosen delivery rate.
+It can test transport, parsing and continuation. It can support historical science
+only when the file's observational provenance and processing are established.
+Its delivery rate does not establish the measurement cadence or make old values
+current. An archived HTML conversation cannot acquire new data.
+
+A live producer requires a supported upstream source and a readable output. The
+agent should retain its session identity and obtain actual measurements before
+claiming live access. Closing CLIO's reader does **not** stop a separate remote
+producer. CLIO should stop the producer started for this investigation and check
+its terminal state, unless you asked to leave it active.
+
+## Inspect captures yourself, if useful
+
+The interface also exposes supported Files, Stations and Streams views. These
+controls are an optional way to inspect a service; they are not steps you must
+perform before asking the agent to analyze it.
+
+For a connected Kafka consumer-view API, choose **Streams → Open stream view**,
+select a named catalog resource and choose retained history or new arrivals.
+**Capture records** saves a finite batch; **Capture next records** uses its saved
+checkpoint automatically. Stopping this reader preserves its checkpoint and
+leaves the separate producer running. Other Endpoints may advertise different
+stream operations.
+
+![Actual native Endpoint stream capture with five records retained and a saved continuation checkpoint](plugin-asset://guide/captures/endpoint-stream-capture.webp)
+*Inspect records and continue through the native interface. The agent can perform the same analysis without asking you to operate these controls.*
+
+![Actual historical replay form with a CSV URL, row limit and continuation options](plugin-asset://guide/captures/stream-sample-form.webp)
+*Set limits for a bounded replay. Replayed timestamps remain those of the source file; replaying it does not make the observations current.*
+
+![Actual completed stream sample with retained response bytes and Open saved data](plugin-asset://guide/captures/stream-saved-result.webp)
+*Open a retained response in Sources to inspect its bytes and capture details, or ask the agent to analyze it.*
+
+See [scientific questions to investigate](docs/examples/ndp-science.md) and the
+[NDP source guide](docs/files/ndp.md) for discovery, analysis and sharing results.

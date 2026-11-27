@@ -1,4 +1,6 @@
-"""Plugins Clio writes: authorship holds only for the exact files written, and the review."""
+"""Plugins Clio writes into the private marketplace: authorship holds only for the exact
+files written, each version records its diff, names the person or another marketplace
+owns are refused, and the review names every executable part."""
 
 from __future__ import annotations
 
@@ -30,7 +32,7 @@ tally = sequence(oneOrMore(terminal("voter")), terminal("count"));"""
 
 def _write(root: Path, **extra: str) -> Path:
     files = {"plugin.json": MANIFEST, "ai.iowarp.clio/flows/tally.py": FLOW, **extra}
-    return authored.write(root, "tally", files, "sess_1")
+    return authored.write(root, "tally", files, "sess_1")[0]
 
 
 def test_a_written_plugin_is_authored_until_a_file_changes(tmp_path: Path) -> None:
@@ -103,3 +105,147 @@ def test_the_review_names_what_the_code_reaches_directly(tmp_path: Path) -> None
     review = authored.review(folder)
     assert review["reach"] == ["commands", "dynamic code", "files", "network"]
     assert review["unreadable"] == ["broken.py"]
+
+
+def test_it_lands_in_the_private_marketplace(tmp_path: Path) -> None:
+    folder = _write(tmp_path)
+    assert folder == tmp_path / "local" / "private-local" / "plugins" / "tally"
+    index = tmp_path / "local" / "private-local" / "ai.iowarp.clio" / "marketplace.json"
+    assert json.loads(index.read_text())["name"] == "private-local"
+
+
+def test_a_new_version_records_its_diff_and_which_executable_files_changed(tmp_path: Path) -> None:
+    _write(tmp_path, **{"skills/count/SKILL.md": "---\nname: count\n---\nCount once.\n"})
+    folder, version = authored.write(
+        tmp_path,
+        "tally",
+        {
+            "plugin.json": MANIFEST,
+            "ai.iowarp.clio/flows/tally.py": FLOW.replace("counted", "counted twice"),
+            "skills/count/SKILL.md": "---\nname: count\n---\nCount twice.\n",
+        },
+        "sess_2",
+    )
+    assert version["version"] == 2 and version["session_id"] == "sess_2"
+    diff = version["diff"]
+    assert diff["changed"] == ["ai.iowarp.clio/flows/tally.py", "skills/count/SKILL.md"]
+    assert diff["executable_changed"] == ["ai.iowarp.clio/flows/tally.py"]
+    assert "-Count once." in diff["unified"] and "+Count twice." in diff["unified"]
+    record = authored.authorship(tmp_path, "tally")
+    assert record is not None and record["version"] == 2 and record["versions"] == 2
+
+
+def test_changed_since_trusted_names_only_executable_files(tmp_path: Path) -> None:
+    _write(tmp_path)
+    authored.note_installed(tmp_path, "tally", "exec-v1")
+    authored.write(
+        tmp_path,
+        "tally",
+        {
+            "plugin.json": MANIFEST,
+            "ai.iowarp.clio/flows/tally.py": FLOW + "\n# v2\n",
+            "README.md": "notes",
+        },
+        "sess_2",
+    )
+    assert authored.changed_since(tmp_path, "tally", "exec-v1") == ["ai.iowarp.clio/flows/tally.py"]
+    assert authored.changed_since(tmp_path, "tally", "never-trusted") is None
+
+
+def test_a_name_the_person_wrote_is_refused(tmp_path: Path) -> None:
+    folder = authored.plugin_folder(tmp_path, "notes")
+    folder.mkdir(parents=True)
+    (folder / "plugin.json").write_text(MANIFEST)
+    with pytest.raises(authored.AuthoredError) as raised:
+        authored.write(tmp_path, "notes", {"plugin.json": MANIFEST}, "s")
+    assert raised.value.reason == "name_taken_by_person"
+    assert (folder / "plugin.json").read_text() == MANIFEST
+
+
+def test_a_plugin_clio_wrote_then_the_person_edited_is_theirs(tmp_path: Path) -> None:
+    folder = _write(tmp_path)
+    (folder / "plugin.json").write_text(MANIFEST.replace("Counts", "Tallies"))
+    with pytest.raises(authored.AuthoredError) as raised:
+        _write(tmp_path)
+    assert raised.value.reason == "name_taken_by_person"
+
+
+def test_a_name_another_marketplace_provides_is_refused_with_the_variation_path(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(authored.AuthoredError) as raised:
+        authored.write(tmp_path, "hdf5", {"plugin.json": MANIFEST}, "s", taken_elsewhere="clio")
+    assert raised.value.reason == "name_taken_by_marketplace"
+    assert "variation_of" in str(raised.value) and "clio/hdf5" in str(raised.value)
+    assert not authored.plugin_folder(tmp_path, "hdf5").exists()
+
+
+def test_a_variation_records_what_it_varies(tmp_path: Path) -> None:
+    _, version = authored.write(
+        tmp_path, "hdf5-lab", {"plugin.json": MANIFEST}, "s", variation_of="clio/hdf5"
+    )
+    assert version["variation_of"] == "clio/hdf5"
+    _, again = authored.write(tmp_path, "hdf5-lab", {"plugin.json": MANIFEST}, "s2")
+    assert again["variation_of"] == "clio/hdf5"
+
+
+def test_the_review_names_tools_hooks_subagents_bindings_and_servers(tmp_path: Path) -> None:
+    tool = (
+        "from clio_agent.sdk import tool\n\n"
+        "@tool(read_only=True)\n"
+        "def to_kelvin(c: float) -> float:\n"
+        '    """Convert Celsius to kelvin."""\n'
+        "    return c + 273.15\n"
+    )
+    hook = (
+        "from clio_agent.sdk import hook\n\n"
+        '@hook("tool_call", tools="fs_write_file")\n'
+        "def protect_raw(ev):\n"
+        '    """Never write to raw/."""\n'
+    )
+    sub = (
+        "from clio_agent.sdk import Subagent\n"
+        'checker = Subagent("unit-checker", description="Checks units.")\n'
+    )
+    manifest = json.dumps(
+        {
+            "name": "tally",
+            "version": "0.1.0",
+            "extensions": {
+                "ai.iowarp.clio": {
+                    "kernel_bindings": {"units": {"source": "ai.iowarp.clio/kernel/u.py"}}
+                }
+            },
+        }
+    )
+    folder = authored.write(
+        tmp_path,
+        "tally",
+        {
+            "plugin.json": manifest,
+            "ai.iowarp.clio/tools/units.py": tool,
+            "ai.iowarp.clio/hooks/raw.py": hook,
+            "ai.iowarp.clio/subagents/check.py": sub,
+            "ai.iowarp.clio/kernel/u.py": "export = None\n",
+            "mcp.json": json.dumps({"mcpServers": {"lab": {"command": "lab-server"}}}),
+            "skills/count/SKILL.md": "text",
+        },
+        "s",
+    )[0]
+    review = authored.review(folder)
+    assert review["tools"] == [
+        {
+            "name": "to_kelvin",
+            "description": "Convert Celsius to kelvin.",
+            "read_only": True,
+            "file": "ai.iowarp.clio/tools/units.py",
+        }
+    ]
+    assert review["hooks"][0]["id"] == "protect_raw"
+    assert review["hooks"][0]["event"] == "tool_call"
+    assert review["hooks"][0]["tools"] == "fs_write_file"
+    assert review["subagents"][0]["id"] == "unit-checker"
+    assert review["bindings"][0]["name"] == "units"
+    assert review["servers"] == ["lab"]
+    assert "skills/count/SKILL.md" not in review["executable_files"]
+    assert "mcp.json" in review["executable_files"]

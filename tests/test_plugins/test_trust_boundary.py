@@ -34,7 +34,7 @@ def test_checking_a_plugin_clio_wrote_never_imports_it(tmp_path: Path) -> None:
         "plugin.json": json.dumps({"$schema": PLUGIN_SCHEMA, "name": "evil", "version": "0.1.0"}),
         "ai.iowarp.clio/flows/x.py": _marker_module(marker),
     }
-    folder = authored.write(tmp_path / "store", "evil", files, "sess")
+    folder = authored.write(tmp_path / "store", "evil", files, "sess")[0]
     service = PluginService(PluginStore(tmp_path / "store"), native_tools=_native())
     report = check(folder, service=service, trusted=False)
     assert not marker.exists()
@@ -46,7 +46,7 @@ def test_an_untrusted_check_still_reports_broken_python(tmp_path: Path) -> None:
         "plugin.json": json.dumps({"$schema": PLUGIN_SCHEMA, "name": "broken", "version": "0.1.0"}),
         "ai.iowarp.clio/flows/x.py": "def oops(:\n",
     }
-    folder = authored.write(tmp_path / "store", "broken", files, "sess")
+    folder = authored.write(tmp_path / "store", "broken", files, "sess")[0]
     service = PluginService(PluginStore(tmp_path / "store"), native_tools=_native())
     report = check(folder, service=service, trusted=False)
     assert [d.code for d in report.diagnostics if d.severity == "error"] == ["python_syntax"]
@@ -166,17 +166,38 @@ def test_a_claude_code_server_script_is_executable_whatever_its_name(tmp_path: P
     assert store.update("cc")["pending_trust"] == ["p"]
 
 
-def test_untrusted_flows_skip_a_marketplace_without_a_plugin_manifest(tmp_path: Path) -> None:
-    """A held Claude Code marketplace has no top-level plugin.json and declares no flows."""
+def test_untrusted_flows_skip_a_plugin_without_a_plugin_manifest(tmp_path: Path) -> None:
+    """A held Claude Code plugin has no top-level plugin.json and declares no flows."""
 
     from types import SimpleNamespace
 
     from clio_agent.gact.plugin_authoring import untrusted_flows
 
-    snapshot = tmp_path / "snap"
-    write(snapshot / "plugins" / "x" / ".claude-plugin" / "plugin.json", "{}")
+    root = tmp_path / "snap" / "plugins" / "x"
+    write(root / ".claude-plugin" / "plugin.json", "{}")
+    record = SimpleNamespace(
+        marketplace="kit", id="x", root=str(root), has_executable_parts=True, version=""
+    )
     store = SimpleNamespace(
-        pending=lambda: [SimpleNamespace(marketplace="kit")],
-        marketplaces=lambda: {"kit": {"trusted": True, "snapshot": str(snapshot)}},
+        pending=lambda: [record],
+        installed_records=lambda: [],
+        trusted=lambda _record: False,
     )
     assert untrusted_flows(store) == []
+
+
+def test_trusting_one_plugin_leaves_the_others_of_its_marketplace_untrusted(
+    tmp_path: Path,
+) -> None:
+    store = PluginStore(tmp_path / "store")
+    market = _market(tmp_path / "m")
+    servers = {"s": {"type": "stdio", "command": "python3", "args": ["x"]}}
+    plugin(market / "plugins", "a", servers=servers)
+    plugin(market / "plugins", "b", servers=servers)
+    store.install(str(market))
+    store.trust("demo", plugins=frozenset({"a"}))
+    rows = {r.id: store.trusted(r) for r in store.installed_records()}
+    assert rows == {"a": True, "b": False}
+    # Trusting the marketplace as a whole still trusts every plugin.
+    store.trust("demo")
+    assert all(store.trusted(r) for r in store.installed_records())

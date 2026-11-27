@@ -132,6 +132,9 @@ jobs:
         env:
           CLIO_PLUGIN_STORE: ${{ runner.temp }}/clio-plugin-store
         run: uv run clio-agent plugin check external/clio-agent-marketplace
+      - name: "guard: the guide plugin's bundled docs match a fresh export of site/"
+        # Needs no site install: --check renders Markdown only and compares capture hashes.
+        run: node site/scripts/export-docs-markdown.mjs --check
       - name: "guard: no settle/synthesis routing vocabulary (baseline 0) (#948)"
         run: uv run python scripts/check_no_settle_vocabulary.py
       - name: "guard: no elicitationId residue (baseline 0) (SEP-2577, C1-S4 #1284)"

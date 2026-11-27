@@ -1,0 +1,211 @@
+---
+title: "Watch agents work together"
+description: "Read real CLIO conversations where independent agents inspect, message and review each other, and where an agent delegates to read-only roles or forks itself."
+source: https://clio.iowarp.ai/docs/tasks/recorded-conversations/
+---
+
+# Watch agents work together
+
+Read real CLIO conversations where independent agents inspect, message and review each other, and where an agent delegates to read-only roles or forks itself.
+
+Two conversations share an illustrative workshop budget. **Budget review** checks
+the numbers; **Workshop planner** reads that review, asks for help and revises the
+plan. These are actual Codex/Luna conversations from CLIO's production service,
+saved with the same portable HTML exporter available in the conversation menu.
+
+- [Open Workshop planner](https://clio.iowarp.ai/conversations/tasks/workshop-planner.html): Discovery, transcript inspection, peer messages, a revised plan, background computation and an asynchronous Question.
+- [Open Budget review](https://clio.iowarp.ai/conversations/tasks/budget-review.html): The independent check, messages received after its first response, a second review and a downloadable note.
+
+Each standalone file includes the native conversation viewer, tool observations
+and captured report contents. Expand operations to inspect what happened.
+The files are large because they include their viewer for offline use.
+The viewer wraps its tabs at phone width. Raw envelopes remain behind
+each row's normal information button; expanding activity shows readable results.
+
+## Start with a normal request
+
+Budget review starts with:
+
+```text
+Review budget.csv and draft-plan.md. Check the figures and leave a short review I can share.
+```
+
+The planner receives:
+
+```text
+Please work with Budget review to bring this workshop under $9,000. Check their reasoning and leave an updated plan I can share.
+```
+
+The model chooses the task tools itself. It discovers the authorized session,
+reads its original transcript and sends a message. Budget review receives that
+message after its first response and replies from a linked continuation.
+No person copies the answer between conversations.
+
+## Follow the transcript read
+
+Open **Workshop planner**, then expand **Used tools, ran commands, received
+injection** under its first response. This is where the planner reads another
+agent's work, rather than merely asking that agent for an answer.
+
+1. **Find the reviewer.** The recorded Query tasks call searches for `Budget review`
+   among authorized Session assignments. The user supplied that name, so this
+   demonstrates discovery by a known name, not rediscovery of a forgotten topic.
+2. **Read its original conversation.** The next Observe tasks call selects
+   **transcript**, with **session** history. Its result contains the reviewer's
+   original messages and source IDs, including the budget calculation.
+3. **Check and use the finding.** The planner identifies the omitted $700
+   contingency and the resulting $9,510 total in its own response. Reading the
+   transcript supplied evidence for its reasoning; messaging was a separate step.
+4. **Ask for another check.** The Message call addresses the discovered handle.
+   Follow **Budget review** to see the attributed arrival and its later reply.
+
+The planner's final response has another evidence trail. Expand its activity to
+find **Query tasks → Observe summary → Observe artifacts → Read**. The last Read
+opens the actual note before the planner shares it. A summary, an artifact list
+and the note's contents are three different reads.
+
+<details>
+<summary>Recorded calls for closer inspection</summary>
+
+| Step | Actual recorded operation |
+| --- | --- |
+| Discover | `query_tasks(kind="Session", scope="authorized", query="Budget review")` |
+| Read original conversation | `observe_tasks(tasks=returned_handle, view="transcript", history="session")` |
+| Read recorded overview | `observe_tasks(tasks=returned_handle, view="summary", history="session")` |
+| Find the deliverable | `observe_tasks(tasks=returned_handle, view="artifacts", history="session")` |
+
+`returned_handle` abbreviates the opaque handle in the recording. These are
+explanations of saved calls, not instructions injected into the recorded agents.
+The model's later malformed pagination cursor remains a failed call in the
+export; it is not presented as successful transcript pagination.
+
+</details>
+
+## Find a conversation when you have forgotten its name
+
+This is a useful request to make in a new conversation:
+
+```text
+The other day we discussed catering costs and keeping a useful contingency.
+Find the agents that worked on it. Read the relevant conversation, remind me
+what we decided, and show me the note they produced.
+```
+
+The agent should search authorized tasks using topic words, inspect the matching
+transcripts, and return the sessions, dates and source passages that support its
+answer. If several sessions fit, it should distinguish them rather than guess.
+Messaging a selected session can then ask it to continue or revisit the decision.
+
+**This request is illustrative.** The two recordings above discover a supplied
+session name; they do not demonstrate finding an unknown conversation from a
+remembered topic.
+
+Current search matches words in readable descriptions and retained transcript
+text. The model can choose shorter queries or alternate wording, but the backend
+does not perform semantic similarity search. Optional `message_after` and
+`message_before` restrict the discussion dates, using timestamps with a timezone.
+They filter matching messages rather than session creation dates. This is a
+separate capability from the saved known-name example above. See
+[Search a discussion within a date range](docs/tasks/messages.md#search-a-discussion-within-a-date-range).
+
+## Review the tradeoff, not just the total
+
+The original draft omitted a $700 contingency. The real total is **$9,510**,
+$510 above the ceiling. The planner's first proposal cuts most of that reserve.
+The next request challenges the choice:
+
+```text
+Ask Budget review to check the revised plan too. Keep a useful contingency; I do not want a spreadsheet win that leaves no room for surprises.
+```
+
+The revised plan preserves the $700 reserve and proposes 62 attendees, giving a
+listed total of **$8,934**. The agents explain that attendance, catering minimums,
+fees and quotes still need confirmation. This is a synthetic planning exercise;
+no venue is booked and no real cost saving is established.
+
+The review arrives later than the planner's initial response. Its arrival wakes
+the planner, which reports what the reviewer actually checked.
+
+## Keep working while a question is open
+
+The next request combines independent work with a question:
+
+```text
+Run cost_simulation.py in the background. Draft the run-sheet while it works, and ask me which date to use.
+```
+
+The Shell returns a running task handle. The agent posts a Question and drafts
+the run-sheet. The script processes eight million synthetic price samples and
+writes its result. Its completion reaches the agent through task delivery.
+These samples illustrate sensitivity to assumed prices; they are not observations
+or a forecast.
+
+The Question remains open after the response. The demonstration operator answers
+“October 30, 9 AM to 4 PM.” CLIO wakes the idle agent, which updates the run-sheet
+without another user message asking it to continue.
+
+## Inspect the other agent's evidence
+
+Budget review is asked to save its review as a downloadable note. The planner's
+final request is:
+
+```text
+Show me the summary and downloadable note from Budget review. Read the note before linking it.
+```
+
+It reads the peer's recorded summary and artifact listing through `observe_tasks`,
+then reads the saved note before sharing its versioned artifact link. This
+summary is a recorded outcome, not a newly generated whole-session memory.
+
+## What to know before reusing the example
+
+- The operator granted the two sessions **Read, Observe and Message** access.
+  Neither session received **Control** access. A request to collaborate does not
+  itself create permissions. See [Session coordination](docs/tasks/session-coordination.md).
+- The prompts, corrections and tool errors remain in the exports. In particular,
+  the model altered a transcript cursor; CLIO rejected it. A cursor must be reused
+  exactly as returned.
+- Artifact contents are captured in these exports. Local workspace links and live
+  session controls still refer to the original service; an offline conversation
+  cannot restart that service or read arbitrary files.
+- Open the review note from the artifact card in **Budget review**. The planner's
+  versioned peer link is retained as text by this archive viewer; its own plan and
+  run-sheet artifact cards open normally.
+- This is a recorded example on the Tasks feature candidate, not a deployment
+  announcement or acceptance of every provider, platform or recovery route.
+
+Read [Observe and wait](docs/tasks/observe-and-wait.md) for task inspection,
+[Messages](docs/tasks/messages.md) for addressing, and
+[Answer a question](docs/questions.md) for the question surface.
+
+## Delegation and forks
+
+These recordings show an agent delegating to the [explore and review roles](docs/subagents.md#the-explore-planner-and-review-roles) and forking a conversation. The first two started from a plain request that named no tool, role or step; the agent chose to delegate.
+
+- [Open the reading guide](https://clio.iowarp.ai/conversations/delegation/reading-guide/): Ten read-only explore children read a folder of design documents; the agent merged their reports.
+- [Open the skill review](https://clio.iowarp.ai/conversations/delegation/skill-review/): Review-role children check each plugin's skills; the agent merges their verdicts plugin by plugin.
+- [Open the agent fork](https://clio.iowarp.ai/conversations/delegation/agent-fork.html): A directed check: the agent forks its conversation with a note, and the fork answers the note.
+
+### A reading guide from explore children
+
+The reading guide starts with:
+
+```text
+I'm new to this project and need a reading guide to the design/ folder. For every document in it, write a short paragraph: what it decided, what it builds on, and which questions it leaves open. Group them by topic.
+```
+
+The folder holds 93 documents. The agent listed the folder and the size of each file, then sent ten read-only `explore` children, each with a self-contained task naming its cluster of documents and the report it wanted. It waited for their reports and wrote the guide from them. It never read a document itself.
+
+### A skill review from review children
+
+The skill review starts with:
+
+```text
+Review the skills in every plugin under plugins/ and tell me, plugin by plugin, where a skill's instructions are unclear, contradict another skill, or refer to tools or files the plugin doesn't ship.
+```
+
+The agent started six `review`-role children in one call, each with a self-contained assignment: the paths to read, the checks to make, and the report format. It merged their reports into one answer, plugin by plugin.
+
+### An agent fork
+
+The agent fork was a directed check of the mechanism, not a plain request: the request told the agent to call its fork tool with a note and a title, then reply "original continues". The recording includes the original conversation and its fork, **Poem fork**, which answered the note. It shows how an agent's fork looks, not when an agent chooses to fork. See [Forks the agent makes](docs/branch-and-rewind.md#forks-the-agent-makes).

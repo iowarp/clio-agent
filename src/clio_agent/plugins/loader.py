@@ -27,7 +27,7 @@ import sys
 import traceback
 import types
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from pathlib import Path, PurePath
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Any, Literal
 
 from clio_agent.plugins.commands import read_commands
@@ -164,6 +164,11 @@ def referenced_files(root: Path, servers: Mapping[str, Mapping[str, Any]]) -> se
             elif candidate.is_dir() and candidate.resolve() != root.resolve():
                 found.update(p.resolve() for p in candidate.rglob("*") if p.is_file())
     return found
+
+
+def is_text_file(relative: str) -> bool:
+    """Whether a package file only describes, by its name (:func:`tree_digests`' rule)."""
+    return PurePosixPath(relative).suffix.lower() in _TEXT_SUFFIXES or relative in _TEXT_FILES
 
 
 def tree_digests(

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "builder",
+  "version": "1.0.0",
+  "description": "Turn what you did in a session into a plugin for your field with /capture, and make a plugin's next version from the sessions that used it with /optimize: CLIO explores the sessions, asks what is general, proposes the parts, writes, checks, tries and installs them in your private marketplace.",
+  "author": {"name": "IoWarp Team"},
+  "license": "BSD-3-Clause",
+  "keywords": ["capture", "optimize", "plugins", "authoring"],
+  "extensions": {
+    "ai.iowarp.clio": {
+      "requires": ["guide"]
+    }
+  }
+}

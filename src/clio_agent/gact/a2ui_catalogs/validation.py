@@ -284,8 +284,9 @@ def validate_event_context(
 
 #: Schemes a URL-keyed A2UI literal may carry. ``artifact:``/``resource:`` are
 #: CLIO references the viewer resolves through the service (A2 remote media);
+#: ``plugin-asset:`` names a file a resolved plugin bundles (:mod:`..plugin_assets`);
 #: ``study:`` names a live study source a view reads (Addendum B).
-A2UI_URL_SCHEMES = frozenset({"https", "artifact", "resource", "study"})
+A2UI_URL_SCHEMES = frozenset({"https", "artifact", "resource", "plugin-asset", "study"})
 
 #: The catalog function that opens a link for the person. Its ``url`` alone may
 #: also be a plain ``http:`` page on this machine (:func:`is_loopback_link`), such
@@ -323,8 +324,8 @@ def _validate_url(value: str, *, link: bool = False) -> None:
     if not is_allowed_a2ui_url(value):
         raise A2UIValidationError(
             "A2UI URLs must use an allowed non-executable scheme (https:, artifact:, "
-            "resource:, study:, or a bare artifact_/res_ id; an openUrl link may also be "
-            f"http on 127.0.0.1, [::1] or localhost); got {value[:120]!r}"
+            "resource:, plugin-asset:, study:, or a bare artifact_/res_ id; an openUrl link may "
+            f"also be http on 127.0.0.1, [::1] or localhost); got {value[:120]!r}"
         )
 
 

@@ -1,0 +1,265 @@
+---
+title: "Scientific questions for NDP"
+description: "Explore scientific investigations with NDP data, follow-up questions, interactive results and downloadable conversations."
+source: https://clio.iowarp.ai/docs/examples/ndp-science/
+---
+
+# Scientific questions for NDP
+
+Explore scientific investigations with NDP data, follow-up questions, interactive results and downloadable conversations.
+
+Start with a scientific question, then use follow-up questions to explore the
+result's coverage, sensitivity and interpretation. CLIO finds relevant NDP
+collections, obtains the available data and keeps its analysis alongside the
+sources. You do not need to specify tools or intermediate steps.
+
+NDP can discover and provide access to a collection whose original publisher
+hosts the files. Alta's citations therefore still point to the University of
+Utah's Hive, and Tahoe's to TRPA. Keep both the NDP dataset/resource identities
+and the publisher's attribution with your results, so a colleague can trace the
+measurements and reproduce the analysis.
+
+<span id="download-the-four-conversations" />
+
+## Download the conversations
+
+Open a conversation on its own page to explore the saved charts, figures and
+recorded tool activity. No CLIO account is needed. These are interactive
+archives of the actual sessions; opening one does not run the agent, connect
+to a private Endpoint or start a stream. The pages are large because the saved
+results and native viewer travel with the conversation.
+
+You can also download the same standalone HTML, including its CSS and viewer,
+for offline reading in a desktop browser.
+
+| Conversation | Questions | Data | Read | Download |
+| --- | --- | --- | --- | --- |
+| Alta-Collins snowfall | 3 | NDP-acquired observations | [Open](https://clio.iowarp.ai/conversations/ndp/alta/) | [40 MB HTML](https://github.com/iowarp/clio-agent/releases/download/ndp-scientific-conversations-2026-10-19/Alta-snowfall-session-maps-v2.html) |
+| Lake Tahoe area and shoreline | 3 | NDP-acquired TRPA geometry | [Open](https://clio.iowarp.ai/conversations/ndp/tahoe/) | [61 MB HTML](https://github.com/iowarp/clio-agent/releases/download/ndp-scientific-conversations-2026-10-19/Lake-Tahoe-session-maps-v2.html) |
+| Konza Prairie burn observations | 3 | Previously acquired NDP data | [Open](https://clio.iowarp.ai/conversations/ndp/konza/) | [47 MB HTML](https://github.com/iowarp/clio-agent/releases/download/ndp-scientific-conversations-2026-10-19/Konza-session-maps-v2.html) |
+| Scientific data through an Endpoint | 7 | Discovery, storage and reuse | [Open](https://clio.iowarp.ai/conversations/ndp/endpoint/) | [33 MB HTML](https://github.com/iowarp/clio-agent/releases/download/ndp-scientific-conversations-2026-10-19/Endpoint-workflow-session.html) |
+
+The examples use **Sol 6.1**. Each archive includes the full conversation and
+recorded tool activity, including corrections made during the investigation.
+
+## Follow the investigations
+
+Alta, Tahoe and Konza each develop over three questions: establish a result,
+examine it more closely, then prepare it for a colleague. The seven-question
+Endpoint conversation follows a collection through discovery, authoring,
+publication and reuse. Alta and Tahoe start by finding data through NDP; Konza
+and the Endpoint example reuse data already acquired through NDP.
+
+### Alta: from a seasonal total to monthly explanations
+
+1. “How unusual was the 2023–24 snowfall total at Alta-Collins compared with the historical winters available through NDP? Show the comparison and explain any coverage limits.”
+2. “Was that driven by especially snowy months, or was snowfall elevated throughout the winter? Let me explore the monthly comparison.”
+3. “Can a colleague reproduce the seasonal and monthly comparisons outside CLIO? Package the source data, results and methods, and check that a clean extracted copy reruns.”
+
+The measured October–April total was **635.5 inches**, sixth among 18 winters
+with complete coverage, including 2023–24. Seven earlier winters lack October
+observations. The follow-up found elevated January–March snowfall alongside
+below-baseline totals in the other months. The explorer switches between a
+matched set of complete winters and all available complete months; those
+baselines answer different questions.
+
+![Actual exported Alta conversation results with all 25 seasonal bars, baseline and month controls, monthly comparison charts and a coverage table](plugin-asset://guide/captures/alta-native-results.webp)
+*Explore seasonal totals and monthly comparisons, switching between historical baselines. The source measurements and READMEs were acquired through NDP from Hive.*
+
+The analysis package includes the original measurements and READMEs, a portable
+standard-library Python script, derived tables, methods and checksums. An
+independent clean extraction reproduced all three result CSVs byte-for-byte.
+One station and one winter do not establish a climate trend.
+
+### Tahoe: from mapped area to shoreline sensitivity
+
+1. “Can NDP’s Lake Tahoe boundary tell us the lake’s surface area? Make a map and show how you measured it.”
+2. “How much does the estimated shoreline length depend on map detail? Show a comparison at several resolutions.”
+3. “Can a colleague reproduce both the area and shoreline comparisons outside CLIO? Package the source boundary, results and methods, and check that the files open and the analysis reruns.”
+
+The TRPA polygon acquired through NDP encloses **497.7 km²**. Its original mapped
+perimeter is **123.05 km**; simplifying the geometry with a 100-metre tolerance
+reduces that to **112.67 km**. The follow-up compares ten settings and matched
+shoreline views. That tolerance describes geometric simplification, not survey
+accuracy or image resolution.
+
+![Actual native-export image viewer displaying the complete Tahoe equal-area measurement figure, its grid method and original scientific caveats](plugin-asset://guide/captures/tahoe-native-area.webp)
+*The lake-area figure explains the measurement method and its limits. Open the conversation to explore the NDP-acquired TRPA boundary and shoreline comparisons.*
+
+The portable package includes the original GeoJSON, provenance, pinned Python
+dependencies, both analyses, an offline report and automated checks. An
+independent extracted rerun reproduced the numerical results and both images on
+the tested Windows host. The source does not establish its survey date, reference
+water level or island exclusions. This measures the mapped footprint, not
+today's water extent or the basin's wetland/riparian acreage.
+
+### Konza: particles, wind and carbon dioxide
+
+1. “What do NDP's Konza burn observations actually show about particles, wind and CO₂? Give me a colleague-friendly explanation and a figure I can explore, with gaps and sensor limits visible. No dot separators in titles or captions.”
+2. “Are the biggest particle episodes also the largest CO₂ episodes, or does the answer depend on the time window? Quantify the comparison without implying that correlation proves a cause.”
+3. “Which conclusions are robust, and what additional measurements would most improve the explanation? Leave a concise summary and the key figures for a collaborator.”
+
+This conversation continues from files already downloaded through NDP and
+checked derived tables. The analysis uses reductions of the large wind and CO₂
+archives, accounting for multiple measurement packets within individual archive
+records. Open the conversation to follow the comparison and interpretation; it
+does not repeat the initial catalog search or raw-file processing.
+
+The strongest particle and CO₂ episodes overlap only partly. The figure compares
+958 paired minute observations and shows how descriptive correlations change
+with the chosen time window. Missing observations, quality flags and unverified
+clock synchronization limit interpretation. The particle inlet size is not
+documented, so these readings do not establish PM2.5, PM10 or AQI. Correlation
+does not establish a combustion source or a causal wind effect.
+
+![Agent-produced Konza figure showing paired particle and carbon-dioxide minute observations and correlations across different time windows](plugin-asset://guide/captures/konza-association.webp)
+*Compare particle and carbon-dioxide observations across time windows. The association changes with the window; sensor limits and missing observations remain part of the interpretation.*
+
+### From discovery to a reusable Endpoint collection
+
+The [Endpoint conversation](https://clio.iowarp.ai/conversations/ndp/endpoint/) connects through a saved
+SSH profile and compares anonymous discovery with the signed-in account's view.
+CLIO reads an existing EarthScope station collection, selects metadata epochs
+covering its retrieval date, creates an organization, and saves a new private
+dataset. The CSV, map and methods note are each read back and checked against
+their original byte counts and SHA-256 hashes.
+
+Follow-up questions update the description without replacing the files, submit
+a separate public description to the configured NDP test catalog, and reload the
+stored CSV into a linked map and table. The public record contains only the
+original EarthScope service link; the derived collection remains private.
+
+Of the 312 selected entries, 52 are explicitly
+labeled synthetic by the source. The other 260 are not thereby confirmed as
+operating physical stations. Epoch dates describe metadata coverage; this
+conversation does not test waveform availability or live telemetry. Test-catalog
+submission is also distinct from production publication or scientific approval.
+
+### Share the conversation and the reproducible work
+
+The four downloads on this page are **HTML only**, with the viewer assets and
+saved results embedded. They include the conversation, recorded tool activity,
+loaded skills and captured views. A transcript does not include every original
+data file or analysis artifact.
+
+To share reproducible work as well as a conversation, ask CLIO to package the
+original data, analysis scripts, dependencies and methods. The HTML downloads
+above do not include the separate Alta and Tahoe analysis packages. Opening an
+interactive result is different from rerunning its calculation.
+
+## Snow and water
+
+> Has the snow-to-liquid ratio at Alta-Collins changed in the 2023–24 winter
+> compared with its historical record? I think NDP has the observations. Show the
+> evidence, with a chart and the limitations of the comparison.
+
+NDP lists [historical Alta-Collins observations](https://nationaldataplatform.org/catalog/dataset/dataset-for-alta-collins-snow-and-liquid-precipitation-equivalent-observations-2000-2023)
+and a [2023–24 collection](https://nationaldataplatform.org/catalog/dataset/alta-collins-snow-and-liquid-precipitation-equivalent-observations-2023-2024),
+each with observations and a readme. Compare compatible observation intervals and
+units; handle missing values, trace precipitation and seasonal coverage. A ratio
+of seasonal totals differs from an average of individual snowfall-event ratios.
+One unusual winter does not establish a climate trend.
+
+Other meaningful questions include:
+
+- How sensitive is Alta's historical snow-to-liquid ratio to excluding very small
+  precipitation events, and does the interpretation of 2023–24 change?
+- Do the Alta and Highland disdrometer collections cover the same storms, and
+  what differences in precipitation properties can the overlapping measurements
+  support? Establish sensor variables, overlap and accessible file sizes first.
+
+## Fire and atmosphere
+
+> Can the NDP observations from the 2022 Konza Prairie burn tell us whether the
+> smoke or CO2 signal changed with the wind? Show what the measurements support.
+
+The [Konza burn experiment](https://nationaldataplatform.org/catalog/dataset/neon-mdp-sage-wifire-bp3d-konza-prairie-burn-experiment)
+lists wind, gas and particle instrumentation alongside other resources. Sensor
+time alignment, units, location and data quality determine which comparisons are
+valid. A smoke-classification package is not automatically a concentration time
+series, and an association does not establish causation. Some resources are large
+or use executable serialization formats; inspect metadata and use suitable
+readers rather than blindly executing notebooks or deserializing objects.
+
+Further investigations:
+
+- How does the timing of detected smoke agree across the Konza camera nodes,
+  and does wind direction explain any lag? This needs actual timestamped signals
+  from multiple nodes, not catalog descriptions alone.
+- How closely do recent VIIRS thermal detections coincide with reported wildfire
+  locations in a chosen California region? Match acquisition/report dates and
+  distinguish satellite pixels from incident boundaries and false detections.
+- Which LANDFIRE fuel or vegetation classes surround a selected fire perimeter?
+  Establish compatible dates, classification and spatial resolution before
+  interpreting exposed area as risk or fire behavior.
+
+## Habitats and lake basins
+
+> What can NDP tell us about how much of the Lake Tahoe basin is wetland or
+> riparian habitat, and how that relates spatially to the lake? Make a small map
+> and quantify what the available scientific data support.
+
+The catalog contains [Lake Tahoe](https://nationaldataplatform.org/catalog/dataset/lake-tahoe)
+and TRPA geospatial collections. A useful result needs actual habitat and boundary
+features, compatible coordinate systems, a defined basin and overlap handling.
+Do not add overlapping polygon areas or treat different wetland/riparian
+definitions as interchangeable. A service landing page is not a geometry file.
+
+Related questions:
+
+- Can NDP's Lake Tahoe boundary tell us the lake's surface area? Make a map and
+  show how it was measured. Then investigate how much the mapped shoreline length
+  changes with geometric detail. This is a boundary-measurement question; it does
+  not measure wetland acreage or today's water-covered surface. Inspect the
+  downloaded coordinate system and distinguish numerical agreement from survey
+  accuracy.
+- Which mapped habitat patches lie near the shoreline, and how does their area
+  change with the chosen shoreline buffer? State the buffer definition and units.
+- How much of a mapped flood zone overlaps particular land-cover classes? Check
+  whether the flood layer is a probability scenario or an observed event.
+
+## A harder hydrology question
+
+> Can NDP help compare winter ground displacement around Lake Tahoe over the
+> last five winters, and assess whether it is consistent with changing regional
+> water storage?
+
+This is a research-feasibility task until the required coverage is established.
+It needs appropriately located GNSS stations with multiple winters of compatible
+displacement observations, alongside independent hydrological measurements such
+as snowpack, precipitation, lake level or a water-storage product. A short segment
+from one station cannot answer a multi-winter regional question.
+
+GNSS displacement can reflect regional hydrological loading, tectonics, snow,
+reference-frame choices and instrument effects. Establish component units, station
+epochs, offsets, trend removal and uncertainties. It is not a direct measurement
+of lake volume. A defensible first result may be a map of suitable stations and a
+coverage/gap table, followed by an analysis only where the data support it.
+
+For scientific context, [Borsa, Agnew and Cayan's regional GPS study](https://www.usgs.gov/publications/ongoing-drought-induced-uplift-western-united-states)
+used seasonally adjusted station series and a deformation-to-mass inversion.
+It supports investigating hydrological loading; it does not establish a direct
+conversion from one lake-adjacent station's motion to that lake's stored volume.
+
+## Streams and sharing results
+
+> Can we obtain current observations for a station near our study area, measure
+> their freshness and gaps, and compare them with an archived interval?
+
+This requires successful acquisition and consumption, measured timestamps and
+cadence. Station metadata, a running producer or archived SSE delivery alone
+cannot establish that result. See [sampling and analyzing streams](docs/files/ndp-streams.md).
+
+> Put this investigation's report, chart and derived table into one private NDP
+> dataset for our research group, and verify that the files can be read back.
+
+The agent must resolve or, when authorized, create the organization, store the
+selected artifact versions, register their real locations and read back both the
+dataset record and stored bytes. A catalog record does not itself upload files.
+Publishing needs write permission and a storage destination. Creating a dataset
+in an Endpoint's local catalog does not automatically publish it to the central
+NDP catalog.
+
+These suggested questions depend on the data and permissions available at your
+connected service. For your own investigation, ask follow-up questions about
+coverage, sensitivity and provenance before sharing the conclusions.

@@ -84,6 +84,21 @@ def agent_source(service: PluginService, ref: str) -> str:
 
 def export_local_marketplace(service: PluginService) -> bytes:
     """Export local source and portable agents without changing the live collection."""
+    files = local_marketplace_files(service)
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for archive_path, (data, mode) in sorted(files.items()):
+            entry = zipfile.ZipInfo(archive_path, date_time=(1980, 1, 1, 0, 0, 0))
+            entry.create_system = 3
+            entry.external_attr = (mode & 0xFFFF) << 16
+            entry.compress_type = zipfile.ZIP_DEFLATED
+            archive.writestr(entry, data)
+    return output.getvalue()
+
+
+def local_marketplace_files(service: PluginService) -> dict[str, tuple[bytes, int]]:
+    """The backup's files by marketplace path, with their modes: the ZIP and a GitHub
+    publication carry exactly these."""
     root = service.store.root / "local" / PRIVATE_MARKETPLACE
     files: dict[str, tuple[bytes, int]] = {}
     limit = 16 * MAX_BYTES
@@ -126,12 +141,4 @@ def export_local_marketplace(service: PluginService) -> bytes:
         index_path = NATIVE_INDEX.as_posix()
         if index_path not in files:
             add(index_path, json.dumps({"name": PRIVATE_MARKETPLACE}).encode())
-    output = io.BytesIO()
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for archive_path, (data, mode) in sorted(files.items()):
-            entry = zipfile.ZipInfo(archive_path, date_time=(1980, 1, 1, 0, 0, 0))
-            entry.create_system = 3
-            entry.external_attr = (mode & 0xFFFF) << 16
-            entry.compress_type = zipfile.ZIP_DEFLATED
-            archive.writestr(entry, data)
-    return output.getvalue()
+    return files

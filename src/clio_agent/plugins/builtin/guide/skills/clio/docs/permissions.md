@@ -1,0 +1,271 @@
+---
+title: "Choose what CLIO may do"
+description: "Review requested actions, choose an approval policy and understand access limits."
+source: https://clio.iowarp.ai/docs/permissions/
+---
+
+# Choose what CLIO may do
+
+Review requested actions, choose an approval policy and understand access limits.
+
+CLIO checks protected actions such as writing a file, running a command or
+reaching the network. Start with **Ask first** when you want to review those
+actions. Read-only tools normally need no separate action approval, but can only
+access material allowed by the connected service, source settings and filesystem
+boundaries.
+
+## The decision order
+
+For each action that is not a read, CLIO decides in this order:
+
+1. Mode. In Plan and Deep research, tools that write are refused, while web and literature search stay allowed. Plan mode may still write plan files in Markdown. No rule can override this.
+2. Rules. An access rule can `allow`, `deny`, or `ask`. A matching `deny` blocks the action. A matching `allow` lets it through, and the decision is recorded.
+3. The tool's default permission, if no rule matched. A plugin can declare one for each of its tools, and a deployment can set it with `tools.permissions`; see [Tool settings for a plugin](#tool-settings-for-a-plugin). A default `deny` blocks the tool even under **Bypass checks**, and a default `ask` asks in every confirmation policy except **Bypass checks**.
+4. The conversation's confirmation policy, if nothing above settled it. **Ask first** prompts you; **AI review** uses the risk reviewer described below. A call made inside a script can be covered by the script's approval; see [Scripts](#scripts).
+
+The agent writes files with `fs_write_file` and `fs_edit_file`. Both are writes, so they follow this order: **Ask first** asks before each write and **Workspace edits** allows writes without asking. [Hooks](docs/hooks.md) see every write before it happens, and a hook can refuse it. Each change can be undone from **Changed files** in Evidence; see [Evidence](docs/evidence.md#changed-files-and-diffs).
+
+Tools classified as read-only skip this action-approval sequence; access boundaries still apply. A tool counts as a read when it is marked read-only, either by the MCP server that provides it or by CLIO's own tool catalog. A tool that is read-only in practice but not marked as such is treated as a write and asks first.
+
+For the modes, see [Start and steer a conversation](docs/sessions.md).
+
+## Answer a permission request
+
+When an agent needs your decision, the session shows a request that describes the action, with these answers:
+
+| Answer | Effect |
+|---|---|
+| Allow once | Lets this one action run. |
+| Deny | Refuses this action. |
+| Allow for session | Allows matching actions for the rest of this session. |
+| Allow for workspace | Allows matching actions in this workspace from now on. |
+
+A request waits until you answer it or its work is cancelled, however long that takes, so you can answer a request from a long run when you come back. A request from an agent that has no session to ask is denied at once. A denial is reported back to the agent, so it can try another approach or ask you.
+
+The **Confirmation policy** control in the composer changes how often CLIO pauses. See [Start and steer a conversation](docs/sessions.md).
+
+## Scripts
+
+The agent can write a Python script that calls its tools; see
+[Scripts and background work](docs/scripts.md). Running the script is one action that
+asks first like a command, and the request shows the script.
+
+The calls the script then makes are decided one by one. Reads run, and rules and Plan
+mode still apply. For a call that would otherwise ask:
+
+- **Ask first**: it asks, showing the script, one question per script at a time. The
+  request adds **Allow for the rest of this script**, which covers that script's later
+  calls.
+- **Workspace edits**, **AI review** and **SPOTTER review**: the approval of the script
+  covers it (`code.covering_postures`).
+- **Bypass checks**: it runs.
+
+A rule or a tool's default permission set to `ask` still asks inside a script; the
+script's approval does not cover it. A script keeps the confirmation policy it was
+approved under, even if you change the conversation's policy while it runs.
+
+## AI review (Automode)
+
+Choose **AI review** in the composer's confirmation policy to have an independent
+model classify an otherwise undecided operation. Risk levels **none**, **low**,
+and **medium** proceed automatically. **High** risk asks you for approval.
+Missing, invalid, failed, or timed-out reviews also ask you. Existing permission
+rules, explicit denials, mode restrictions, and the OS sandbox still apply.
+
+In **Settings → Fleet → Automode permissions**, select the reviewer model. By
+default it uses the conversation's model. Goals and Best of N/refinement have
+their own selectors. See [Goals, loops and scheduled work](docs/long-running-work.md)
+for the Fleet controls and the behavior of work waiting for your decision.
+
+## Write rules
+
+Open Settings and choose **Permissions** to see your access rules and add new ones with **New rule**. A rule has:
+
+- What it applies to, such as a tool name pattern or a file location pattern.
+- A decision: allow, deny, or ask.
+- A scope: a workspace or a session.
+- A priority.
+
+A higher priority wins. At the same priority, the more restrictive decision wins. Saving replaces the whole rule set in one step, and an invalid rule leaves the existing rules unchanged, so a typo cannot silently drop a rule.
+
+The same rules are available over the HTTP API at `GET` and `PUT /v1/policies`.
+
+## Tool settings for a plugin
+
+Open a plugin, for example from the **Plugins** tab of the Agent panel, and choose its
+**Tools** tab. It lists the plugin's tools in two groups, **Read-only tools** and
+**Write and delete tools**, with two settings for each:
+
+| Column | Choices |
+|---|---|
+| **Permission** | **Always allow**: used without asking. **Needs approval**: asks before each use, in every confirmation policy. **Blocked**: hidden from the agent, and any call to it is refused. Or the plugin's default. |
+| **I/O** | **Direct**: the agent calls it itself, its scripts cannot. **Code**: only scripts call it, and its description stays out of the agent's instructions. **Both**. Or the plugin's default. |
+
+**Show what happens in** picks a confirmation policy, and each row then says what a
+call does under it, for a direct call and for a call from a script, for example
+**Asks you** or **Covered by the script's approval**. A tool of a tool server appears
+once a conversation has connected that server.
+
+Your permission choice is saved as a rule for every workspace, listed with your other
+rules under **Permissions**. Your I/O choice is saved as `tools.callers` in your user
+`config.yaml`.
+
+Plugins can declare these defaults for their tools; see
+[Plugin reference](docs/sdk/plugins.md#tools). A deployment can override them in
+[Configuration](docs/configuration.md) with `tools.permissions` and `tools.callers`,
+mappings from tool name to value (`CLIO_TOOLS_PERMISSIONS` and `CLIO_TOOLS_CALLERS` as
+JSON). A `deny` there removes the tool from every agent.
+
+## File access
+
+### Workspace folders
+
+Open the workspace's menu in the sidebar and choose **Edit workspace**. The
+**Primary folder** is where its tools start. If you move that folder, choose its
+new location and **Save workspace**. CLIO keeps the same workspace and saved
+conversations; it changes the path without moving your files. Finish or stop
+running conversations first.
+
+Under **Additional permitted folders**, choose a folder or enter its path, then
+save. You can use **Add permitted folder** to prepare several additions before
+saving; Save also includes the folder currently entered. These are paths on the
+computer running the connected CLIO service. Desktop's native folder picker
+browses the computer running Desktop, so enter the service computer's path when
+working remotely.
+
+Additional folders permit file tools to read and write there, subject to the
+usual file and action rules. They survive restarting CLIO and remain attached
+when you change the primary path. The Files view includes additional folders as
+separate expandable entries. Agents can use their absolute paths or reference a
+file from Files. Files actually consumed or produced participate in artifact
+hashing and version tracking; allowing a folder does not bulk-index its contents.
+
+### Requests for another folder
+
+When a built-in file tool needs an unpermitted path, CLIO asks before running it.
+The request shows the operation, service computer, exact file and folder paths,
+reason, and permission duration. **Allow for workspace** adds read/write access to
+the displayed folders, saves the decision, and continues the original operation.
+**Deny** returns your refusal to the agent so it can choose another approach.
+The grant persists after restart; remove it from **Additional permitted folders**.
+Workspaces with the same primary folder share that boundary.
+
+For shell commands, the agent declares `access_paths` and `access_reason` before
+execution. A move includes both source and destination. When an undeclared write
+hits the OS fence, the failed call's result says so: it names the folder that was
+refused and tells the agent to run the command again with that folder in
+`access_paths` and a reason, which brings you the same approval request. Nothing is
+retried or requested on its own; the agent decides, since the command may have
+partly run. A Python script (`run_code`) refused the same way is told to make that
+write through a shell command with `access_paths`, and a tool server's refusal gets
+the same advice, worded as a likely cause. A command that needs administrator
+rights, such as an installer, cannot be approved from CLIO: the agent tells you the
+exact file to run yourself. Arbitrary shell reads are not universally restricted by
+the write sandbox. Folder approval cannot override connected-source credential protection,
+read-only source storage, or disabled symlinks.
+
+Remove a folder in the editor and save to withdraw that additional grant. This
+does not delete files or remove access supplied by another rule. Already-running
+tool processes keep their sandbox until they finish and restart; new processes
+use the updated boundary. The OS sandbox controls writes, while file-tool policy
+also checks reads. A permitted folder is not a read-only source connection.
+
+Workspaces using the same primary folder share its file-tool boundary. Removing
+an additional grant from one keeps any grant still held by the other.
+
+### Other file-policy settings
+
+File tools can only reach certain folders. By default these are:
+
+- The workspace root.
+- The directory CLIO was started in.
+- The operating system's temporary directory.
+
+Managed built-in file calls request your approval for paths outside these folders.
+App-less callers have no approval channel and receive `outside_allowed_roots`.
+Administrators can also configure `CLIO_ALLOWED_ROOTS` or
+`tools.file_policy.allowed_roots`. Two more settings apply:
+
+- `CLIO_MAX_FILE_SIZE_BYTES` limits the size of files the tools handle.
+- `CLIO_ALLOW_SYMLINKS` is off by default. Set it to true to follow symbolic links.
+
+## The OS sandbox
+
+The rules above work at the tool boundary. An agent can also start programs, and a program can write anywhere your account can. The sandbox closes that gap. It confines every process the agent starts to the same folders, so a write outside them is refused by the operating system itself.
+
+Desktop CLIO includes its protected-execution runtime. It checks Windows protection
+at startup, before connecting the agent's tools. You do not need to install a
+separate model or sign in to Codex for this protection.
+
+### Windows setup and progress
+
+Open **Infrastructure → CLIO hosts → Protected execution** on the computer that
+runs CLIO. When setup is needed, choose **Set up protected execution**.
+
+- On supported Windows systems with the newer native runtime, preparation can complete without administrator approval.
+- The older Windows backend needs administrator approval to create its sandbox accounts the first time. Existing accounts can be checked again without another approval prompt.
+- Setup shows its current step and elapsed time. Preparing access to runtime packages can take several minutes. You can leave Infrastructure: setup continues in the connected CLIO service, and a notification reports the result.
+- After successful setup, startup, the setup button and the command line reuse checks for unchanged runtime folders. A runtime or permission change can require a repair; choosing setup again does not automatically repeat the full installation work.
+- **Ready** means verification succeeded. If CLIO asks you to restart, use **Restart CLIO** before retrying work: already-running background tool processes need to be replaced.
+
+For a command-line installation:
+
+```powershell
+clio sandbox setup
+clio sandbox status
+```
+
+On macOS and Linux, CLIO uses the available Codex sandbox automatically. Linux
+can fall back to Landlock where the kernel supports it. A command-line installation
+without the bundled runtime needs the relevant sandbox runtime installed.
+
+### Why Bypass checks can still be blocked
+
+**Bypass checks** skips supported action-approval prompts. It does not grant access
+to connected-source credentials, change a source's read-only setting, or turn off
+protected execution.
+
+If CLIO cannot enforce those source-access boundaries, it refuses shell and MCP
+processes that could expose protected material. Changing the confirmation policy
+will not resolve that failure. Finish protected-execution setup on the connected
+computer, check the result, and restart if requested.
+
+`clio sandbox status` reports the active mechanism, a reason when unavailable,
+and the next action. On hosts where no fence is available, tool-level rules still
+apply. Any permitted unfenced process is explicitly recorded as such; protected
+source access can require the process to be refused altogether.
+
+When a sandboxed process is stopped from writing outside its folders, the denial is recorded with the process, the path, and the time, and the agent's result names the folder and how to ask for it.
+
+You are asked too. A confirmed block raises the folder access request described above, with the folder, the command and the working folder, so the conversation shows that it needs you and your usual notifications fire.
+
+![A folder access request: the sandbox blocked a copy to Reports; the request names the command, the computer, the working folder bike-counts and read and write access to /home/user/Reports, with Deny, This workspace and Allow](plugin-asset://guide/captures/docs-permissions-folder-card.webp)
+*The request a blocked write raises. Allow grants the folder to the workspace.*
+
+The conversation also says what was blocked under its activity, with a button named after the folder.
+
+![Blocked by the sandbox: Reports, with an Allow Reports button](plugin-asset://guide/captures/docs-permissions-blocked-notice.webp)
+
+The button first shows what you would allow: the full path, that commands and scripts in every conversation of this workspace may create, change and delete files there, and that it lasts until you remove it here.
+
+![A dialog titled Allow writing to Reports, listing the folder /home/user/Reports, what you allow, how long, and that the blocked command is not run again, with Cancel and Allow folder](plugin-asset://guide/captures/docs-permissions-allow-dialog.webp)
+
+Allowing does not rerun the blocked command; ask the agent to try again. The folders you have allowed are listed in Observability, under Evidence; hover a folder for its path, or click it to copy the path.
+
+![Folders the agent may write: bike-counts, the workspace folder, and Reports, allowed by you](plugin-asset://guide/captures/docs-permissions-allowed-folders.webp)
+
+> **Note**
+>
+> The sandbox and the permission rules are two layers. The rules produce clear errors for the agent on every platform. The sandbox enforces the boundary below them where it is available.
+
+## Network access
+
+Programs the agent starts connect to the network through one recording proxy. By default, access is allowed and every connection is recorded in the provenance record, so you can see which domains a run contacted.
+
+You can turn on deny mode for a workspace. In deny mode, a connection to a domain is refused until you grant it, and the first connection to a new domain raises a permission request.
+
+Programs reach the proxy through the standard proxy settings CLIO gives them. A program that opens its own network connections can go around it, and the record says so for each connection rather than claiming more than it enforced.
+
+## Hooks
+
+If you need checks that rules cannot express, such as scanning tool input for secrets, see [Hooks](docs/hooks.md).

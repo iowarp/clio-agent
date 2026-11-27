@@ -349,5 +349,30 @@ def present_task_family(
         summary = f"{count} {'task' if count == 1 else 'tasks'}"
     if isinstance(pending, list) and pending:
         summary += f", {len(pending)} pending"
+    blocks.extend(_plugin_blocks(args))
     subject = subjects[0] if len(subjects) == 1 else ""
     return summary, blocks, "", "failed" if error else "", subject
+
+
+def _plugin_blocks(args: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The plugins a spawn gave to or took from its child (``plugins``), per assignment."""
+
+    rows = [args, *(s for s in args.get("spawns") or [] if isinstance(s, Mapping))]
+    blocks: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        change = row.get("plugins")
+        if not isinstance(change, Mapping):
+            continue
+        lines = [f"Added {ref}" for ref in change.get("add") or []]
+        lines += [f"Removed {ref}" for ref in change.get("remove") or []]
+        if lines:
+            name = str(row.get("name") or row.get("agent") or "")
+            blocks.append(
+                {
+                    "id": f"plugins-{index}",
+                    "type": "text",
+                    "label": f"Plugins for {name}" if name else "Plugins for the child",
+                    "text": "\n".join(lines),
+                }
+            )
+    return blocks

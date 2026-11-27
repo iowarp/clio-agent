@@ -1,0 +1,65 @@
+---
+title: "Search your work"
+description: "Find matching conversation passages and files, or ask the read-only CLIO Search assistant."
+source: https://clio.iowarp.ai/docs/search/
+---
+
+# Search your work
+
+Find matching conversation passages and files, or ask the read-only CLIO Search assistant.
+
+> **Preview:** Matching-passage navigation and the CLIO Search assistant (in development builds). Availability depends on your build.
+
+Open **Search** in the sidebar or press **Ctrl+K** (**⌘K** on macOS).
+Type a name or paste a sentence from a conversation. Matching text is
+highlighted, and session matches appear before files.
+
+![Search for rebalancing showing the conversation title first, matching message excerpts, and a workspace file, with the matched words highlighted](plugin-asset://guide/captures/docs-search-results.webp)
+*Session names, message passages and file paths show where your words matched. The message result also names its workspace and offers Open matching passage.*
+
+## Return to a matching passage
+
+Paste the sentence you remember. **Matching messages** shows the relevant
+passage rather than the beginning of a long answer. Choose the result to open
+that conversation at the matching message and highlight its text.
+CLIO reveals the containing segment when it was collapsed.
+
+![A pasted sentence appears highlighted inside a message excerpt with an Open matching passage destination](plugin-asset://guide/captures/docs-search-phrase.webp)
+*The excerpt is centered on the pasted phrase, including when the stored answer uses Markdown emphasis. Opening it carries the message, part and search text to the conversation.*
+
+![The matching phrase docked bikes per station highlighted inside the original conversation, above its composer](plugin-asset://guide/captures/docs-search-destination.webp)
+*After opening the result, the conversation scrolls to the matching sentence. The highlight stays on the source text so you can read the surrounding answer.*
+
+Ordinary search looks through retained messages and session names on the
+connected CLIO service. **Workspace files** matches paths in the workspace you
+are viewing. Use CLIO Search when you want an answer from file contents or help
+finding work across the service's other registered workspaces.
+
+## Ask CLIO Search
+
+1. Open Search and press **Tab**, or choose **Ask Agent**.
+2. Enter an ordinary question, such as “Where did we discuss the reviewer
+   handoff?” Press **Enter** to submit it.
+3. Read the answer and open its source citations. A message citation returns to
+   its passage. A file citation opens the correct workspace's source panel at
+   the referenced line, with matching text highlighted.
+4. Ask a follow-up in the same search box. Press **Escape** to return to ordinary
+   search; press it again to close the menu.
+
+![CLIO Search displaying its Fleet model and an answer with clickable message and archived-file citations](plugin-asset://guide/captures/docs-search-assistant.webp)
+*CLIO Search uses a separate read-only conversation. Its source links navigate to the original work; the search exchange is not added to the conversation behind the menu.*
+
+Choose its model in **Settings → Fleet → CLIO Search**. Without an override it
+inherits the current conversation's model, then the service default. Entering
+Tab mode alone does not start a model request: submission starts the search.
+
+The dedicated **clio-search** agent can read registered conversations and
+workspace text files. It cannot edit them, run shell commands, or search another
+CLIO service. Closing search deletes its temporary conversation.
+
+File-content scans and source reads are bounded. The assistant should describe
+unreadable sources, shortened excerpts and incomplete scans when they affect an
+answer. A source that was not found in a limited scan is not proof that it does
+not exist. For a complete file view, choose that file in the source panel.
+
+For session-scoped recall and context summaries, see [What CLIO remembers](docs/memory.md).

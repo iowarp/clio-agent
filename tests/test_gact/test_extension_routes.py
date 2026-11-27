@@ -202,3 +202,20 @@ def test_upload_portable_skill_and_reject_duplicate_name(client: TestClient) -> 
         client.post("/v1/plugins/upload?name=bad", json={"archive": "!not-base64"}).status_code
         == 422
     )
+
+
+def test_publishing_without_a_github_sign_in_says_to_sign_in(client: TestClient) -> None:
+    current = client.get("/v1/plugins/local/publish")
+    assert current.status_code == 200, current.text
+    body = current.json()
+    assert body["github"]["signed_in"] is False and body["last"] is None
+    assert body["github"]["account_url"].startswith("https://github.com/")
+    refused = client.post("/v1/plugins/local/publish", json={"repository": "lab/backup"})
+    assert refused.status_code == 409
+    assert refused.json()["error"]["error"] == "github_sign_in_required"
+
+
+def test_publishing_needs_a_repository_name(client: TestClient) -> None:
+    refused = client.post("/v1/plugins/local/publish", json={})
+    assert refused.status_code == 422
+    assert refused.json()["error"]["error"] == "repository_invalid"

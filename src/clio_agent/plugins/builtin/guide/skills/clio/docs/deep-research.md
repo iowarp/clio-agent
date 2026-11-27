@@ -1,0 +1,142 @@
+---
+title: "Run deep research"
+description: "Ask a question in Deep research mode to get a sourced report whose claims an independent critic checked against the pages they quote."
+source: https://clio.iowarp.ai/docs/deep-research/
+---
+
+# Run deep research
+
+Ask a question in Deep research mode to get a sourced report whose claims an independent critic checked against the pages they quote.
+
+> **Preview:** Deep research with web and literature search (since v0.9.7). Availability depends on your build.
+
+Deep research answers a question that needs many sources: the state of a field, a
+comparison of methods, a literature review. CLIO plans the investigation, sends
+several researchers out at once, has an independent critic check what they found,
+and writes a report from the claims the critic verified.
+
+A deep research run takes longer than an ordinary answer, often 15 minutes to
+an hour, and makes hundreds of searches and page reads. Use an ordinary conversation for a quick fact.
+
+## Start a run
+
+1. Start a new conversation.
+2. Open the mode button beside the model (it shows **Execute**) and choose
+   **Deep research**.
+
+   ![The composer's mode menu with Execute, Plan and Deep research, A long, sourced investigation](plugin-asset://guide/captures/deep-mode-menu.webp)
+*Deep research applies to the message you send next.*
+
+3. Ask your question. Name the scope, the period and what the answer should
+   cover.
+
+   ```text
+   Write a short literature review of lossless compression for
+   scientific floating-point data since 2020: which methods are
+   used, which of them are available as HDF5 filters, and what
+   compression ratios and speeds papers report.
+   ```
+
+4. Approve the search sources when CLIO asks. See
+   [Approve the first search](docs/web-search.md#approve-the-first-search).
+
+In Deep research mode, tools that write are refused, so the run searches and
+reads while CLIO saves its report. See
+[Choose what CLIO may do](docs/permissions.md).
+
+## How a run works
+
+1. **Plan.** A planner splits the question into research directions and names
+   each one. It sizes the plan to the question: one direction for a simple
+   question, about three for a typical one, more only for genuinely separate
+   parts.
+2. **Research.** One researcher per direction searches the web and the
+   literature, reads the sources and reports claims, each with the page it read
+   and the exact passage that supports it.
+3. **Check the quotes.** CLIO confirms that each quoted passage is on the page
+   the researcher read. A claim that fails this check is rejected with the
+   reason, unless the critic reads the page and verifies the claim itself.
+4. **Verify.** One critic per researcher, all at once, judges whether each
+   passage supports its claim as stated, whether the source is authoritative
+   and current, and looks for evidence against it. It returns verified and
+   rejected claims, and the questions the direction leaves open.
+5. **Coordinate.** A coordinator reads every verified claim together. It notes
+   where sources agree, where they contradict each other and what follows from
+   several of them, then decides whether the answer needs follow-up research.
+   By default it can send one round of follow-ups, each on a question no
+   researcher has asked yet.
+6. **Write and review.** A writer drafts the report from verified claims only,
+   using the coordinator's findings for the disagreements and the conclusion. A
+   separate reviewer checks the report against its evidence and can send it
+   back once for a correction.
+
+You can follow the researchers and the critic while they work in **Work**; see
+[Follow work in progress](docs/following-work.md).
+
+![A finished deep research run in full screen: three named researchers, a check for each, a Coordinate step, then three follow-up researchers, with the report below](plugin-asset://guide/captures/deep-run-graph.webp)
+*Each researcher and its check is named after its direction. Coordinate is where the run chose its follow-ups. Select a step to see it.*
+
+## Read the report
+
+When the run ends, CLIO saves the report as a Markdown file in a `deep-research`
+folder of the workspace, attaches it to its answer, and summarizes the outcome:
+what was verified, what was not, and what the critic still questions. Choose the
+file to open the report beside the conversation.
+
+![The end of a deep research answer: throughput findings, what was not verified, problems the critic flagged in the report, and the attached Markdown report](plugin-asset://guide/captures/deep-delivered.webp)
+*The answer ends with what the run could not verify and what the critic still disputes, then the saved report.*
+
+![The report open beside the conversation: question and scope, executive answer, and findings with a source link under each claim](plugin-asset://guide/captures/deep-report.webp)
+*The report states its scope, gives a short answer, then lists its findings with the source of each claim.*
+
+The report has these sections:
+
+| Section | What it holds |
+| --- | --- |
+| **Question and scope** | What the run investigated. |
+| **Executive answer** | The short answer. |
+| **Findings** | The verified claims, each with its citation. |
+| **Conclusion** | What the findings mean together. |
+| **References** | The sources cited. A paper lists its authors, year, venue and DOI when the literature sources provide them. |
+| **Unresolved questions** | Gaps the run could not close. |
+| **Rejected claims** | Claims the critic did not verify, with the reason. They are not findings. |
+| **Open review notes** | Points the final reviewer raised that the run did not resolve, when there are any. |
+
+A link appears in the report only when a researcher or the critic read that page
+during the run.
+
+> **Caution**
+>
+> Verification means a source page contains the quoted passage and the critic
+> judged that it supports the claim. It does not prove the claim is true. Check
+> the sources for anything you rely on, and read the rejected claims and open
+> review notes.
+
+## Change the depth
+
+Say what you need in the request, and CLIO sets the run's limits from it:
+
+- **Narrower:** ask for at most a few directions. Without a limit the planner
+  sizes the run, up to 20 directions.
+- **Deeper or faster:** ask for more or fewer follow-up rounds, from none to
+  five. The default is one, which the coordinator uses only when the evidence
+  needs it.
+- **Lighter on the services:** ask for fewer researchers at a time.
+- **Other models:** name a model for the researchers or for the critic. The
+  planner, writer and reviewer use the conversation's model.
+
+## When a run is blocked
+
+The researchers need to search. If you decline a search source, CLIO moves on to
+the next source you allowed. If no search can run at all (every source was
+declined or is off, or the search tools were refused), the run stops with
+**Research was blocked** and says why, instead of researching again. Turn a
+source on in **Settings > Web search**, or allow the search tools for the
+conversation, then ask again.
+
+## Related
+
+- [Find papers and review the literature](docs/literature.md)
+- [Search the web](docs/web-search.md)
+- [Check answers and sources](docs/evidence.md)
+- [Flows and workflows](docs/flows.md)

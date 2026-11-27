@@ -1,0 +1,108 @@
+---
+title: "Command line"
+description: "Start, stop, and inspect the CLIO backend with the clio command, and what differs on Windows."
+source: https://clio.iowarp.ai/docs/cli/
+---
+
+# Command line
+
+Start, stop, and inspect the CLIO backend with the clio command, and what differs on Windows.
+
+The install script adds a `clio` command. It starts the CLIO backend when needed, opens an interface, and gives you commands to manage the backend. The backend itself is a separate program, `clio-agent`, described [below](#the-clio-agent-command).
+
+## The clio command
+
+| Command | What it does |
+|---|---|
+| `clio` | Starts the backend if needed and opens Web in your browser. |
+| `clio --web` (or `clio web`) | Starts the backend and opens http://127.0.0.1:17800/ in your browser. |
+| `clio desktop` (or `clio --desktop`) | Launches the desktop app. Linux and macOS only, and it needs `CLIO_DESKTOP_BIN` set to the app's binary. |
+| `clio start` | Starts the backend in the background, then waits up to about 90 seconds for it to become healthy. |
+| `clio stop` | Stops the backend and the tool processes it started. |
+| `clio restart` | Stops, then starts. |
+| `clio status` (or `clio ps`) | Shows the install prefix, port, process id, health, and log locations. |
+| `clio logs [N]` | Follows service logs, starting with the last N lines (40 by default). |
+| `clio update` | Upgrades `clio-agent` to the latest release. Linux and macOS only. |
+| `clio doctor` | Checks the backend binary, port and launcher (plus `curl` on macOS and Linux). The frozen TUI is not required. |
+| `clio sandbox status` | Shows whether the OS write fence is active. See [Permissions and sandbox](docs/permissions.md). |
+| `clio sandbox setup` | Prepares and verifies protected execution. Older Windows runtimes may request administrator approval for first-time setup. |
+| `clio report` | Prints versions, environment, health, and the last 40 lines of each log, for pasting into a bug report. |
+| `clio completion bash` or `zsh` | Prints a shell completion script. |
+| `clio uninstall [--purge] [--yes]` | Uninstalls CLIO. See [Uninstall](docs/uninstall.md). |
+| `clio help` | Shows help. |
+
+The legacy TUI is **frozen and unsupported as of 0.9.5.1**. `clio attach` and
+`clio tui` fail with an explanation; they do not run an older binary left on disk.
+Use Desktop or Web, including when following these instructions from Claude Code.
+The source remains available for a future upgrade.
+
+Shell completion:
+
+**macOS and Linux**
+
+```sh
+clio completion bash >> ~/.bashrc
+clio completion zsh > "${fpath[1]}/_clio"
+```
+**Windows**
+
+```powershell
+clio completion powershell >> $PROFILE
+```
+
+## What differs on Windows
+
+On Windows the command is `clio.ps1` (with a `clio.cmd` wrapper), and it supports a subset of the commands above:
+
+- Supported: `clio`, `clio web` (or `--web`), `start`, `stop`, `restart`, `status` (or `ps`), `logs`, `sandbox`, `doctor`, `report`, `completion`, `uninstall`, and `help`.
+- Not available: `update` and `desktop`. To update, rerun the install script.
+- The uninstall flags are `-Yes`, `-Purge`, `-PurgeCaches` and `-PurgeData`.
+- The backend writes its output to separate files, `clio-server.log` and `clio-server.err.log`.
+
+## Port and logs
+
+The backend listens on `127.0.0.1` port 17800. Set `CLIO_PORT` to use a different port. The health check is `GET /v1/health`.
+
+| File | Contents |
+|---|---|
+| `clio-server.<hostname>.log` in the install prefix | Backend output on macOS and Linux. The log name includes your host name so a home folder shared across machines keeps one log per machine. |
+| `clio-server.log` and `clio-server.err.log` in the install prefix | Backend output on Windows. |
+| `gact-stderr.log`, if retained from an older install | Historical TUI errors; current CLIO does not run the TUI. |
+
+Set `CLIO_LOG` to write the backend log to a different file on macOS and Linux. The install prefix is `~/Library/Application Support/clio-agent/data/app` on macOS, `~/.local/share/clio-agent/app` on Linux, and `%LOCALAPPDATA%\clio-agent\data\app` on Windows.
+
+## Update checks
+
+On macOS and Linux, the `clio` command checks PyPI for a newer `clio-agent` at most about once a day and prints a one-line hint. To turn the check off, set `CLIO_NO_UPDATE_CHECK=1`. See [Data and network](docs/privacy.md).
+
+## Protected execution warning
+
+When protected execution (the OS sandbox) is off, the agent's tools can change any file your account can. CLIO still starts, so `clio`, `clio web`, `clio start` and `clio restart` print a security warning with the reason and the step that turns protection on. In a terminal they ask you to confirm. If you don't answer yes, `clio` stops the server it started. Scripts and other runs without a terminal only see the warning. To acknowledge it without the prompt, set `CLIO_ACCEPT_UNSANDBOXED=1`. Run `clio sandbox status` to check protection at any time.
+
+## The clio-agent command
+
+`clio-agent` is the backend program that the `clio` command runs.
+
+| Command | What it does |
+|---|---|
+| `clio-agent serve` | Runs the backend in the foreground. Options: `--host` (default `127.0.0.1`) and `--port` (default `8100`). |
+| `clio-agent doctor` | Runs deeper checks than `clio doctor`: file access policy, model provider, memory store, tool gateway, and API. Add `--json` for machine-readable output. |
+| `clio-agent sandbox status` and `clio-agent sandbox setup` | The same sandbox commands as `clio`. |
+| `clio-agent --version` | Prints the installed version. |
+| `clio-agent plugin install SOURCE` | Adds a plugin marketplace from a git URL or a local folder. Options: `--ref`, `--commit`, and `--name` to install it under another name. |
+| `clio-agent plugin trust NAME` | Trusts a marketplace's executable parts (tools, hooks, servers), so its agents and plugins can run. |
+| `clio-agent plugin update NAME` and `clio-agent plugin uninstall NAME` | Updates or removes a marketplace. An update that changes executable parts waits for `trust` again. |
+| `clio-agent plugin list` and `clio-agent plugin agents` | Lists marketplaces with their plugins, or the installed agents including the ones you saved. |
+| `clio-agent plugin resolve AGENT` | Shows what an agent is made of. `--add` and `--remove` try plugin changes; `--prompt` prints its composed prompt. |
+| `clio-agent plugin check PATH` | Checks a plugin folder or marketplace before you install it, with a typed reason for each problem. `--installed NAME` checks an installed marketplace. |
+
+> **Note**
+>
+> `clio-agent serve` listens on port 8100 unless you pass `--port`. The `clio` command passes port 17800 for you.
+
+Use Desktop or Web settings to inspect tool servers and configure your model.
+
+## Next steps
+
+- [Configuration](docs/configuration.md): Settings files and environment variables.
+- [Troubleshooting](docs/troubleshooting.md): When something does not start or connect.

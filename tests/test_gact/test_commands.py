@@ -617,7 +617,7 @@ def test_dispatch_cache_stats_arc_failure_returns_structured_error(
 
 def test_dispatch_unknown_command_404s(client: TestClient) -> None:
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    for name in ("nonsense", "optimize"):
+    for name in ("nonsense", "deploy-everything"):
         resp = client.post(f"/v1/sessions/{sid}/commands/{name}")
         assert resp.status_code == 404
         assert resp.json()["error"]["error"] == "command_unknown"

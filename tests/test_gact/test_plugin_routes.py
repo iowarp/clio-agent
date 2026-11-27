@@ -24,6 +24,8 @@ FIXTURE_PLUGINS = {"workspace", "shell", "visuals", "delegation", "document-runt
 STANDARD_PLUGINS = [
     "core",
     "memory",
+    "guide",
+    "builder",
     "workspace",
     "shell",
     "visuals",
@@ -168,6 +170,8 @@ def test_installed_marketplace_is_untrusted_until_the_trust_step(
     assert [row["id"] for row in resolved.json()["plugins"]] == [
         "core",
         "memory",
+        "guide",
+        "builder",
         "notes",
         "fleet",
         "streaming",

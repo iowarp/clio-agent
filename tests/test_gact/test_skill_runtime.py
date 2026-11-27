@@ -347,9 +347,17 @@ class Analyst(Agent):
 """
 
 
-#: The skills every agent carries: core's planning and task protocol, the fleet
-#: plugin's update-models and the streaming plugin's live-status.
-CORE_SKILLS = ("planning", "task-protocol", "update-models", "live-status")
+#: The skills every agent carries: core's planning and task protocol, the guide's
+#: clio, the builder's capture, the fleet plugin's update-models and the streaming
+#: plugin's live-status.
+CORE_SKILLS = (
+    "planning",
+    "task-protocol",
+    "clio",
+    "capture",
+    "update-models",
+    "live-status",
+)
 
 
 def _write_inventory_skill(root: Path, skill_id: str, description: str, body: str) -> Path:
@@ -824,12 +832,14 @@ def test_session_agent_sees_plugin_skills_and_catalog_skills_together(
         app, session_agent_def(app, session.id), session_id=session.id
     )
 
-    # Plugin skills follow resolution order: core, then the agent's plugins, then
+    # Plugin skills follow resolution order: core, guide and builder, then the agent's plugins, then
     # the plugins they require (fleet and streaming, which core requires, resolve after
     # visuals).
     assert list(runtime.resolved) == [
         "planning",
         "task-protocol",
+        "clio",
+        "capture",
         "present-interactive-analysis",
         "update-models",
         "live-status",

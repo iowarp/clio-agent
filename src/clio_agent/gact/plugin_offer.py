@@ -364,6 +364,11 @@ def _match(app: Any, wanted: str) -> tuple[str, Any]:
                 return "connector", entries[record.follows]
             if record in library(app):
                 return "plugin", record
+            from clio_agent.gact.authored_trust import clio_session  # noqa: PLC0415
+
+            if record.valid and clio_session(plugin_service(app).store, record):
+                # Written by Clio and not trusted yet: offered with its review (B7).
+                return "authored", record
     return "", None
 
 
@@ -678,6 +683,30 @@ async def _offer_plugin(
     return {**result, "reason": reason}
 
 
+async def _offer_authored(app: Any, session_id: str, record: Any, reason: str) -> dict[str, Any]:
+    """A plugin Clio wrote, not trusted yet: one question with its review, then it joins."""
+
+    from clio_agent.gact.authored_trust import permit_plugin  # noqa: PLC0415
+    from clio_agent.gact.connector_follow import ConnectorAddError, add_plugins  # noqa: PLC0415
+
+    permit = await permit_plugin(
+        app,
+        session_id,
+        record,
+        tool=TOOL_NAME,
+        call={"reason": reason},
+        where="this conversation",
+    )
+    if not permit.get("trusted"):
+        return {**permit, "refusal": permit.get("reason"), "plugin": record.id}
+    try:
+        await asyncio.to_thread(add_plugins, app, session_id, [_ref(record)])
+    except ConnectorAddError as exc:
+        return {"error": exc.reason, "plugin": record.id, "message": str(exc)}
+    result = await asyncio.to_thread(_joined, app, session_id, record, already=False)
+    return {**result, "reason": reason, "trusted_now": bool(permit.get("asked"))}
+
+
 # -------------------------------------------------------------------- the tool
 
 
@@ -737,6 +766,8 @@ async def offer_plugin(
                 result = await _offer_plugin(app, session_id, found, reason, required=required)
             summon.started(claimed, _summon_outcome(found.id, result))
             return result
+        if kind == "authored":
+            return await _offer_authored(app, session_id, found, reason)
     from clio_agent.gact import offer_search  # noqa: PLC0415
     from clio_agent.gact.offer_list import listed, overlay_or_default  # noqa: PLC0415
 

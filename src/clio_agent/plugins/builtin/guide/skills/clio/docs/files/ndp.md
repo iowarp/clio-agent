@@ -1,0 +1,250 @@
+---
+title: "Work with National Data Platform"
+description: "Search NDP datasets, connect existing remote APIs, and keep data and stream captures with your analysis."
+source: https://clio.iowarp.ai/docs/files/ndp/
+---
+
+# Work with National Data Platform
+
+Search NDP datasets, connect existing remote APIs, and keep data and stream captures with your analysis.
+
+Find scientific data in [National Data Platform](https://nationaldataplatform.org/),
+choose the resources you need, and work with them in CLIO. You can also connect
+an existing remote API to query a service or capture a finite stream segment.
+
+## Datasets, resources and Endpoints
+
+| Term | What it means | Example |
+| --- | --- | --- |
+| **Catalog** | A searchable index of descriptions and locations. It is not where all the data is stored. | NDP's central catalog lists data published by many institutions. |
+| **Organization** | The publisher named in the catalog. Choosing it filters results; it does not join a group. | `earthscope_consortium`. |
+| **Dataset** | A collection of scientific observations, measurements, simulations or analysis results, described by a catalog record. | A station's GNSS time series, an ocean simulation or satellite observations. |
+| **Resource** | One way to access or understand a dataset: a data file, object, stream, service, image or document. | An HDF5 or NetCDF file, a CSV measurement table, or a link to live observations. |
+| **Endpoint** | An institution's running data service. It can provide its own catalog, storage, queries and streams. | A research group's data service, reached directly or through SSH. |
+| **Action** | One request advertised by a connected API. | List stations, query measurements, or start a stream. |
+| **Capture** | The response bytes CLIO saved from a request. | A station list or a bounded segment of streaming measurements. |
+
+The dataset describes the scientific content; its resources describe how that
+content is represented and accessed. HDF5, NetCDF, CSV and other formats do not
+define what the science is. Supporting images, metadata and documents can belong
+to the same dataset as its measurements or simulation output.
+
+For an ordinary analysis, start in **Datasets**: find scientific data, select its resources,
+then link or download them. You do **not** need to connect an Endpoint separately
+just to read a published CSV that already has a usable resource link.
+
+Use **Endpoints & streams** when you need a service's queries, its local catalog,
+or a stream instead of a published file. Endpoints are independent: data that
+exists only in an Endpoint's local catalog may not have been published to the
+central catalog. NDP's [Endpoint guide](https://nationaldataplatform.org/documentation/getting-started/endpoints/using-endpoint/)
+explains that distinction.
+
+> **Note: Development build**
+>
+> NDP support is available in development builds and is not in a published installer.
+> See [Features and versions](docs/versions.md).
+
+## Find and select data
+
+1. Open **+ → Attach**, then **Connect** beside **National Data Platform**.
+   From **Settings → Data sources**, choose **Connect** and the target workspace.
+2. In **Datasets**, type part of a name, description or filename. Results filter
+   as you type, and CLIO searches the catalog after a short pause. Use the
+   searchable **Organization** filter to narrow results to a publisher. Lists
+   load a page at a time; **Show more datasets** retrieves the next page while
+   keeping your selected resources.
+3. Expand a dataset and select its resources. A CSV, a preview image and an HTML
+   dashboard are separate resources. Your selection stays available while you
+   search for more data; use **Selected** to review it.
+4. Choose **Continue**, then review **Download** or **Link**, just as with other
+   connected sources. Download creates a local copy for analysis; a link reads
+   selected files when needed. Connecting the catalog entry saves metadata first.
+
+![Actual NDP catalog showing compact collapsed dataset entries, organization and access filters, and Show more datasets](plugin-asset://guide/captures/catalog-collapsed.webp)
+*Browse a compact list, then open the dataset you want to inspect.*
+
+![Actual Alta-Collins search with an expanded three-line description, Show more, a collapsible Resources list and selected measurement CSV](plugin-asset://guide/captures/catalog-expanded.webp)
+*Searching expands matching datasets. Inspect their descriptions and select individual resources before continuing.*
+
+**Link selected files** saves the selected resource identities and their source
+locations in your workspace. It does not copy every file in the dataset. When
+you or the agent reads a linked file, CLIO fetches its contents and records the
+observed content/hash. Those bytes can be retained for analysis and provenance;
+linking is not a promise that no local bytes will ever be stored. NDP originals
+remain unchanged. **Download selected files** creates a local copy immediately,
+for offline work or editable derived analysis.
+
+![NDP dataset search for WWMT.CI.LY_.40 with the CSV selected and PNG and HTML resources unselected](plugin-asset://guide/captures/ndp-catalog.webp)
+*Select the data CSV separately from preview images and HTML pages. Check the dataset documentation to understand the values.*
+
+The source appears in **Files → Sources**. NDP originals are read-only. Make
+derived tables, scripts and reports in your workspace. CLIO retains source IDs
+and hashes for the files it actually reads or downloads. See
+[Copies and originals](docs/files/download-or-link.md).
+
+## Sign in when access needs it
+
+Choose **Sign in to NDP** and finish NDP's browser sign-in. Credentials and tokens
+stay in the private account flow. The account is reusable across workspaces on
+the same connected CLIO; signing in does not select or attach data.
+
+Being signed into NDP in a browser and having an NDP account connected to CLIO
+are separate states. Browser sign-in can make approval quick, but CLIO still
+needs its own saved authorization to make requests on your behalf. Once that is
+connected, CLIO reuses it in both **Datasets** and **Endpoints & streams**; it
+should not ask you to create another account or approve each query again.
+Public files and public API actions can work without that account connection.
+
+The Endpoint panel shows **NDP account connected** when CLIO has a saved sign-in.
+If the account was signed out, revoked, or cannot be refreshed, use the sign-in
+control to reconnect CLIO. An Endpoint denying access after successful sign-in
+can mean that its required role or identity issuer differs; repeating login is
+not a substitute for the necessary Endpoint permission.
+
+The Organization filter identifies a **publisher**. Selecting EarthScope there
+does not join a group or change your account permissions.
+
+## Connect an existing Endpoint
+
+Open **Endpoints & streams → Connect endpoint**. Give the connection a name,
+choose its route and review its authentication:
+
+| Route | What to enter |
+| --- | --- |
+| **Direct URL** | The existing API base URL, including any service prefix, without `/docs`. |
+| **SSH** | A saved SSH profile on the computer running CLIO and the API URL as seen from that host. For a service bound to remote loopback, enter its `http://127.0.0.1:PORT` address. |
+
+This connects to a running service. It does not install an Endpoint. Under
+**API sign-in**, choose **No NDP sign-in** for public operations or **Use my NDP
+sign-in** for requests using your saved NDP account. SSH authentication is
+separate from API sign-in.
+
+![Actual Endpoint setup using the shared SSH route selector, remote loopback API URL and separate API sign-in choice](plugin-asset://guide/captures/endpoint-ssh.webp)
+*The saved SSH route identifies the computer hosting the API. API sign-in determines whether requests also use your NDP account.*
+
+Connecting saves the service's route for this workspace. It does not start a
+stream or download measurements by itself. Its supported data views load actual
+records automatically:
+
+| View | What you can do |
+| --- | --- |
+| **Catalog** | Browse and search the Endpoint's datasets and inspect their resources. **Local** is this Endpoint's catalog; **Global** searches published catalog records. |
+| **Organizations** | See publishers returned by the Endpoint, filter them as you type, and choose **Browse data**. The **+** button opens a form to create an organization on the local Endpoint. |
+| **Services** | Browse registered services, inspect their source links, and choose **Query service**. FDSN station services have Network, Station, channel and time fields; other services accept named filters. |
+| **Stations** | Filter station codes returned by the service. **Start stream** preselects a station in a reviewable form; selecting it does not start a producer. |
+| **Files** | Browse the service's archived files and save a bounded sample. **Sample CSV from URL** also accepts an archived CSV address when the service supports it. |
+| **Streams** | Inspect the service's readers or sessions. For a Kafka consumer-view API, open a cataloged stream, capture records, continue from its saved checkpoint, and stop or resume that reader. |
+
+Only views advertised by the connected service appear. Ordinary browsing refreshes
+metadata without filling Sources with a capture for every keystroke. Search filters
+loaded records immediately; catalog/file searches also refresh from the Endpoint
+after a short pause. Use **Refresh** to check the current service state.
+
+Creation and stream changes show forms, then review the target Endpoint and entered
+values before submission. A successful NDP sign-in does not guarantee the Endpoint
+grants your account permission to create organizations or control streams. A failed
+listing is shown as an error, rather than as an empty catalog. Public connections
+can be edited to use **Use my NDP sign-in** when that service requires the saved login.
+
+**Advanced API tools** contains the discovered HTTP operations for diagnostics and
+requests beyond the supported data views. It is optional; ordinary browsing does
+not require choosing an HTTP method or writing request JSON.
+
+With **EarthScope live bridge**, station metadata and stream sessions are separate
+views. With **EarthScope on-demand streams**, a sample may replay an archived CSV.
+A station listing, current measurements, and historical replay are different results;
+inspect timestamps before describing measurements as live.
+
+Use **Endpoint actions** beside the saved connection to **Edit**, **Hide**, or
+**Remove** it. Hide is reversible through **Show hidden endpoints** and removes
+the connection from normal selection/discovery. Remove asks for confirmation and
+forgets the saved connection in this workspace. Neither stops a remote service,
+and existing captured files stay in Sources. Editing preserves the connection ID
+and retained captures; new capture receipts record the actual destination used.
+
+## Capture, inspect and resume
+
+Ask the agent to acquire and analyze the selected observations, including any
+historical record the service supplies. It should explain when history is
+unavailable or could not be verified, and keep replay or demonstration data
+distinct from measured observations. See [NDP streams](docs/files/ndp-streams.md).
+
+**Run and save response** saves the actual response in workspace **Sources**. Open it
+immediately or return to **Captured responses**. The retained record includes
+the operation and inputs, timestamps, byte count, content hash and why capture
+stopped. The agent can inspect or analyze its local copy.
+
+Expand **Sample limits** to change the request budget. Captures default to
+**30 seconds / 100 SSE events**, with limits of **30 seconds,
+1,000 events and 2 MiB**. Control messages such as `hello` and `done` count as
+events. This budget includes connection and authentication time; the service's
+record limit or wait interval can finish a read earlier. For a finite API that
+returns a resume cursor, the agent should retain it and use it for the next
+segment, checking for repeated measurements. You should
+not need to copy an opaque token for an ordinary analysis request.
+
+![Actual native Endpoint stream capture with a five-record limit, saved continuation checkpoint and Capture next records](plugin-asset://guide/captures/endpoint-stream-capture.webp)
+*A finite capture saves the records and their checkpoint. Continue without copying a resource ID or continuation token.*
+
+Closing a capture closes CLIO's read. If you separately started a remote producer,
+retain its session ID and stop that specific producer when finished. Stream
+delivery can replay old measurements: inspect their timestamps before calling
+the data live.
+
+## Ask the agent
+
+Choose the **NDP** agent (or add the `ndp` plugin to another agent) to let the
+agent search the NDP catalog itself; search needs no attached dataset, sign-in or
+MCP server. You can also ask it to connect an existing Endpoint using its URL and
+saved SSH route, or select data through **Attach > NDP**. Endpoint operations,
+requests and uploads load after the workspace has a connected dataset or visible
+saved Endpoint. A saved NDP login alone does not attach data. Disconnecting the
+last dataset or hiding/removing the last Endpoint removes those operational tools
+on the next turn; retained downloads stay available as files.
+
+See [scientific questions for NDP](docs/examples/ndp-science.md) for snow, fire,
+habitat and hydrology investigations that start from an ordinary research request.
+
+```text
+How did the 2023–24 snow-to-liquid ratio at Alta-Collins compare with the
+available historical record? Show what the observations support and explain
+any limitations in comparing the records.
+```
+
+The agent uses the same source approval, private sign-in and retained files as
+the interface. Its built-in NDP skill covers discovery and scientific analysis,
+direct/SSH service queries, finite replay and live producer lifecycles, organization
+management, resource storage, and creating or updating dataset records. It includes
+worked examples and local helpers for preparing metadata and inspecting captures.
+The requested research collection determines how resources are grouped.
+
+```text
+Take these three selected artifacts and create one dataset titled
+“Lake survey results” in our research group's organization on our NDP Endpoint.
+Keep their filenames and include all three as resources.
+```
+
+The agent resolves the existing organization and selected artifact versions,
+stores and checks the files at the chosen destination, creates the dataset,
+then reads its record back. A dataset label does not rename each resource.
+If storage is unclear, the agent asks for a destination. New results default to
+a private dataset unless you request public visibility.
+Catalog registration describes where data lives; it does not itself upload
+local files or publish a local catalog to the central federation. Endpoint
+storage must be available, or the resources must already have usable hosted
+locations. Creating an organization or editing a dataset uses the same account
+and normal action approval as other Endpoint operations.
+
+You can also ask to register files already hosted by your institution, add a
+resource to an existing dataset while keeping its other resources, or correct
+catalog metadata. These are separate workflows; the three-artifact example does
+not determine the number of datasets for other requests. Local catalog creation,
+staging and publication to the federation are checked separately when requested.
+
+Open the [seven-question Endpoint conversation](https://clio.iowarp.ai/conversations/ndp/endpoint/)
+to follow real discovery, private file storage, metadata updates, public
+test-catalog submission and reuse in an interactive map and table.
+
+Try the
+[EarthScope investigation guide](docs/examples/ndp-earthscope.md) for provenance
+and historical-coverage checks.

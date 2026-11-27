@@ -12,4 +12,5 @@ prerequisites are pending, including by spawning it outside the workflow.
 Use `run_flow` for a shipped flow
 such as `council` (independent views, one synthesis) or `arena` (several
 attempts, one judged winner). Both return a handle at once; keep working and
-read the result when it arrives.
+read the result when it arrives. To write a new flow: `capture` skill,
+`references/flow.md`.

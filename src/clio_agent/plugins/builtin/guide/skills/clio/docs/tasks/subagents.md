@@ -1,0 +1,123 @@
+---
+title: "Subagent controls"
+description: "Inspect a child's assignment, pause and resume it, cancel its descendants, or create a linked restart."
+source: https://clio.iowarp.ai/docs/tasks/subagents/
+---
+
+# Subagent controls
+
+Inspect a child's assignment, pause and resume it, cancel its descendants, or create a linked restart.
+
+A subagent works on an assignment in its own conversation. Its task handle lets
+the parent inspect progress and collect the outcome while continuing other work.
+Open the child conversation when you want to see what it actually received or did.
+
+> **Development preview:** these guides describe the task updates under review. Availability depends on your build.
+
+Which subagents the agent can start, the read-only roles and forks are described
+in [Subagents](docs/subagents.md). This page covers the controls for a child once it runs.
+
+## Inspect the assignment
+
+Open **Work**, then the child's row. The row shows the original assignment and
+available result. **Open conversation** takes you to the child's transcript;
+the parent navigation returns you to the owning conversation.
+
+A child shown through its durable task record appears once in Background work.
+Older records can lack an assignment or some controls; CLIO identifies missing
+descriptions rather than inventing an assignment.
+
+You can also find earlier children in **Runs → All states → Agents**. Expand
+**Details** to read an assignment, or open its conversation link with the mouse
+or keyboard. The original conversation remains available after cancellation.
+
+## Pause and resume
+
+Pause holds the child's model execution and retains its context. The handle
+stays the same. Its accepted shell commands, downloads and other background
+tasks continue. Incoming messages and results remain queued while it is held.
+
+![Work shows a paused worker with a resume control while its Bash task remains running](plugin-asset://guide/captures/tasks-current-paused-desktop.webp)
+*Current replacement service: the worker is paused while its accepted Bash work continues. Resume releases the model hold; it does not start the command again.*
+
+Resume lets the same run continue with its saved context and pending messages.
+Wait for a requested pause to settle before resuming. An ordinary peer message
+does not lift another agent's pause.
+
+## Cancel the run and its descendants
+
+Choose **×** on the task. The confirmation names the task and warns that
+descendant agents, downloads and shell processes will also be cancelled.
+**View assignment** reveals the full original request before you decide.
+**Keep running** dismisses the dialog without cancelling anything.
+
+![Cancel this task dialog identifies the qualification worker and warns about cancelling descendant agents, downloads and shell processes](plugin-asset://guide/captures/tasks-current-cancel-phone.webp)
+*Replacement-service capture: cancellation is an explicit action. The dialog keeps its consequence and decision visible, with the full assignment available on demand.*
+
+After confirmation, **Cancellation requested** means the owner is still settling.
+It is not proof that the process or transfer has stopped. The terminal outcome
+is published after the required owner settlement and cleanup.
+
+## Restart with a new handle
+
+In Work or Observability, choose **Show completed work** to find an earlier
+subagent. Open its restart control and review the identifying confirmation.
+History pagination does not replace the list of currently active work.
+
+![Restart confirmation names the worker, keeps its full assignment collapsed and explains retained context and uncertain effects](plugin-asset://guide/captures/tasks-restart-confirmation-desktop.webp)
+*Real replacement service: the identifying confirmation precedes a linked restart. The original Shell handle remained available; exhaustive invocation-count verification remains part of lifecycle qualification.*
+
+A restart creates a linked assignment with a new handle in the same session.
+It references a fixed point in Core's retained history and the accepted-operation
+observations; it does not copy a transcript. Active work must settle before the
+successor starts. Uncertain effects must be inspected before an operation is retried.
+
+The successor can inspect and control inherited work under the session's current
+permissions. Cancelling it includes active inherited work and descendants;
+already-terminal outcomes remain unchanged.
+
+The old task and outcome remain inspectable. A message to a terminal child can
+create a linked successor; it does not change the old task back to running.
+
+## Inspect a child before continuing it
+
+If a child fails or is cancelled, its task handle still identifies that original
+run. Its parent can inspect the retained transcript and then message the child:
+
+```python
+observe_tasks(tasks=child_handle, view="transcript")
+send_agent_message(
+    target=child_handle,
+    message="Inspect the existing report, then continue the unfinished analysis."
+)
+```
+
+The message addresses the child's stable session. When admission permits it,
+CLIO creates a linked assignment with a new handle and retained context. Query
+that session's tasks to find the continuation; the old result never changes to
+running. Previously accepted operations are not replayed automatically. The
+child should inspect uncertain side effects before choosing another operation.
+
+Recorded Codex/Luna and Claude Opus runs demonstrated this sequence: the parent
+read an actual cancelled child's transcript, messaged its original handle and
+collected the linked continuation. The child used its retained context without
+repeating the original operation. Broader lifecycle and recovery qualification
+remains separate from those scoped demonstrations.
+
+## Human controls notify the parent
+
+If you steer, pause, resume, cancel or restart a child, CLIO queues an attributed
+notice for its owning parent. A busy parent receives it at its next model
+iteration; an idle parent can wake for it. A held parent retains it until resume.
+The notice explains the action and outcome, including a successor handle when
+one was created. Agent messages retain their own sender identity.
+
+## Execution owners
+
+Root and child assignments use CLIO's conversation engine. External computation,
+including a separately configured relay server, uses ordinary MCP tooling and
+the server's native task identity. This replacement removes the special relay
+placement and lifecycle paths; it does not convert old placement configuration
+or claim relay-specific qualification.
+
+See [Messages and feedback](docs/tasks/messages.md) for steering and peer discovery.

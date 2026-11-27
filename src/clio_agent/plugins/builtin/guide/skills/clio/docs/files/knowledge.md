@@ -1,0 +1,192 @@
+---
+title: "Explore research notes"
+description: "Create a new Obsidian-compatible vault, attach existing notes, or let CLIO manage Obsidian Sync as a knowledge source."
+source: https://clio.iowarp.ai/docs/files/knowledge/
+---
+
+# Explore research notes
+
+Create a new Obsidian-compatible vault, attach existing notes, or let CLIO manage Obsidian Sync as a knowledge source.
+
+Create or connect a vault as a **knowledge source** in CLIO. Browse a graph of
+its links, switch to a file list, and read notes beside the conversation. The
+agent gains tools to search notes, follow their relationships, and capture the
+material it uses in an answer.
+
+> **Preview:** The Obsidian knowledge-source controls (in development builds). Availability depends on your build.
+
+## A knowledge graph of your notes
+
+A knowledge source connects Markdown notes through their authored links, tags,
+aliases, and frontmatter. Its **vault** is the folder holding those notes. CLIO
+can create a new vault or connect an existing notes folder, then let you explore
+the graph, read its notes, and use it with the agent.
+
+**The Obsidian app does not need to be installed.**
+[Obsidian](https://obsidian.md/) is a popular knowledge app that can open and
+review the same vault and graph. Its optional paid cross-device Sync service
+can also be managed by CLIO.
+
+## Create a new vault or attach an existing one
+
+In **Settings → Data sources**, the Obsidian row offers **New vault** and
+**Connect**. Choose the workspace, then continue to its connection form.
+The same actions are available in a workspace through **+ → Attach → Obsidian**.
+**New vault** starts with creation; **Connect** starts with an existing folder
+and read-only access. You can change the starting point in the form:
+
+- **Create a new vault:** name it and select **Create vault**. CLIO creates an empty
+  vault in its managed storage on the connected host. **Allow CLIO to create and
+  edit notes** is selected for a new vault; clear it to make the source read only.
+- **Attach an existing vault or folder:** use **Choose folder** to select the vault
+  or just one folder inside it. A plain Markdown folder works too; attaching it
+  does not add configuration or rewrite its files. Existing sources start read only.
+- **Sync from Obsidian:** sign in and let CLIO manage a dedicated synced copy, as
+  described below. This optional path requires an Obsidian Sync subscription.
+
+![The Obsidian knowledge-source form offers Create a new vault, Attach an existing vault or folder, and Sync from Obsidian](plugin-asset://guide/captures/knowledge-connect.webp)
+*Start a new vault directly in CLIO. Neither an existing vault nor the Obsidian app is required.*
+
+A tab named after your source opens in the workspace canvas. An empty editable
+vault is ready for the agent to create its first Markdown notes, including links
+between them. You can also add files to its folder and choose **Refresh**.
+
+![Attach existing notes using CLIO's shared folder browser and read-only access](plugin-asset://guide/captures/knowledge-existing.webp)
+*The folder picker browses the connected CLIO host. It uses the same host-selection semantics as other folder sources.*
+
+**The selected folder is the boundary.** Search, the graph, the reader, and note
+edits use only its contents. Paths are relative to that folder. A link to a note
+outside it does not grant access to that note; connect another source if you want
+to use more of the vault. Hidden folders, symlinks, and junctions are excluded.
+
+To try the same workflow, [download the example vault](https://clio.iowarp.ai/examples/field-notebook.zip),
+extract it, and select **Field notebook** for the 62-note overview, or its
+**Field study** folder for the six-note example. The ZIP includes the minimal
+`.obsidian` directory so the same notebook can be opened in Obsidian. CLIO also
+accepts notes folders without that directory. Every note is fictional.
+
+## Explore the graph and read a note
+
+The graph is a map of the notes' connections. Larger dots have more linked notes;
+quiet lines keep the overview readable. A small set of hub labels helps identify
+the main groups. Hover over a dot to highlight its immediate connections and show
+nearby titles. Drag the background to pan, scroll or use **+ / −** to zoom, and
+choose **Fit** to frame the map again.
+
+![A 62-note fictional notebook shown as connected groups around methods, water, climate, laboratory and field-study notes](plugin-asset://guide/captures/knowledge-overview.webp)
+*The whole-notebook overview makes connected groups and their bridges visible. The dots around the outside are unlinked notes; turn off Isolated notes to focus on connected material.*
+
+Select a dot to open its note beside the graph. Its immediate connections become
+prominent while unrelated links fade. Opening the reader keeps the same layout;
+**Close note** restores the full canvas. Choose **Explore links** to narrow the
+map to that note's outgoing links and backlinks. **All notes** returns to the
+selected source's full view.
+
+![The Field study source tab shows Calibration highlighted, its connected notes emphasized, and the calibration decision open beside the graph](plugin-asset://guide/captures/knowledge-graph.webp)
+*Select a note to trace its connections and read it. The six-note folder is a smaller source within the example vault. Every line represents an authored link; distance does not establish semantic similarity.*
+
+The reader shows note properties, tags, links, and backlinks. Follow a resolved
+link to read its target. Missing or ambiguous links stay labeled so you can see
+when a target cannot be chosen reliably.
+
+The graph spans the selected source independently of the file list's pages.
+**Isolated notes** controls unlinked notes; **Attachments** adds linked images
+and other files. Overviews are bounded to 5,000 notes and 20,000 connections, with
+a visible notice when a limit is reached. Search, connect a smaller folder, or
+explore a note's links to narrow a large source.
+
+## Switch to files, search, and attach
+
+Choose **Files** to browse the same source as a list. Search matches note text,
+paths, titles, tags, aliases, and headings. Selecting a result opens the same
+reader used by the graph. **Refresh** picks up added, changed, or removed files.
+
+![The Files view filters the example notebook by calibration and opens the Calibration decision note](plugin-asset://guide/captures/knowledge-files.webp)
+*Graph and Files are two views of the same source. Search narrows the list without copying the vault into your conversation.*
+
+Choose **Attach note** to add the selected note to your draft, then write
+your question and send it. CLIO retains the captured bytes and their source,
+path, and content revision. An existing capture remains readable if the original
+note changes or the source is disconnected.
+
+## Ask the agent to work with the notebook
+
+You can also ask a question directly about the connected source:
+
+```text
+Find our calibration decision, follow its links and backlinks, and explain
+the checks before collecting an observation. Cite the notes you use.
+```
+
+The knowledge tools are available only when the active workspace has a connected
+knowledge source with the corresponding capabilities. A regular folder connection
+does not automatically become a knowledge source.
+
+| Tool | What it lets the agent do |
+|---|---|
+| `knowledge_search` | Find notes by text or metadata and inspect bounded results. |
+| `knowledge_related` | Follow authored links, embeds, and backlinks around a note. |
+| `knowledge_open` | Capture a chosen note or attachment as a workspace resource. The agent reads that capture with `workspace_resource_read`. |
+| `knowledge_create` | Create a new Markdown note in an editable source, refusing to overwrite an existing note. |
+| `knowledge_edit` | Replace an existing Markdown note when the source permits edits, using its captured revision to reject stale changes. |
+
+![A real CLIO agent turn uses knowledge tools to answer a question about the fictional field notebook](plugin-asset://guide/captures/knowledge-tools.webp)
+*An actual Codex/Luna turn over the example source. The tools find and capture the notes used to explain the daily checks.*
+
+Search snippets help find a note; opening and reading its capture provides the
+content for the answer. Notes remain source material and cannot change the
+agent's permissions or instructions.
+
+## Control edits and source access
+
+Existing folders and synced copies start **Read only**, which keeps note creation
+and editing unavailable. New vaults allow edits when the corresponding checkbox
+is selected. If you choose a working copy, edits are staged for review before
+publication. With direct writes,
+approved edits update the original note and retain its previous contents. Sync
+direction and agent edit permission are separate choices.
+
+Reopen the tab with **Files → Sources → your source → Open knowledge**. Disconnect
+to stop further access through that connection, or remove it from the saved list.
+Original notes and captures already retained in the workspace remain. See
+[Manage sources](docs/files/manage.md) and [Download or link](docs/files/download-or-link.md)
+for the shared source controls.
+
+## New vault and Connect in Settings
+
+Open **Settings → Data sources** to create a vault or connect a source to a
+workspace. Obsidian offers **New vault** and **Connect**. Google Drive, Globus,
+and GitHub offer separate **Sign in** and **Connect** actions. Signing in alone
+does not connect any data to a workspace.
+
+![Settings offers New vault and Connect for Obsidian, and Sign in and Connect for Google Drive, Globus and GitHub](plugin-asset://guide/captures/knowledge-settings.webp)
+*Choose an action, then choose its workspace. New vault and Connect open the same source form available from Attach.*
+
+Each source has an **info icon** beside its name. Hover, focus it with the
+keyboard, or tap it for a brief explanation. Obsidian's explanation starts with
+the knowledge graph; the optional app and paid Sync service come last.
+
+![The Obsidian info popup explains linked Markdown knowledge graphs, creating or connecting a vault, and the optional app and paid Sync service](plugin-asset://guide/captures/knowledge-source-info.webp)
+*Provider information explains the source before asking you to connect it.*
+
+## Optional: sync a vault through your account
+
+1. Choose **Connect** for Obsidian, select a workspace if you started in Settings,
+   and choose **Sync from Obsidian** in the connection form.
+2. Choose **Install Sync client** if needed. CLIO installs and verifies the official
+   [Obsidian Headless client](https://github.com/obsidianmd/obsidian-headless)
+   in its managed environment and shows installation progress.
+3. Sign in with your Obsidian account and, if enabled, a two-factor code.
+4. Select a remote vault. Enter its encryption password if required.
+5. Choose the sync direction and whether CLIO may edit notes, then select
+   **Connect vault**. CLIO configures and manages the local copy itself.
+
+![The official Obsidian Sync client is installed in CLIO and ready for account sign-in](plugin-asset://guide/captures/knowledge-sync.webp)
+*CLIO manages installation and sign-in in the application. This capture shows the real installed client ready for sign-in.*
+
+**Download remote changes** is the default; **Sync changes both ways** is a
+separate choice from allowing the agent to create or edit notes. The source tab
+offers **Start sync** and **Stop sync** and refreshes its index as changes arrive.
+Account credentials and vault encryption keys stay in the official client's
+private storage, separate from the notes available to knowledge tools. Signing
+in alone does not attach a vault or grant the agent access to it.

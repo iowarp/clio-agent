@@ -299,12 +299,13 @@ def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.get("/v1/plugins/{name}/review")
     async def review_plugin(name: str) -> dict[str, Any]:
-        """What a person reads before trusting ``name``: read from its installed files."""
+        """What a person reads before trusting ``name`` (a marketplace, or a plugin of the
+        private marketplace): read from its installed files."""
 
-        entry = plugin_service(app).store.marketplaces().get(name)
-        if entry is None:
-            raise _error(404, "plugin_not_installed", f"{name!r} is not installed")
-        return await _call(plugin_authoring.installed_review, app, name)
+        try:
+            return await _call(plugin_authoring.installed_review, app, name)
+        except LookupError as exc:
+            raise _error(404, "plugin_not_installed", f"{name!r} is not installed") from exc
 
     @app.post("/v1/plugins/marketplaces/{name}/update")
     async def update_marketplace(name: str) -> dict[str, Any]:

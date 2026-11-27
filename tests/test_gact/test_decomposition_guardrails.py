@@ -296,7 +296,10 @@ from clio_agent.gact.app import build_app
 # POST .../section-query.
 # 502 -> 504: a moved run_code script (routes/foreground_scripts.py, #2394):
 # GET /v1/sessions/{sid}/scripts/foreground and POST .../foreground/background.
-EXPECTED_ROUTE_METHOD_PAIRS = 504
+# 504 -> 507: GET /v1/sessions/{sid}/plugin-assets/{plugin}/{path} (the guide's bundled
+# screenshots, routes/artifact_references.py) and GET and POST /v1/plugins/local/publish
+# (publishing the private marketplace to GitHub, routes/extensions.py).
+EXPECTED_ROUTE_METHOD_PAIRS = 507
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

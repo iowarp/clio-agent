@@ -230,14 +230,18 @@ def test_case_variant_siblings_get_distinct_reversible_aliases(tmp_path: Path) -
 
 
 def test_github_commit_validation_accepts_repository_names_but_not_traversal() -> None:
-    from clio_agent.gact.storage.github_filesystem import WritableGithubFileSystem
+    from clio_agent.gact.storage.github_filesystem import commit_tree
 
-    fs = object.__new__(WritableGithubFileSystem)
-    fs.org, fs.repo, fs.token = "o", "r", "t"
     with pytest.raises(PermissionError, match="workflows"):
-        fs.commit_files([("docs/a:b.md", b"x", None), (".github/workflows/x.yml", b"x", None)])
+        commit_tree(
+            "o",
+            "r",
+            "main",
+            "t",
+            [("docs/a:b.md", b"x", None), (".github/workflows/x.yml", b"x", None)],
+        )
     with pytest.raises(ValueError):
-        fs.commit_files([("../x", b"x", None)])
+        commit_tree("o", "r", "main", "t", [("../x", b"x", None)])
 
 
 def test_desktop_upload_accepts_unportable_names_and_stores_aliases() -> None:

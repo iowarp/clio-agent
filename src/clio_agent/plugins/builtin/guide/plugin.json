@@ -1,0 +1,9 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "guide",
+  "version": "1.0.0",
+  "description": "CLIO knows itself: answers how to use CLIO and what it can do from the documentation of the installed version, showing steps, screenshots and diagrams when a picture helps.",
+  "author": {"name": "IoWarp Team"},
+  "license": "BSD-3-Clause",
+  "keywords": ["help", "documentation", "how-to"]
+}

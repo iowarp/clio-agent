@@ -1,0 +1,180 @@
+---
+title: "Try another approach"
+description: "Keep the original conversation while exploring another direction, or rewind with care."
+source: https://clio.iowarp.ai/docs/branch-and-rewind/
+---
+
+# Try another approach
+
+Keep the original conversation while exploring another direction, or rewind with care.
+
+> **Preview:** The conversation-family and rewind controls pictured here (in development builds). Availability depends on your build.
+
+**Branch** when you want to compare approaches and keep both conversations.
+**Rewind** when you want to remove later messages from the current conversation
+and continue from an earlier point.
+
+| Your intention | Choose | What happens |
+|---|---|---|
+| Try an alternative from an earlier answer | **Branch from here** below that message | A new conversation copies the history through that message, including it. The original remains available. |
+| Continue a copy of the entire conversation | **… → Branch into a new session** in the session header | A new conversation copies the current history through its end. |
+| Replace the later direction of this conversation | **Rewind to here** below a message | After confirmation, later messages leave this conversation and its working context. The selected message stays. |
+
+## Branch to compare an approach
+
+Suppose your readings are **10, 12, and 14**. Their mean is **12**. Later you
+exclude the flagged reading 14, giving a mean of **11**. To compare that filter
+with an offset applied to all three readings, branch from the original answer.
+
+1. Find the original answer. Under it, point to the branching icon labelled
+   **Branch from here**, then select it. You can also branch from a user message.
+
+2. CLIO opens the new branch. Its copied conversation ends at the selected
+   message; the later filter is absent. Send your alternative request here.
+
+3. Use the back arrow labelled **Return to parent conversation** beside the
+   branch title to return. Reopen either conversation from the workspace sidebar.
+   Rename branches to describe the alternatives you are comparing.
+
+![Branch from here tooltip under the original calibration answer, before the later filtering request](plugin-asset://guide/captures/docs-conversation-branch-control.webp)
+*Choose the message that should be the end of the copied history. The selected message is included.*
+
+In the branch, asking for **+2 on every original reading** produces a mean of
+**14**. Returning to the parent retains its filter and mean of **11**. Messages
+sent in either conversation do not join the other. You can branch again from an
+existing branch.
+
+![The separate branch answers Mean 14 after applying a plus two offset to all three original readings](plugin-asset://guide/captures/docs-conversation-branch-result.webp)
+*The new branch has its own composer and continuation. The parent keeps its separate calculation.*
+
+To copy the conversation through its current end instead, open the **⋯**
+conversation menu at the upper right and choose **Fork into a new conversation**.
+
+![Conversation menu with Fork into a new conversation](plugin-asset://guide/captures/docs-conversation-menu.webp)
+*The header action copies the entire current conversation; the action beneath a message copies only through that point.*
+
+## See where the branch begins
+
+**The old conversation stays visible in the child.** A **Branched here** marker
+appears after the last copied message. Above it is the copied history; below it
+is this branch's independent continuation. Select the source title on the marker
+to return to the parent conversation at that message.
+
+![Copied offset calculation followed by a Branched here marker linked to Offset comparison, then Offset sensitivity's independent request and mean of 17](plugin-asset://guide/captures/docs-fork-checkpoint.webp)
+*The branch checkpoint separates copied history from new work. It survives reload and a later rewind of the parent.*
+
+The marker records the source at the time of branching. If the parent later
+rewinds past that message, the child keeps its copied history and marker; the
+source link still opens the parent, whose transcript may no longer contain that
+message. Older branches without a saved checkpoint do not get a guessed marker.
+
+## Forks the agent makes
+
+An agent can fork a conversation itself, to follow another direction beside the one it is on, such as a competing explanation. The fork is a new conversation with a copy of the history so far. The agent's note on what to do differently becomes the fork's first message, and the fork starts on it at once. The original continues. Neither waits for the other; you read both.
+
+**In the left panel**, the fork is listed under the conversation it came from, with a fork icon and **Forked by the agent:** followed by the note. A fork of a fork is nested one level further. Inside the fork, the marker reads **Forked by the agent here**, links to the source conversation, and shows the **Fork note**.
+
+![Left panel with Poem fork nested under its source conversation, labeled Forked by the agent: Write a two..., and in the transcript the request to fork, then the marker Forked by the agent here with the fork note, then the note as the fork's first message](plugin-asset://guide/captures/docs-agent-fork.webp)
+*A directed check: the request told the agent to fork with this note and title. The fork sits under its source in the left panel, and the marker shows where the copied history ends.*
+
+| | Your branch | The agent's fork |
+|---|---|---|
+| Started by | You, with **Branch from here** or **Branch into a new session** | The agent, with a note |
+| Copied history ends | At the message you choose | At the agent's request to fork |
+| Next | Waits for your message | Starts on the note right away |
+| Left panel | Listed with the workspace's other conversations | Nested under its source, with the note |
+| Marker | **Branched here** | **Forked by the agent here**, with the fork note |
+| Limit | None | **Forks per task** in Settings → **Execution & history** |
+
+When the agent gives no title, the fork is named after its source with "(fork)" added. Once it exists, an agent's fork is a conversation you can continue and branch like any other. It shares the workspace's files with its source.
+
+An agent working as a subagent or as a workflow step forks differently: its fork runs beside it under the same parent rather than as a new conversation in the left panel. See [Fork a step](docs/flows.md#fork-a-step).
+
+## Find and compare related conversations
+
+Open **Evidence layout → Open full details → Gantt**. The **Relationships ⇄**
+button swaps between recorded timing and the conversation graph. It stays in
+the chart header, beside the selected conversation's inspector. Your selection
+stays with you when you switch views or resize the window.
+
+![Relationships view with Calibration baseline branching into Offset comparison and Flagged reading comparison, and Offset comparison branching again into Offset sensitivity](plugin-asset://guide/captures/docs-conversation-relationships.webp)
+*Select a node to preview its actual history and continuation. Solid links identify user forks; dashed links identify parent-owned subagents.*
+
+**A user branch is another conversation you control.** A delegated agent is
+work owned by its parent agent. Its distinct label and dashed relationship show
+that ownership; displaying it here does not allow users to branch that agent.
+The inspector shows a short extract from the actual transcript: copied history,
+the saved fork point, and the latest continuation. **Full conversation history**
+or **Open conversation** takes you to the complete conversation and its composer.
+**Open subagent** opens the parent-owned work with its existing controls.
+
+![Conversation family Gantt with five named conversations and subagents, role-labelled links, recorded response bars, and an aligned transcript inspector](plugin-asset://guide/captures/docs-conversation-family-gantt.webp)
+*Linked titles distinguish conversations, user forks and subagents. Solid fork links and dashed delegation links attach to recorded activity; short bars keep their full timing in the tooltip.*
+
+Select a Gantt **title** to open that conversation directly. Select a **bar** to
+inspect its conversation without leaving the chart. Use **Fit** after zooming.
+**Execution details** shows the current conversation's latest execution and
+individual tools; **Family** returns to this comparison.
+Conversation lifetime is not drawn as continuous work. Missing or partial timing
+records are labelled, and an older branch without a saved origin has no invented
+creation diamond. An empty new branch has a start milestone until it records a
+response.
+
+### Follow a branch's output into artifact lineage
+
+In either family view, select a conversation, then choose a file under **Outputs**.
+Open its **Lineage** tab to see recorded inputs and producing actions. The inspector
+loads only the selected conversation's outputs; copied input files are not listed
+as newly produced outputs.
+
+![The offset branch's artifact Lineage tab connects calibration-baseline.md through its producing action to calibration-offset.md](plugin-asset://guide/captures/docs-conversation-output-lineage.webp)
+*Conversation relationships explain which discussion explored an alternative. Artifact lineage explains the declared inputs and versions behind its output.*
+
+In the family views, the nested branch changes the offset to +5 (mean **17**);
+the sibling excludes the flagged reading (mean **11**). Open each conversation
+to inspect its method and result.
+
+## Rewind and continue from an earlier point
+
+In the parent conversation, return to the original mean of **12** if you want
+to discard the later filtering discussion.
+
+1. Under the message to keep, select **Rewind to here**.
+
+2. Read **Rewind this conversation?** Choose **Cancel** to keep the current
+   history, or **Remove later messages** to proceed. The selected message remains.
+
+3. Send your next request. CLIO uses the retained conversation. In this example,
+   asking for the current method returns all three readings and a mean of **12**.
+
+![Rewind confirmation states that the selected message stays and existing files and artifacts are kept, with Cancel and Remove later messages buttons](plugin-asset://guide/captures/docs-conversation-rewind-confirm.webp)
+*Rewind requires confirmation. Cancel leaves the conversation unchanged.*
+
+![After rewind, the conversation continues using the original readings and answers Mean 12](plugin-asset://guide/captures/docs-conversation-rewind-result.webp)
+*After rewind, the next answer uses the original readings and mean of 12. The later filter has left the working context.*
+
+Rewinding a parent does not rewind an existing branch. Repeated rewinds work on
+the history that remains. A user message can be the endpoint too: its text is
+retained for your next request, but selecting rewind does not itself generate a
+new answer. Wait for the current response to finish, or stop it, before rewinding.
+The service rejects rewind while that conversation is running or awaiting a
+permission decision.
+
+## What happens to files and settings?
+
+**A branch shares the workspace.** It copies the conversation's current file
+references and settings, including model selection, execution mode, confirmation
+policy and effort. Later conversation changes are independent. The files on disk
+are shared: a change to a shared file can affect both conversations. Branching
+from an old message does not recover old file contents or the settings from that
+earlier time.
+
+**Rewind changes the conversation and its working context.** It does not restore
+files, reverse completed tool actions, remove created artifacts, or restore old
+settings and attachments. Completed saved views may remain available after their
+producing messages are removed. Rewind is not an erasure of the underlying audit
+record. It also does not erase separately saved [memory](docs/memory.md).
+
+If you may need the later discussion, **branch or [export it](docs/exports.md)
+before rewinding**. There is no restore-later-messages action. Make separate file
+copies or use version control when comparing changes to the data itself.

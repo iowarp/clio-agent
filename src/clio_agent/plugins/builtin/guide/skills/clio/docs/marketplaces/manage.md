@@ -1,0 +1,120 @@
+---
+title: "Add and manage marketplaces"
+description: "Add a marketplace from a folder or a git repository, trust it, update it, remove it, and check its plugins."
+source: https://clio.iowarp.ai/docs/marketplaces/manage/
+---
+
+# Add and manage marketplaces
+
+Add a marketplace from a folder or a git repository, trust it, update it, remove it, and check its plugins.
+
+Start in Settings, **Plugins & marketplaces**. [Plugin marketplaces](docs/marketplaces/index.md) explains what the page shows and what trust means.
+
+A marketplace is installed for the whole CLIO service: every workspace and every conversation sees its plugins. Each action below also has a terminal command, `clio-agent plugin`, which you run on the machine that runs CLIO.
+
+## Add a marketplace
+
+1. Choose **Install marketplace**.
+
+2. In **Source**, enter a git repository URL, such as `https://github.com/iowarp/clio-kit.git`, or the path of a folder on the machine that runs CLIO. The source can hold a whole marketplace, a single plugin, a `skills` folder of skills, or one skill's folder with its `SKILL.md`. A folder of skills installs as a plugin of those skills.
+
+3. Optionally, set a **Branch or tag**, a **Pinned commit**, or a **Name**. Without a name, CLIO uses the one the marketplace declares.
+
+4. Choose **Install**. CLIO fetches the source, reads every plugin and agent, and reports how many it found.
+
+![Settings, Plugins and marketplaces: the shipped clio marketplace, clio-kit, iowarp-clio-coder via clio-kit, and wtf-p from GitHub, each trusted, with its source and installed commit](plugin-asset://guide/captures/docs-plugins-marketplaces.webp)
+*Installed marketplaces with their source, format and installed commit. iowarp-clio-coder arrived through clio-kit's federation list.*
+
+A marketplace you add is not trusted yet. Until you run the trust step, its plugins load without their executable parts and its agents are not available.
+
+From a terminal:
+
+```sh
+clio-agent plugin install https://github.com/iowarp/clio-kit.git
+clio-agent plugin install ./my-marketplace --name my-lab
+```
+
+`install` also takes `--ref` for a branch or tag and `--commit` to pin a commit. Installing a Claude Code marketplace that lists federated marketplaces installs those as well, each under its own name.
+
+## Run the trust step
+
+Trusting a marketplace allows its plugins to start MCP servers, run Python tools, and run hooks on the machine that runs CLIO. Read the source before you trust it.
+
+1. On the marketplace's row, choose **Trust**.
+
+2. Check the source shown in the confirmation, then choose **Trust marketplace**.
+
+Its plugins can then be added from the + menu, and its agents appear in the **Agent** list. A marketplace installed through federation needs its own trust step; trusting the marketplace that listed it does not trust it.
+
+From a terminal:
+
+```sh
+clio-agent plugin trust clio-kit
+```
+
+The shipped `clio` marketplace is trusted when it is installed.
+
+## Example: WTF-P from GitHub
+
+[WTF-P](https://github.com/akougkas/wtf-p) ships academic research and writing workflows as a Claude Code marketplace. To use it:
+
+1. Install it: **Install marketplace** with the source `https://github.com/akougkas/wtf-p`, or from a terminal, `clio-agent plugin install akougkas/wtf-p`.
+
+2. Trust it: choose **Trust** on its row, or run `clio-agent plugin trust wtf-p`. Its plugin brings hooks that run Node.js, so it needs the trust step.
+
+3. In a conversation, open the + menu and add **wtfp**. Its slash commands, skills, and eleven subagents arrive with it.
+
+4. Type one of its commands, such as `/new-paper`, followed by what you want to write.
+
+![The answer to /new-paper: the skill loaded, no existing WTF-P project was found, and seven interview questions for the author follow](plugin-asset://guide/captures/docs-plugin-command.webp)
+*/new-paper runs as a turn of the conversation. The command's own files load with it, and the interview begins.*
+
+A command you type runs as a turn of the conversation, like a message you send: it streams, can ask you questions, and can be stopped.
+
+## Update a marketplace
+
+Open the marketplace's actions menu and choose **Update**. CLIO fetches the source again and reloads its plugins and agents. A marketplace installed with a pinned commit stays on that commit.
+
+- A plugin whose update changes only text, such as skills or prompt fragments, is used from the next conversation.
+- A plugin whose update changes executable parts waits. The installed plugin list marks it **Update waits for trust**, and the version you trusted stays in use. To accept it, select **Trust update** on that plugin or its marketplace, or run `clio-agent plugin trust <name>`.
+
+Conversations that are already running keep the plugins they started with.
+
+From a terminal:
+
+```sh
+clio-agent plugin update clio-kit
+```
+
+## Remove a marketplace
+
+Open the marketplace's actions menu and choose **Uninstall**, then confirm. Its plugins leave the + menu and its agents leave the **Agent** list. Conversations already running keep their plugins until they end. The shipped `clio` marketplace has no **Uninstall** item.
+
+Removing a marketplace does not remove the federated marketplaces it installed. Uninstall each one separately.
+
+From a terminal:
+
+```sh
+clio-agent plugin uninstall clio-kit
+```
+
+To see what is installed, run `clio-agent plugin list` for marketplaces and their plugins, and `clio-agent plugin agents` for agents, including the ones you saved.
+
+## Check plugins
+
+A check loads plugins exactly as installing them would, then resolves each agent's plugin set the way starting a conversation would, without starting one. It reports problems such as a missing prompt file, a plugin that cannot be found, two plugins offering the same tool, or hooks that must each run before the other. Prompt fragments that are longer than recommended produce warnings, not failures.
+
+In Settings, open a marketplace's actions menu and choose **Check plugins**. The result shows whether the check passed, how many of the checked plugins and agents passed, and each problem with its code. **Full report** shows the complete text.
+
+From a terminal, check an installed marketplace by name, or a folder before you install it:
+
+```sh
+clio-agent plugin check --installed clio-kit
+clio-agent plugin check ./my-marketplace
+```
+
+The command exits with status 1 when the check fails. Add `--json` to any `clio-agent plugin` command for machine-readable output. A git source, including a federated marketplace, is checked after it is installed, with `--installed`.
+
+> **Tip**
+>
+> To write your own plugins or agents, start from a small plugin in the `clio` marketplace repository, [iowarp/clio-agent-marketplace](https://github.com/iowarp/clio-agent-marketplace), and run `clio-agent plugin check` on your folder as you work.

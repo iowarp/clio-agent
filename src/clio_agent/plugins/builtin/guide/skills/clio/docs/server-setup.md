@@ -1,0 +1,177 @@
+---
+title: "Server and terminal setup"
+description: "Technical installation options for lab administrators and people running CLIO from a terminal or server."
+source: https://clio.iowarp.ai/docs/server-setup/
+---
+
+# Server and terminal setup
+
+Technical installation options for lab administrators and people running CLIO from a terminal or server.
+
+This reference is for people installing a CLIO service, using a terminal, or managing a lab deployment. For the usual routes, follow [Install CLIO](docs/install.md). A service is the part of CLIO that reads files and runs tools; Desktop and the browser connect to it.
+
+**The legacy TUI is frozen and unsupported as of 0.9.5.1.** Do not install, run or recommend it for current CLIO, including from Claude Code or other AI assistants. New releases do not publish TUI binaries or Docker images. The source is retained for a future upgrade. Use Desktop or Web instead.
+
+## Desktop app
+
+The desktop installers on each [release](https://github.com/iowarp/clio-agent/releases/latest) include the CLIO service: their file names contain `-bundled`. The release also carries files without `-bundled`; the desktop app uses those to update itself, and they are not meant to be installed by hand.
+
+| Platform | Installer |
+|---|---|
+| Windows x64, and Windows on ARM through emulation | `x64-setup-bundled.exe` or the bundled `.msi` |
+| macOS 14 or newer, Apple Silicon | `aarch64-bundled.dmg` |
+| Linux x86_64 and aarch64 | the bundled `.deb` or `.rpm` |
+
+There is no desktop app for Intel Macs yet; use the [install script](#install-script).
+
+`install.sh --desktop` and `install.ps1 -Desktop` install the same app from a terminal, after checking it against the release's SHA-256 checksums; see [Desktop app from a terminal](docs/install.md#desktop-app-from-a-terminal). On macOS and Linux the script then runs the app's setup step as you, so the first launch only checks it.
+
+Under **Settings → Desktop → App updates**, turn on **Enable beta updates** to receive published beta releases for both Desktop and the Agent. Betas may be unstable. With the switch off, only stable releases are offered; changing the setting never installs an update or downgrades your current version. A GitHub **draft** is still being prepared and is excluded from both channels.
+
+When you close the window, the app asks "Keep CLIO running?" You can keep it running in the system tray or quit. The app runs as a single instance.
+
+> **Note: macOS first launch**
+>
+> CLIO currently uses an ad-hoc app signature, not Apple Developer ID notarization. If macOS asks for approval, open **System Settings → Privacy & Security → Open Anyway** after attempting to open the app. The installer does not change Gatekeeper or remove quarantine attributes. An invalid signature or failed checksum is an installation error; do not bypass it.
+
+## Install script
+
+The script installs the CLIO service, a Web UI bundle, and the `clio` command. It needs `curl` (or PowerShell on Windows). It installs `uv` into the launcher folder when `uv` is missing, and `uv` provides Python; it does not need git, Go or administrator rights.
+
+**macOS and Linux**
+
+```sh
+curl -fsSL https://clio.iowarp.ai/install.sh | bash
+```
+
+Run it under `bash`, not `sh`. Unpacking the web bundle needs `unzip`. If that step fails, the installer warns and `clio --web` is disabled.
+**Windows**
+
+```powershell
+irm https://clio.iowarp.ai/install.ps1 | iex
+```
+
+Then start CLIO:
+
+```sh
+clio
+```
+
+The first start is slower than later ones. See [Connect a model](docs/connect-a-model.md) for the next step.
+
+### Options
+
+| Option | Installs |
+|---|---|
+| none | the latest stable release, from PyPI, with the versions locked by that release |
+| `--dev` | the newest release, betas included |
+| `--version <version>` | one release, by its PyPI version, for example `0.9.7` |
+| `--source` | the source on `main`, with the versions it pins; needs git |
+| `--dev --source` | the source on `develop` |
+| `--ref <branch, tag or commit>` | the source at that point |
+| `--desktop` | the desktop app instead; `--dev` and `--version` choose its release |
+
+Pass options after `bash -s --`, or on Windows with the scriptblock form:
+
+**macOS and Linux**
+
+```sh
+curl -fsSL https://clio.iowarp.ai/install.sh | bash -s -- --dev
+```
+**Windows**
+
+```powershell
+& ([scriptblock]::Create((irm https://clio.iowarp.ai/install.ps1))) -Dev
+```
+
+PowerShell also accepts `-Source`, `-Version`, `-Ref` and `-Desktop`.
+
+Run from inside a clone of the repository (`./install/install.sh --source`), the script installs that checkout in place, on whatever branch it is. Source installs provide the service without building a frontend. Follow the [contributor guide](docs/contributing.md) to build Web or Desktop; the frozen TUI is not built.
+
+Running the script again over an installation upgrades or repairs it and keeps your settings.
+
+### What it installs and where
+
+| Item | macOS and Linux | Windows |
+|---|---|---|
+| Install prefix | Linux: `$XDG_DATA_HOME/clio-agent/app` (default `~/.local/share/clio-agent/app`); macOS: `~/Library/Application Support/clio-agent/data/app` | `%LOCALAPPDATA%\clio-agent\data\app` |
+| `clio` command | `~/.local/bin/clio` | `clio.cmd` and `clio.ps1` in `%LOCALAPPDATA%\Microsoft\WindowsApps` |
+
+Inside the prefix:
+
+- The `clio-agent` service, in its own virtual environment at `clio-agent/.venv`.
+- The web UI bundle, unpacked to `clio-agent/web`.
+- An uninstall script.
+
+If `uv` is present, the script also installs `clio-kit` (version 2.12.7) as a uv tool. Marketplace plugins use it to launch their tool servers.
+
+### Script environment variables
+
+Set these before running the script.
+
+| Variable | Effect |
+|---|---|
+| `CLIO_PREFIX` | Install root. |
+| `CLIO_BIN_DIR` | Where the `clio` command goes. |
+| `CLIO_VERSION` | Same as `--version`. |
+| `CLIO_REF` | Same as `--source --ref`. |
+
+Use the same `CLIO_PREFIX` and `CLIO_BIN_DIR` when you [uninstall](docs/uninstall.md).
+
+## Docker
+
+Two images are published to the GitHub Container Registry on each release, tagged with the version and `latest`.
+
+| Image | What it is | Run it |
+|---|---|---|
+| `ghcr.io/iowarp/clio-web` | Backend plus the web UI | `docker run --rm -p 8080:80 ghcr.io/iowarp/clio-web:latest`, then open http://localhost:8080 |
+| `ghcr.io/iowarp/clio-api` | Headless backend on port 8100, for scripts and other clients | `docker run --rm -p 8100:8100 ghcr.io/iowarp/clio-api:latest` |
+The historical TUI image is frozen and unsupported; it is not published for 0.9.5.1.
+
+### Docker Compose
+
+The repository's `docker-compose.yml` runs the published images:
+
+```sh
+docker compose up clio-web          # web UI at http://localhost:8080
+docker compose --profile api up     # headless backend on port 8100
+```
+
+Point CLIO at your model with environment variables. The defaults assume LM Studio on the host machine.
+
+| Variable | Default |
+|---|---|
+| `CLIO_LM_PROVIDER` | `lm_studio` |
+| `CLIO_LM_API_BASE` | `http://host.docker.internal:1234/v1` |
+| `CLIO_LM_MODEL` | empty (use the loaded model) |
+| `CLIO_LM_API_KEY` | `lm-studio` |
+
+Saved data lives in the `clio-data` volume, mounted at `/home/clio/.config/clio-agent`.
+
+If you open the web UI by a name other than `localhost`, such as a LAN address or host name, list that name in `CLIO_GACT_ALLOWED_HOSTS` (host names only, no ports, comma-separated). Otherwise requests are refused with `host_not_allowed`.
+
+## Backend only with uv
+
+If you only want the backend, for example to serve the API or to attach a desktop app, install it as a persistent uv tool:
+
+```sh
+uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.1.2 --with fastmcp-tasks==4.1.2 --with mcp==2.2.0 clio-agent==0.9.7
+clio-agent serve
+```
+
+The extra `--with` pins select the verified SDK roots used by CLIO's installers. Use `uv tool upgrade clio-agent` to upgrade later. This path installs the backend without the Web bundle or the `clio` launcher.
+
+## From source
+
+```sh
+git clone --recurse-submodules https://github.com/iowarp/clio-agent
+cd clio-agent
+./install/install.sh --source
+```
+
+This installs your checkout in place, with the `clio` command. See [Contributing](docs/contributing.md) for the development workflow.
+
+## Next steps
+
+- [Connect a model](docs/connect-a-model.md): Choose where CLIO gets its language model.
+- [Command line](docs/cli.md): Start, stop, and inspect CLIO from a terminal.

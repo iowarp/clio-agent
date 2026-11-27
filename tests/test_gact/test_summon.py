@@ -201,7 +201,13 @@ def test_an_unknown_summons_is_refused_and_nothing_starts(market: Path) -> None:
         error = resp.json()["error"]
         assert error["error"] == "summon_unknown_target"
         assert error["details"]["unknown"] == [{"target_kind": "subagent", "target": "nobody"}]
-        assert error["details"]["subagents"] == ["explore", "review"]
+        assert error["details"]["subagents"] == [
+            "capture-reviewer",
+            "clio-guide",
+            "explore",
+            "optimize-scanner",
+            "review",
+        ]
         assert c.get(f"/v1/sessions/{sid}/messages").json()["messages"] == []
 
 
@@ -422,8 +428,15 @@ def test_the_summon_targets_are_the_agents_subagents_and_servers(market: Path) -
     with TestClient(build_app(sessions_path=market / "s.json", agent=_Recorder())) as c:
         sid = _session(c)
         body = c.get(f"/v1/sessions/{sid}/summon-targets").json()
-        assert [row["id"] for row in body["subagents"]] == ["explore", "review"]
-        assert body["subagents"][0]["description"] == "Finds where things are."
+        # The base agent's guide and builder subagents come first, then the agent's own.
+        assert [row["id"] for row in body["subagents"]] == [
+            "clio-guide",
+            "capture-reviewer",
+            "optimize-scanner",
+            "explore",
+            "review",
+        ]
+        assert body["subagents"][3]["description"] == "Finds where things are."
         assert all(
             {"name", "description", "deferred", "tools"} <= set(row) for row in body["servers"]
         )

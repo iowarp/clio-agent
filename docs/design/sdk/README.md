@@ -16,5 +16,6 @@ Design documents for replacing blueprints with Python-defined agents and plugins
 | [delegation-fork-science-addendum-a.md](delegation-fork-science-addendum-a.md) | Addendum A: sources, data access and isolated workspaces |
 | [tool-calling-plan.md](tool-calling-plan.md) | Exploration tools, the fast explorer, progressive tool disclosure, `run_code` and the session plan |
 | [tool-calling-ledger.md](tool-calling-ledger.md) | Decisions, baselines and acceptance evidence for the tool-calling plan |
+| [meta-clio-ledger.md](meta-clio-ledger.md) | Decisions and acceptance evidence for the guide and builder plugins (Meta CLIO) |
 
 These are exported from the shared design docs as of Oct 20, 2026. Edit them here from now on; the repository copy is the one the implementation follows.

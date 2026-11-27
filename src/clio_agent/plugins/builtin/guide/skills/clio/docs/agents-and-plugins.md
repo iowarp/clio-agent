@@ -1,0 +1,200 @@
+---
+title: "Agents and plugins"
+description: "Choose the agent for a conversation, add or remove its plugins, save your own agent, and read the prompt it receives."
+source: https://clio.iowarp.ai/docs/agents-and-plugins/
+---
+
+# Agents and plugins
+
+Choose the agent for a conversation, add or remove its plugins, save your own agent, and read the prompt it receives.
+
+Every conversation runs one agent. An agent is a name, a role, and a set of plugins. The plugins bring everything the agent can use: tools, tool servers, skills it loads when a task calls for them, subagents it can hand work to, slash commands, interactive views, and the guidance in its prompt. The agent itself holds no content; it only chooses plugins.
+
+You can change the plugins of a single conversation, keep the result as your own agent, and see exactly which plugin wrote each part of the prompt.
+
+The [Extensions preview](docs/extensions.md) walks through the next-release library for
+importing skills, connecting MCPs, inspecting their files, and composing your own plugin.
+
+> **Caution: Upgrading from an earlier release**
+>
+> Earlier releases defined agents as blueprints: folders with an `AGENT.md` file and expert files. Agents now come from plugins. The agents that shipped as blueprints are now agents in the `clio` marketplace, for example `earthscope` and `factorio`. See the [installation guide](docs/install.md) for installation and update instructions.
+
+## What an agent is
+
+An agent starts from a parent agent and lists the plugins it adds. The agents you install are defined in Python by the marketplace that ships them. This is the EarthScope agent from the default marketplace:
+
+```python title="agents/earthscope.py"
+class Earthscope(ScienceAgent):
+    id = "earthscope"
+    version = "0.6.0"
+    name = "EarthScope"
+    role = (
+        "a geodesist who analyses EarthScope GNSS station data found through the National Data "
+        "Platform"
+    )
+    plugins = ScienceAgent.plugins + ["earthscope", "geodesy", "geo", "ndp"]
+```
+
+It starts from the science agent, which carries the standard agent's plugins, and adds its own `earthscope` plugin (its mission, data acquisition and station map), the `geodesy` methods, and the mapping and National Data Platform plugins they use.
+
+Agents are named `<marketplace>/<id>`, optionally with a version range: `clio/standard`, `clio/earthscope@^0.6`. A bare id such as `earthscope` works when only one installed marketplace provides it. Agents you save yourself are named `user/<id>`.
+
+The default agent, shown as **CLIO**, is `clio/standard`. Its plugins:
+
+| Plugin | What it brings |
+|---|---|
+| `workspace` | Read, search, and edit files in the session workspace, and view images. |
+| `shell` | A shell in the session workspace. |
+| `web` | Search the web and read pages. See [Search the web](docs/web-search.md). |
+| `literature` | Find papers, preprints, reports and datasets, and follow references, citations and versions. See [Find papers and review the literature](docs/literature.md). |
+| `documents` | A pack of document formats: PDF, Word, spreadsheets, presentations, LaTeX, and OpenDocument. |
+| `visuals` | Interactive analysis, dashboards, diagrams, and visual review in the side panel. |
+| `connected-data` | Connected research data sources, the National Data Platform, and knowledge stores. |
+| `delegation` | Delegation to a copy of the agent, the read-only `explore`, `planner` and `review` roles, and forks of the agent's own work. See [Subagents](docs/subagents.md). |
+| `orchestration` | Workflows and flows, such as several independent answers followed by one synthesis. See [Flows and workflows](docs/flows.md). |
+
+## Plugins and packs
+
+A plugin is one capability, packaged so that any agent can carry it. It follows the open [Agent Plugins](https://agent-plugins.org/specification) format, with CLIO-specific parts in its own folder. One plugin can contribute any of:
+
+- tools, and the MCP servers that provide them;
+- skills, which the agent sees by name and description and reads in full only when needed;
+- defined subagents, which arrive and leave with their plugin;
+- hooks, slash commands, and interactive views;
+- prompt fragments: short paragraphs of guidance about the capability.
+
+Skills you keep outside plugins reach every agent too: those in `~/.claude/skills`, `~/.codex/skills`, or `~/.agents/skills`, and in a workspace's `.claude/skills`, `.codex/skills`, or `.agents/skills`. When two skills share a name, a plugin's skill wins, then a workspace's, then yours.
+
+A **pack** is a plugin made only of other plugins. `documents` is a pack of `pdf`, `docx`, `xlsx`, `pptx`, `latex`, and `opendocument`. Pack membership is loose: you can remove `xlsx` and keep the rest.
+
+A plugin can also **require** another. Every document plugin requires `document-runtime`, which requires `shell`. A requirement is strict: when a required plugin leaves, the plugins that need it leave with it.
+
+Two plugins in one conversation cannot offer a tool with the same name. If they do, CLIO refuses to start the agent and names both plugins.
+
+## The core plugin
+
+Every agent carries the `core` plugin, and it cannot be removed. It brings what every agent needs:
+
+- the operating guidelines and the rendering guidance in the prompt;
+- controls for background work: following, waiting for, and cancelling tasks;
+- asking you a question, planning, artifacts, goals, loops, and schedules;
+- access to workspace resources.
+
+Remove every other plugin and the agent can still answer, ask you questions, and follow its tasks, but it has no shell, file editing, web, or document tools.
+
+## Pick an agent for a conversation
+
+1. Choose the plus button at the top of the sidebar, labeled "Create or import", then choose **New session**.
+
+2. Name the session, choose its workspace, and open the **Agent** list. **Default agent** uses your new session defaults. Agents you saved are marked "yours".
+
+3. Choose **Create session**.
+
+To change the agent new sessions start with, open Settings, choose **New session defaults**, and set **Agent**.
+
+The agent is fixed when the conversation starts. An update to the agent or one of its plugins reaches your next conversation, not the one that is running. You can still add or remove plugins in a running conversation, as described below. To work with a different agent, start a new conversation.
+
+Next to the conversation's title, choose the agent's name to open the **Agent** panel. It shows the agent's name, reference, version, and role, and two tabs: **Plugins** and **Prompt**.
+
+On **Plugins**, each plugin has a badge that says why it is there:
+
+| Badge | Meaning |
+|---|---|
+| **Core** | Every agent carries it. It cannot be removed. |
+| **From standard** | The named agent layer chose it, such as `standard` or `science`. |
+| **In pack documents** | It arrived as a member of the named pack. |
+| **Required by pdf** | Another plugin needs it. |
+| **Added by you** | You added it to this conversation. |
+
+Pack members are listed under their pack.
+
+![The Agent panel beside a conversation: CLIO, clio/standard 1.0.0, with Add plugin, Switch agent, Save as agent and Undo changes, the note that the conversation adds wtf-p/wtfp, and the Plugins tab listing core, workspace, shell, web and the documents pack with its members](plugin-asset://guide/captures/docs-agent-plugins.webp)
+*The Agent panel for a conversation that added the wtfp plugin. Each plugin's badge says why it is there.*
+
+## Add or remove plugins
+
+**Add plugin** in the Agent panel opens the plugin menu. In the web app, the **+** next to the agent's name opens it too. It lists every installed pack and plugin, with its marketplace, its description, the members a pack brings, and the plugins it also needs. Search by name, description, or pack member, then choose one to add it.
+
+A plugin cannot be chosen when it is already active, when its marketplace has not been trusted, or when it has errors. See [Plugin marketplaces](docs/marketplaces/index.md) for the trust step.
+
+To remove a plugin, choose the remove button on its row in the **Plugins** tab. Before anything changes, CLIO shows what else leaves and which tools are no longer available. For example, removing `document-runtime` also removes every document plugin, since each requires it. **No** cancels.
+
+- Removing a pack member removes only that member. The rest of the pack stays.
+- Removing a pack removes the members it brought.
+- `core` has no remove button.
+
+Changes apply to this conversation only. The agent's name in the title shows how many changes you made.
+
+### When the agent offers a plugin
+
+The agent knows which of your plugins and connectors this conversation does not have:
+each by name, the marketplace it comes from and a line about what it does, the most
+recently added marketplace first, up to `plugins.offer_listed` (20) with the total. You
+choose which in **Settings → Extensions and connectors → Plugins CLIO can offer**: untick
+an entry of the default 20, or tick one beyond them; an unticked one is left out of what
+the agent is told, and it can still be offered when it is named. In the conversation's
+context view the list counts as **Plugin list**, one line per entry. When
+a request needs one, it asks with a card, **Add Home Assistant to this conversation?**, with
+what the plugin is, its reason, what Add brings and **View plugin**. **Add** adds the plugin to this conversation as an injection (the agent is
+told about it at once), and its skills and tools are the agent's in the same reply; a
+plugin's own Python tools arrive with your next message. **Not now** changes nothing. The
+agent never adds a plugin by itself, and it does not offer a plugin a request has no use
+for. See [When the agent offers a connector or plugin](docs/connectors.md#when-the-agent-offers-a-connector-or-plugin)
+for the card, with pictures.
+
+### How a change reaches the agent
+
+In a conversation with no messages yet, an added plugin applies at once, and a removal asks only **Yes** or **No**: nothing has been sent to the model, so the change applies from the first call.
+
+Once the conversation has messages, every change asks first. Changing plugins changes the agent's prompt, so the model can no longer reuse its cached copy, and the next call may cost more. Choose how the change goes in:
+
+| Choice | What happens |
+|---|---|
+| **Yes** | The change applies from the next call, with the new prompt. |
+| **Yes, after compaction** | CLIO compacts the conversation now, and the change goes in with the compacted conversation. Compacting calls the model and can take a few seconds. |
+| **Yes, as an injection** | The agent is told about the change now, and its prompt changes at the next compaction. Until then, added tools can be used but are announced rather than listed, and removed plugins stay visible to the agent. |
+| **No** | Nothing changes. | In the panel, **Removed in this conversation** lists what you removed, with **Add back**, and what left with it. **Undo changes** restores the agent as it started.
+
+A conversation started for a defined subagent cannot be changed. Its plugins come from the subagent's definition.
+
+## Save your own agent
+
+After you add or remove a plugin, **Save as agent** in the Agent panel keeps the result.
+
+1. Choose **Save as agent**.
+
+2. Enter an **Agent name** and, optionally, a **Description**. The dialog shows the id it will use, such as `user/my-hdf5-analyst`, and lists the agent it starts from with what it adds and removes.
+
+3. Choose **Save agent**.
+
+CLIO stores your agent as its parent plus your changes, not as a copied list of plugins. When the parent agent or its plugins are fixed or updated, your agent picks that up in its next conversation, within the parent's major version.
+
+Choose your agent in the **Agent** list when you start a conversation, or make it your default in **New session defaults**. Settings has an **Agents** page with **Your agents** and **Installed agents**. **Preview** shows an agent's plugins and prompt, and you can delete an agent you saved. Conversations already using a deleted agent keep their plugins.
+
+## Read the composed prompt
+
+The **Prompt** tab shows the prompt the agent receives, assembled from fragments in five sections, in the order the agent reads them:
+
+| Section | Written by |
+|---|---|
+| **Identity** | The agent: "You are *name*, *role*." |
+| **Operating guidelines** | The `core` plugin only. |
+| **Rendering** | The `core` plugin, generated from the interactive views this conversation can show. |
+| **Capabilities** | One short fragment for each plugin that needs one. |
+| **Domain** | Plugins that frame a field, such as GNSS science. |
+
+Each fragment carries a badge with the plugin that owns it, its id, and an estimate of its size in tokens. When the agent says something you did not expect, the badge tells you which plugin to look at. A fragment can depend on a tool or plugin being present, so adding or removing a plugin changes the prompt. Warnings about fragments appear above the sections.
+
+The same view is under **Preview** on the Agents settings page. From a terminal on the machine that runs CLIO, `clio-agent plugin resolve clio/standard --prompt` prints the composed prompt, and without `--prompt` it lists each plugin and why it is there.
+
+## Where agents come from
+
+Agents and plugins are installed from marketplaces. The `clio` marketplace ships with CLIO and holds the standard agent, the shared plugins, and domain agents such as `earthscope`, `factorio`, `deep-researcher`, and `clio-data`. The `core`, `memory`, `fleet`, `orchestration` and `streaming` plugins are part of CLIO itself.
+
+To write your own plugins and agents in Python, see [Build agents, plugins and flows](docs/sdk/index.md).
+
+You can add other marketplaces, including Claude Code plugin marketplaces. A Claude Code marketplace brings plugins rather than agents: add them to a conversation with the + menu, then save the result as your own agent.
+
+- [Plugin marketplaces](docs/marketplaces/index.md): What a marketplace holds, the shipped clio marketplace, and Claude Code marketplaces.
+- [Add and manage marketplaces](docs/marketplaces/manage.md): Add a marketplace, trust it, update it, remove it, and check plugins.
+- [Build your first plugin](docs/sdk/build-a-plugin.md): Write a plugin with a tool, a skill, a subagent and a flow, and an agent that carries it.
