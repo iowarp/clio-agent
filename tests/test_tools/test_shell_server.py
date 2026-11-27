@@ -695,3 +695,75 @@ async def test_shell_bash_releases_its_egress_channel_when_the_command_exits(
             await client.call_tool("bash", {"command": "echo one"})
             await client.call_tool("bash", {"command": "exit 3"})
     assert closed == minted == ["child-0", "child-1"]
+
+
+def test_shell_confinement_does_not_hold_the_app_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A slow fence composition (a cold PowerShell policy query) leaves the loop that every
+    other call's timers and exit callbacks share running."""
+
+    import time
+
+    from clio_agent.tools.servers import shell_confinement
+
+    def blocking_confine(*_args: Any, **_kwargs: Any) -> str:
+        time.sleep(0.3)
+        return "spawn"
+
+    monkeypatch.setattr(shell_confinement, "confine", blocking_confine)
+
+    async def scenario() -> tuple[Any, int]:
+        ticks = 0
+
+        async def tick() -> None:
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.01)
+                ticks += 1
+
+        ticker = asyncio.create_task(tick())
+        spawn = await shell_confinement.confine_off_loop(["x"], Path("."), outside_sandbox=False)
+        ticker.cancel()
+        return spawn, ticks
+
+    spawn, ticks = asyncio.run(scenario())
+    assert spawn == "spawn"
+    assert ticks >= 5
+
+
+def test_cancelled_shell_call_releases_the_spawn_its_confinement_composed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The call goes away while the worker thread composes its fence: the spawn (and its
+    egress channel) is released when the thread finishes, not leaked."""
+
+    import threading
+
+    from clio_agent.tools.servers import shell_confinement
+
+    started, proceed, released = threading.Event(), threading.Event(), threading.Event()
+
+    class Spawn:
+        def release(self) -> None:
+            released.set()
+
+    def slow_confine(*_args: Any, **_kwargs: Any) -> Spawn:
+        started.set()
+        proceed.wait(5)
+        return Spawn()
+
+    monkeypatch.setattr(shell_confinement, "confine", slow_confine)
+
+    async def scenario() -> None:
+        call = asyncio.create_task(
+            shell_confinement.confine_off_loop(["x"], Path("."), outside_sandbox=False)
+        )
+        await asyncio.to_thread(started.wait, 5)
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        assert not released.is_set()
+        proceed.set()
+        await asyncio.to_thread(released.wait, 5)
+
+    asyncio.run(scenario())
+    assert released.is_set()
