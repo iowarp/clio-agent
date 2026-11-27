@@ -44,7 +44,7 @@ def _declared_now(
     gateways: dict[str, Any] = {}
     declared: dict[str, list[Any]] = {}
     for server_set in server_sets:
-        gateway = agent._build_tool_gateway(cwd=root, server_set=server_set)
+        gateway = agent._build_tool_gateway(cwd=root or None, server_set=server_set)
         gateways[server_set] = gateway
         for namespace, spec in namespace_specs(gateway).items():
             declared.setdefault(namespace, []).append(spec)

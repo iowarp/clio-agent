@@ -71,12 +71,14 @@ def resolve_workspace_executor(agent: Any) -> Any:
     # Canonicalized ONCE, so the executor cache, the leases, the reaper and
     # the gateway cwd below all file this workspace under the same key.
     root = canonical_workspace_root(get_active_tool_workspace_root())
-    if not root:
-        return _rootless_executor(agent, get_active_tool_server_set().strip())
     server_set = get_active_tool_server_set().strip()
     # CV-D3: a conversation with its own connector values has its own fleet at this root,
-    # and so does a set whose plugin keeps a person's server name (fleet_own_set).
-    key = fleet_key(root, fleet_variant(server_set, root))
+    # and so does a set whose plugin keeps a person's server name (fleet_own_set). A
+    # workspace without a root folder files those under a rootless key (fleet_key).
+    variant = fleet_variant(server_set, root)
+    if not root and not variant:
+        return _rootless_executor(agent, server_set)
+    key = fleet_key(root, variant)
     lock, executors, leases = agent._workspace_state()
     with _build_lock(agent, lock, key):
         for _attempt in range(_RESOLVE_ATTEMPTS):
@@ -109,12 +111,14 @@ def resolve_workspace_executor(agent: Any) -> Any:
 def _rootless_executor(agent: Any, server_set: str) -> Any:
     """The default executor, carrying a rootless session's plugin server set.
 
-    A workspace without a root folder has no fleet of its own, so its stdio servers
-    run in the process cwd on the default executor. That executor already declares
-    the user-scope ``mcp.yaml`` servers (``fleet_server_merge.stamp_default_fleet``);
+    A workspace without a root folder has no plain fleet of its own, so its stdio
+    servers run in the process cwd on the default executor. That executor already
+    declares the user-scope ``mcp.yaml`` servers (``fleet_server_merge.stamp_default_fleet``);
     the session's plugin servers merge into it here, spawn-free, the same way a
-    second server set joins a workspace fleet. The gateway refresh lock keeps the
-    merge off an executor that a configuration change is replacing.
+    second server set joins a workspace fleet. A set with connector values of its
+    own, or one keeping a person's server name, never reaches here: it has a rootless
+    variant fleet in the registry. The gateway refresh lock keeps the merge off an
+    executor that a configuration change is replacing.
     """
 
     from clio_agent.tools.fleet_server_merge import (  # noqa: PLC0415
@@ -230,7 +234,7 @@ def _resolve_locked(
             )
         # First use, a reaped fleet (#933) or a changed configuration or
         # plugin snapshot: rebuild lazily (spawns nothing until a tool call).
-        gateway = agent._build_tool_gateway(cwd=root, server_set=server_set)
+        gateway = agent._build_tool_gateway(cwd=root or None, server_set=server_set)
         preloaded = agent._tool_definitions
         # Every per-workspace gateway includes user-configured MCP
         # services as well as the plugin servers. Preserve those
@@ -288,7 +292,7 @@ def _resolve_locked(
         assert executor is not None
         merge_server_set_namespaces(
             executor,
-            agent._build_tool_gateway(cwd=root, server_set=server_set),
+            agent._build_tool_gateway(cwd=root or None, server_set=server_set),
             server_set=server_set,
             root=root,
         )

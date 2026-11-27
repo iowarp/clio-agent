@@ -239,6 +239,31 @@ def project(app: Any, task: TaskSnapshot, row: dict[str, Any]) -> None:
     )
 
 
+def permission_card(app: Any, handle: str) -> dict[str, Any] | None:
+    """The permission card that presents hook approval ``handle``, else ``None``.
+
+    A turn-ending hook approval is one Question whose only presentation is this card,
+    filed under the Question's own handle (:func:`project`), so a person sees and
+    answers it once. A card missing after a restart is projected again from the
+    Question.
+    """
+    task = app.state.task_history.task_snapshot(handle)
+    if (
+        task is None
+        or task.kind != "Question"
+        or task.tool != SOURCE
+        or task.details is None
+        or not task.raw_status
+        or task.owner.human_id != app.state.human_principal
+    ):
+        return None
+    if handle not in app.state.permissions:
+        from clio_agent.gact.question_surface import question_view  # noqa: PLC0415
+
+        project(app, task, question_view(app, task))
+    return app.state.permissions.get(handle)
+
+
 def validate_decision(app: Any, captured: HookApproval, approved: bool) -> None:
     """An approval cannot substitute another segment's last output for missing evidence."""
     if approved and captured.event == "Stop":

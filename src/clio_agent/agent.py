@@ -62,6 +62,7 @@ from clio_agent.tools.catalog import (
 from clio_agent.tools.execution import (
     create_sync_tool_executor,
 )
+from clio_agent.tools.fleet_key import fleet_root
 from clio_agent.tools.gateway import (
     build_gateway,
     build_tool_catalog,
@@ -402,17 +403,16 @@ class ClioAgent(dspy.Module):
 
     @contextmanager
     def lease_workspace_fleet(self, root: str, *, wait: bool = True):
-        """Pin a workspace root against reaping for the caller's scope (#933).
+        """Pin a workspace root (or a fleet key's root) against reaping for the scope (#933).
 
-        Acquired per TURN (gact's ``_tool_session_context``): DSPy tools bind
-        the executor for the whole expert lifetime, so between-call idleness
-        inside a live turn must never count toward the reap TTL. During a
-        connected-data access change it waits for the change (bounded) unless
-        ``wait`` is false.
+        Acquired per TURN (gact's ``_tool_session_context``): DSPy tools bind the
+        executor for the whole expert lifetime, so between-call idleness inside a live
+        turn must never count toward the reap TTL. A rootless variant fleet's key leases
+        root "". During a connected-data access change it waits (bounded) unless ``wait``.
         """
 
-        root = canonical_workspace_root(root)
-        if not root:
+        root = fleet_root(key := canonical_workspace_root(root))
+        if not key:
             yield
             return
         lock, _executors, leases = self._workspace_state()

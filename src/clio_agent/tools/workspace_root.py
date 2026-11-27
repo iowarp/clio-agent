@@ -14,6 +14,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from clio_agent.tools.fleet_key import FLEET_MARK
+
 __all__ = ["canonical_workspace_root"]
 
 
@@ -28,7 +30,9 @@ def canonical_workspace_root(root: str | Path | None) -> str:
     rather than in each caller's own ``str(Path(root).expanduser())``.
 
     ``""`` means "no workspace bound" and is returned unchanged: it is a state,
-    not a path to resolve (``Path("")`` would resolve to the process cwd).
+    not a path to resolve (``Path("")`` would resolve to the process cwd). A fleet
+    key (:mod:`clio_agent.tools.fleet_key`) keeps its variant, and its root is
+    canonicalized alone, so a rootless variant fleet's key stays rootless.
 
     Deliberately PURE: ``expanduser`` + ``abspath`` collapse ``~``, ``.``/``..``
     and separators without touching the filesystem. ``Path.resolve()`` would also
@@ -36,7 +40,7 @@ def canonical_workspace_root(root: str | Path | None) -> str:
     network mount must not be able to block a resolve on a string operation.
     """
 
-    text = str(root or "").strip()
+    text, mark, variant = str(root or "").strip().partition(FLEET_MARK)
     if not text:
-        return ""
-    return Path(os.path.abspath(os.path.expanduser(text))).as_posix()
+        return f"{mark}{variant}"
+    return Path(os.path.abspath(os.path.expanduser(text))).as_posix() + mark + variant

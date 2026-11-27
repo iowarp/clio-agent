@@ -51,7 +51,7 @@ def server_set_spec_changed(agent: Any, executor: Any, root: str, server_set: st
     if not server_set or server_set in _mounted_server_sets(executor):
         return False
     existing = getattr(executor, "_clio_namespace_specs", None) or {}
-    gateway = agent._build_tool_gateway(cwd=root, server_set=server_set)
+    gateway = agent._build_tool_gateway(cwd=root or None, server_set=server_set)
     changed = [
         namespace
         for namespace, spec in namespace_specs(gateway).items()

@@ -14,6 +14,7 @@ from clio_agent.arc.task_types import QuestionReply
 from clio_agent.errors import ClioError
 from clio_agent.gact import agent_needs, connector_setup, core_write_refusal
 from clio_agent.gact.a2ui_actions.record import last_action_wire
+from clio_agent.gact.hooks.turn_approval import permission_card
 from clio_agent.gact.human_controls import intervene
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.permission_delivery import attended_session_id, permission_title
@@ -352,11 +353,10 @@ def _question_from_interaction_id(app: FastAPI, identity: str) -> UserQuestion |
         return None
     handle = identity.removeprefix("question:")
     task = app.state.task_history.task_snapshot(handle)
-    return (
-        question_row(app, handle)
-        if task is not None and task.kind == "Question" and task.details and task.raw_status
-        else None
-    )
+    if task is None or task.kind != "Question" or not task.details or not task.raw_status:
+        return None
+    # A hook approval is answered through its permission card, its only presentation.
+    return None if permission_card(app, handle) is not None else question_row(app, handle)
 
 
 def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingInteraction:
@@ -464,6 +464,8 @@ def project_pending_interactions(
                 }
             )
             continue
+        if permission_card(app, handle) is not None:
+            continue  # listed once, as the permission card below
         row = _question_interaction(app, question_row(app, handle))
         (pending if row.status == "pending" else resolved).append(row)
     for permission in app.state.permissions.values():
@@ -529,6 +531,7 @@ def recorded_session_interactions(app: FastAPI, session_id: str) -> list[dict[st
         if (task := access.require(handle, "read")).kind == "Question"
         and task.details is not None
         and task.raw_status
+        and permission_card(app, handle) is None
     ]
     rows.extend(
         _permission_interaction(app, permission)
@@ -636,8 +639,10 @@ def register_interaction_routes(app: FastAPI, deps: "GactDeps") -> None:
             updated = await run_in_threadpool(question_row, app, question.id)
             return {"interaction": _interaction_wire(_question_interaction(app, updated))}
 
-        permission_id = interaction_id.removeprefix("permission:")
+        permission_id = interaction_id.removeprefix("permission:").removeprefix("question:")
         permission = app.state.permissions.get(permission_id)
+        if permission is None and permission_id != interaction_id:
+            permission = await run_in_threadpool(permission_card, app, permission_id)
         if permission is not None:
             if str(permission.get("session_id") or "") not in scope:
                 raise _error(404, "not_found", f"interaction not found: {interaction_id}")
