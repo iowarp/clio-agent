@@ -94,6 +94,7 @@ class PageRecord:
     inflight: Inflight | None = None
     person_acted: bool = False
     last_person_input: float = float("-inf")  # never, until the person acts
+    admitted_host: str = ""  # whose document the person let the agent load (host_gate)
     #: The host the page was last refused; shown by the panel until the page loads again.
     navigation_blocked: dict[str, Any] | None = None
     #: Whether the agent's results already reported that refusal (it is told once).

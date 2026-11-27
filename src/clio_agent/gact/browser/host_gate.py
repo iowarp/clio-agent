@@ -223,6 +223,7 @@ async def _decide(service: "BrowserService", record: "PageRecord", url: str) -> 
         _blocked(service, record, scheme + ":", url, reason="browser_scheme_refused")
         return False
     host = (parts.hostname or "").lower()
+    record.admitted_host = ""  # a new document: admitted only by the answer below
     inflight = record.inflight
     if inflight is not None:
         inflight.navigated = True
@@ -243,10 +244,13 @@ async def _decide(service: "BrowserService", record: "PageRecord", url: str) -> 
         inflight.denied_host = host
         return False
     if _allowed_in_call(record, host, decision):
+        record.admitted_host = host
         return True
     allowed = await _ask_for_call(service, record, host, url)
     if not allowed:
         inflight.denied_host = host
+    elif not decision:  # a rule that asks every time asks for every call too
+        record.admitted_host = host
     return allowed
 
 
@@ -270,7 +274,9 @@ async def admit_call(
     """Before an agent call acts on the page: its host must be one the agent may use.
 
     The person, or the page, may have taken the page to a host the agent was never
-    allowed; the agent asks before reading or acting on it, as for a navigation. Its
+    allowed; the agent asks before reading or acting on it, as for a navigation. A page
+    still on the document the person let the agent load is not asked about again: the
+    answer was for that load, and later calls only use what it loaded. Its
     certificate must be one this conversation trusts (:func:`certificates.check_call`).
     """
     parts = urlsplit(record.url())
@@ -282,6 +288,8 @@ async def admit_call(
     host = (parts.hostname or "").lower()
     decision = decision_for(service.app, record.session_id, host)
     if decision == "allow" or _allowed_in_call(record, host, decision):
+        return
+    if not decision and host == record.admitted_host:
         return
     if decision != "deny" and await _ask_for_call(service, record, host, record.url()):
         return
