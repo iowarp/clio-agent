@@ -12,8 +12,9 @@ newline-delimited JSON over stdin and the original stdout:
   call;
 - kernel to host: ``{"type": "ready"}``, ``{"type": "bound", "failed": {name: error}}``,
   ``{"type": "call", "id": k, "tool": name, "args": {...}, "binding"?: name}`` (``binding``:
-  the plugin binding whose code made the call) and ``{"type": "done", "id":
-  n, "ok": bool, "output": "...", "value": "...", "error": "..."}``.
+  the plugin binding whose code made the call), ``{"type": "started", "id": n, "threads":
+  k}`` (the threads earlier scripts left running, as a script starts) and ``{"type":
+  "done", "id": n, "ok": bool, "output": "...", "value": "...", "error": "..."}``.
 
 The script's names come from one binding registry: ``tools`` is its first entry, generated
 from the stubs; each plugin binding is its source run in a module that holds ``tools`` and
@@ -375,6 +376,8 @@ def main() -> None:
         work.put(None)
 
     threading.Thread(target=read, name="kernel-stdin", daemon=True).start()
+    #: The kernel's own threads; any other was started by a script and may still be running.
+    own_threads = set(threading.enumerate())
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     namespace: dict[str, Any] = {"__name__": "__main__", "ToolError": ToolError}
@@ -387,6 +390,8 @@ def main() -> None:
         elif message.get("type") == "exec":
             code = str(message.get("code") or "")
             path = str(message.get("output_path") or "")
+            earlier = [t for t in threading.enumerate() if t not in own_threads]
+            host.send({"type": "started", "id": message.get("id"), "threads": len(earlier)})
             if path:  # a background script: output goes to its file as it is written
                 with open(path, "ab+") as written:
                     done = _execute(loop, namespace, code, written, host, keep=True)

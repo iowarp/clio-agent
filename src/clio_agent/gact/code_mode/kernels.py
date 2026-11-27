@@ -144,6 +144,7 @@ class Kernel:
         #: it rather than taking the starting kernel for a dead one and replacing it.
         self._start_lock = threading.Lock()
         self._start_state = "pending"  # "pending", "started" or the KernelError text
+        self._own_processes = 0
 
     @property
     def starting(self) -> bool:
@@ -216,6 +217,15 @@ class Kernel:
             self.stop("start_failed")
             raise KernelError(f"the Python kernel did not start: {self.diagnostics()}")
         trace.event("CODE", "kernel started key=%s pid=%s", self.key, ready.get("pid"))
+        self._own_processes = self.tree.processes()  # the kernel (and its fence's launcher)
+
+    def leftover_processes(self) -> int | None:
+        """How many processes earlier scripts started are running now; ``None`` when the
+        tree cannot be counted."""
+        try:
+            return max(0, self.tree.processes() - self._own_processes)
+        except (OSError, AttributeError):
+            return None
 
     def _read(self) -> None:
         assert self.process is not None and self.process.stdout is not None

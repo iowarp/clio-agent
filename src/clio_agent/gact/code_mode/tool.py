@@ -297,20 +297,26 @@ def execute_script(
     if live is not None:
         live["dispatcher"] = dispatcher  # a background task's status reads its call count
     outcome: dict[str, Any] = {"status": "failed", "output": "", "value": None, "error": ""}
+    threads: int | None = None  # the threads earlier scripts left, as the kernel counts them
+    processes: int | None = None
     session = _script_session(prepared)
     finished = False
     started = time.monotonic()
     poll = poll_s()
     all_bindings = {**dict(getattr(agent, "_clio_kernel_bindings", None) or {}), **(bindings or {})}
     try:
-        # The kernel is this script's alone while it holds the lock: what the chokepoint
-        # refused on its channel then is this script's egress.
+        # The kernel is this script's alone while it holds the lock, unless an earlier
+        # script left a thread or process running in it: what the chokepoint refused on
+        # its channel then is this script's egress only when nothing was left.
         with (
             kernel.lock,
             net_refusals.own_channel(
-                net_refusals.channel_of(getattr(kernel, "confinement", None))
+                net_refusals.channel_of(getattr(kernel, "confinement", None)),
+                label="the Python kernel",
             ) as egress,
         ):
+            leftover = getattr(kernel, "leftover_processes", None)
+            processes = leftover() if leftover is not None else None
             kernel.bind(
                 stub_table(
                     agent.tools,
@@ -342,6 +348,8 @@ def execute_script(
                     if binding := str(message.get("binding") or ""):
                         uses_binding(grant_in(prepared.context), binding, all_bindings, agent.tools)
                     dispatcher.submit(message, kernel.send)
+                elif message.get("type") == "started":
+                    threads = int(message.get("threads") or 0)
                 elif message.get("type") == "done":
                     finished = True
                     outcome.update(
@@ -368,7 +376,7 @@ def execute_script(
     # The egress refused on the kernel's channel while this script ran, which its output
     # shows only as a reset or a 403 (a background script's result is recorded after its
     # call returned, so it names them itself).
-    outcome |= egress()
+    outcome |= egress(_alongside(threads, processes))
     if kernel.replaced:  # the scope's earlier kernel, and its variables, are gone
         outcome["new_kernel"], kernel.replaced = kernel.replaced, ""
     if kernel.read_only:  # plan mode: a write elsewhere is refused by the fence
@@ -382,6 +390,23 @@ def execute_script(
         outcome["duration_ms"],
     )
     return outcome
+
+
+def _alongside(threads: int | None, processes: int | None) -> str:
+    """What an earlier script left running in the kernel when this one started, as the
+    agent reads it (``""`` when nothing was: the kernel's egress was this script's)."""
+
+    if threads is None or processes is None:
+        return "CLIO could not tell whether an earlier script was still running in it"
+    left = [
+        f"{count} {noun}{'s' if count != 1 else ''}"
+        for count, noun in ((threads, "thread"), (processes, "process"))
+        if count
+    ]
+    if not left:
+        return ""
+    were = "were" if threads + processes != 1 else "was"
+    return f"{' and '.join(left)} that earlier scripts started {were} still running in it"
 
 
 def _boundary(kernel: Any, outcome: Mapping[str, Any]) -> dict[str, Any] | None:

@@ -16,8 +16,7 @@ from fastmcp import Client
 from clio_agent import conf
 from clio_agent.tools.execution import tool_workspace_context
 from clio_agent.tools.servers.shell_server import (
-    POWERSHELL_PROXY_PREAMBLE,
-    POWERSHELL_UTF8_PREAMBLE,
+    POWERSHELL_PREAMBLE,
     ShellEnvFacts,
     _detect_shell_env,
     _resolve_cwd,
@@ -50,7 +49,7 @@ def test_powershell_commands_cross_the_pipe_as_utf8(
         "exit 5"
     )
     argv = _shell_argv(command)
-    assert argv[-1] == POWERSHELL_UTF8_PREAMBLE + POWERSHELL_PROXY_PREAMBLE + command
+    assert argv[-1] == POWERSHELL_PREAMBLE + command
     result = subprocess.run(
         argv,
         capture_output=True,
@@ -64,6 +63,34 @@ def test_powershell_commands_cross_the_pipe_as_utf8(
     assert "literal — 21°C" in text
     assert "piped — 21°C" in text
     assert "â€" not in text and "\ufffd" not in text
+
+
+@pytest.mark.skipif(os.name != "nt", reason="PowerShell backend is Windows-only")
+def test_powershell_aliases_give_way_to_a_real_executable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``wget`` (a removable alias in Windows PowerShell 5.1) runs the ``wget.cmd`` on PATH,
+    while ``where`` (a ReadOnly alias) stays PowerShell's ``Where-Object``."""
+
+    import shutil
+    import subprocess
+
+    if not (shutil.which("pwsh.exe") or shutil.which("powershell.exe")):
+        pytest.skip("no PowerShell")
+    monkeypatch.setenv("CLIO_WINDOWS_SHELL_BACKEND", "powershell")
+    (tmp_path / "wget.cmd").write_text("@echo native wget %*\r\n", encoding="ascii")
+    (tmp_path / "where.cmd").write_text("@echo native where\r\n", encoding="ascii")
+    command = "wget -sS x; 1,2 | where { $_ -gt 1 }"
+    result = subprocess.run(
+        _shell_argv(command),
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"},
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["native", "wget", "-sS", "x", "2"]
 
 
 def test_shell_bash_declares_open_world_destructive_annotations() -> None:

@@ -35,10 +35,7 @@ from clio_agent.tools.builtin_annotations import (
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 from clio_agent.tools.servers import shell_confinement as confinement
 from clio_agent.tools.servers.shell_commands import (
-    POWERSHELL_PROXY_PREAMBLE as POWERSHELL_PROXY_PREAMBLE,
-)
-from clio_agent.tools.servers.shell_commands import (
-    POWERSHELL_UTF8_PREAMBLE as POWERSHELL_UTF8_PREAMBLE,
+    POWERSHELL_PREAMBLE as POWERSHELL_PREAMBLE,
 )
 from clio_agent.tools.servers.shell_commands import (
     command_length_error,
@@ -276,7 +273,7 @@ def _shell_argv(command: str, *, prepared_environment: dict[str, str] | None = N
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                POWERSHELL_UTF8_PREAMBLE + POWERSHELL_PROXY_PREAMBLE + command,
+                POWERSHELL_PREAMBLE + command,
             ]
         return ["cmd.exe", "/d", "/s", "/c", command]
     shell = shutil.which("bash") or shutil.which("sh")

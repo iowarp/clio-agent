@@ -13,9 +13,10 @@ the seam that knows which channel serves the call joins it, and the call's resul
 the refusals made on those channels while it used them (:func:`call_notice`). The network
 sees a process, not a request, so only a channel the call has to itself is named as the
 call's own: one shell command's (:func:`channel_fields`), a kernel while its script holds
-it (:func:`own_channel`). A channel calls share (a server's, the browser's; :func:`join`)
+it and no earlier script's thread or process is left running in it (:func:`own_channel`).
+A channel calls share (a server's, the browser's; :func:`join`)
 is named as what that process was refused while the call ran, with how many other calls
-were using it. Work that settles after its call returns (a server's task) keeps the call's
+were using it (or what else was left running in it). Work that settles after its call returns (a server's task) keeps the call's
 watch until its result is recorded (:func:`outlast`, :func:`settled_notice`), and persists
 its notice with the task so a restart keeps it.
 """
@@ -91,10 +92,12 @@ class EgressRefusal:
 
 @dataclass(frozen=True)
 class _Use:
-    """How a call uses a channel: alone (``own``), or shared with other calls (``label``)."""
+    """How a call uses a channel: alone (``own``), or shared (``label``); ``why`` says what
+    else may have used it then, in place of the count of other calls."""
 
     own: bool
     label: str = ""
+    why: str = ""
 
 
 _OWN = _Use(True)
@@ -257,18 +260,27 @@ def join(child_id: str, *, label: str = "") -> None:
 
 
 @contextmanager
-def own_channel(child_id: str) -> Iterator[Callable[[], dict[str, str]]]:
+def own_channel(child_id: str, *, label: str = "") -> Iterator[Callable[..., dict[str, str]]]:
     """This call alone uses ``child_id`` for the block (a kernel while its lock is held).
 
     Yields a reader of ``{"network_refused": text}`` for what was refused there during
-    the block, named as this call's own (``{}`` when nothing was).
+    the block (``{}`` when nothing was): named as this call's own, or, given
+    ``alongside`` (what else could still run on the channel, as the agent reads it),
+    as made by ``label`` while this call ran.
     """
 
     watch = _WATCH.get() or _Watch(time.monotonic())
     if child_id:
         _register(watch, child_id, _OWN)
+
+    def read(alongside: str = "") -> dict[str, str]:
+        if alongside and child_id:
+            with _LOCK:
+                watch.channels[child_id] = _Use(False, label, alongside)
+        return _fields(watch, {child_id} - {""})
+
     try:
-        yield lambda: _fields(watch, {child_id} - {""})
+        yield read
     finally:
         with _LOCK:
             _drop(watch, [child_id])
@@ -424,19 +436,20 @@ def _text(watch: _Watch, found: list[EgressRefusal]) -> str:
     calls were using it, since the network sees the process, not the request."""
 
     own = [r for r in found if watch.channels.get(r.child_id, _OWN).own]
-    shared: dict[str, list[EgressRefusal]] = {}
+    shared: dict[tuple[str, str], list[EgressRefusal]] = {}
     for refusal in found:
         use = watch.channels.get(refusal.child_id, _OWN)
         if not use.own:
-            shared.setdefault(use.label or "a process this call uses", []).append(refusal)
+            key = (use.label or "a process this call uses", use.why)
+            shared.setdefault(key, []).append(refusal)
     parts = [notice_text(own)] if own else []
-    for label, refusals_ in shared.items():
+    for (label, why), refusals_ in shared.items():
         others = {w for r in refusals_ for w in r.watchers} - {watch.id}
         parts.append(
             f"While this call ran, CLIO's sandbox refused network connections that {label} "
-            f"made. This call uses it, but CLIO cannot tell which request made them "
-            f"({_others(len(others))}). A connection error or reset in the tool's output "
-            "for these hosts may be this refusal:\n" + _lines(refusals_)
+            f"made. This call uses it, but CLIO cannot tell whether this call made them "
+            f"({why or _others(len(others))}). A connection error or reset in the tool's "
+            "output for these hosts may be this refusal:\n" + _lines(refusals_)
         )
     return "\n\n".join(parts)
 
