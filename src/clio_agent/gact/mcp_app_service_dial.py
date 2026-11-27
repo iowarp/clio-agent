@@ -2,8 +2,9 @@
 
 A server CLIO launched may run inside the Linux fence, in a network namespace of its own,
 so the loopback port it declares is that namespace's, not the host's.
-:func:`fenced_target` finds the namespace: the record's serving child
-(:func:`clio_agent.runtime.sandbox_net.resolve_namespace_child`) located by
+:func:`fenced_target` finds the namespace: the record's serving child (the channel of the
+server its conversation's fleet routes the namespace to, :mod:`clio_agent.gact.session_fleet`)
+located by
 :mod:`clio_agent.runtime.fence_service`. The probe, the HTTP proxy and the WebSocket proxy
 then dial the declared port inside it (:func:`dial_fenced`, :class:`FencedServiceTransport`).
 Without one they dial the host's loopback, as before. Only the declared port is ever dialed,
@@ -41,16 +42,14 @@ _CONNECT_TIMEOUT_S = 10.0
 def _serving_child(app: FastAPI, record: Any) -> str:
     """The egress channel of the fenced child serving ``record``'s namespace, or ``""``."""
 
-    from clio_agent.runtime.sandbox_net import resolve_namespace_child  # noqa: PLC0415
+    from clio_agent.gact.session_fleet import session_net_child  # noqa: PLC0415
 
-    sessions = getattr(app.state, "sessions", None)
-    workspaces = getattr(app.state, "workspaces", None)
     try:
-        session = sessions.get(record.session_id) if sessions is not None else None
-        workspace_id = str(getattr(session, "workspace_id", "") or "")
-        workspace = workspaces.get(workspace_id) if workspace_id and workspaces else None
-        root = str(getattr(workspace, "root_path", "") or "")
-        return resolve_namespace_child(root, getattr(record, "source_namespace", "") or "")
+        return session_net_child(
+            app,
+            str(getattr(record, "session_id", "") or ""),
+            getattr(record, "source_namespace", "") or "",
+        )
     except (ClioError, OSError, RuntimeError, ValueError) as exc:
         # Without a known child the namespace search is unscoped, not refused.
         logger.debug("fenced service child unknown reason=serving_child_unavailable error=%r", exc)
@@ -63,7 +62,7 @@ async def fenced_target(app: FastAPI, record: Any) -> FencedNamespace | None:
     service = getattr(record, "service", None)
     if service is None or not fenced_services_possible():
         return None
-    child = _serving_child(app, record)
+    child = await asyncio.to_thread(_serving_child, app, record)
     return await asyncio.to_thread(find_fenced_namespace, service.port, child)
 
 

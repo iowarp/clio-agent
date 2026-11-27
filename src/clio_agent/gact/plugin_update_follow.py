@@ -56,29 +56,49 @@ def _changes(resolution: Any, records: Iterable[Any]) -> list[tuple[str, bool]]:
     return changes
 
 
-def _restart_fleet(app: Any, session_id: str, restarted: set[str] | None) -> str:
-    """Restart the session's workspace fleet so its servers start from the new copy.
+def _restart_fleet(
+    app: Any, session_id: str, records: list[Any], restarted: set[str] | None
+) -> str:
+    """Restart the fleets of the session's workspace still running an older plugin copy.
 
-    The same drain-aware restart a write-root grant asks for: a live turn defers it to
-    the turn's end, a conversation that is only on screen does not.
+    Each goes through the same drain-aware restart a write-root grant asks for
+    (:meth:`~clio_agent.tools.reaper.WorkspaceExecutorReaper.request_restart`): a live
+    turn defers it to the turn's end, a conversation that is only on screen does not.
+    A workspace without a root folder has fleets too (one per server set), so a rootless
+    session is restarted the same way. ``restarted`` collects the fleet keys already
+    restarted in this pass.
     """
 
-    from clio_agent.gact.view_fleet import _fleet_root  # noqa: PLC0415
+    from clio_agent.gact.session_fleet import session_fleet_key  # noqa: PLC0415
+    from clio_agent.tools.fleet_key import fleet_root  # noqa: PLC0415
+    from clio_agent.tools.reaper import (  # noqa: PLC0415
+        RESTART_DEFERRED_BUSY,
+        RESTART_NO_RESIDENT,
+        RESTART_RESTARTED_LIVE,
+    )
 
     agent = getattr(app.state, "agent", None)
-    restart = getattr(agent, "request_fleet_restart", None)
-    root = _fleet_root(app, session_id)
-    if not root or not callable(restart):
-        return "no_resident"
-    if restarted is not None:
-        if root in restarted:
-            return "shared"
-        restarted.add(root)
-    try:
-        return str(restart(root))
-    except Exception:  # noqa: BLE001 - the rebuild on the next resolve still follows
-        logger.exception("plugin update fleet restart failed session=%s", session_id)
-        return "failed"
+    reaper = getattr(agent, "_workspace_reaper", None)
+    if reaper is None:
+        return RESTART_NO_RESIDENT
+    root = fleet_root(session_fleet_key(app, session_id))
+    keys = [key for key in stale_fleets(app, records) if fleet_root(key) == root]
+    outcomes: set[str] = set()
+    for key in keys:
+        if restarted is not None:
+            if key in restarted:
+                outcomes.add("shared")
+                continue
+            restarted.add(key)
+        try:
+            outcomes.add(str(reaper.request_restart(key)))
+        except Exception:  # noqa: BLE001 - the stale-fleet pass after this one looks again
+            logger.exception("plugin update fleet restart failed session=%s", session_id)
+            outcomes.add("failed")
+    for outcome in (RESTART_DEFERRED_BUSY, "failed", RESTART_RESTARTED_LIVE, "shared"):
+        if outcome in outcomes:
+            return outcome
+    return RESTART_NO_RESIDENT
 
 
 def _publish_session(app: Any, session_id: str, plugins: list[str]) -> None:
@@ -104,8 +124,8 @@ def follow_session(
 ) -> list[str]:
     """Pin ``session_id`` again if a plugin it holds was updated; the plugins moved.
 
-    ``restarted`` collects the workspace fleets already restarted in this pass, so
-    conversations sharing a workspace restart its fleet once.
+    ``restarted`` collects the fleet keys already restarted in this pass, so
+    conversations sharing a fleet restart it once.
     """
 
     from clio_agent.gact import plugin_tabs, session_warmup  # noqa: PLC0415
@@ -147,7 +167,7 @@ def follow_session(
         return []
     restarted_now = "unchanged"
     if any(executable for _plugin, executable in changes):
-        restarted_now = _restart_fleet(app, session_id, restarted)
+        restarted_now = _restart_fleet(app, session_id, records, restarted)
     prompt_basis.hold_basis(app, session_id, previous)
     session_warmup.start_session_warmup(app, session_id, trigger=PLUGIN_UPDATED)
     plugin_tabs.session_agent_changed(app, session_id)
@@ -206,7 +226,7 @@ def stale_fleets(app: Any, records: Iterable[Any]) -> list[str]:
     return stale
 
 
-def _restart_stale_fleets(app: Any, store: Any) -> None:
+def _restart_stale_fleets(app: Any, store: Any, restarted: set[str] | None = None) -> None:
     from clio_agent.tools.reaper import restart_every_fleet_at  # noqa: PLC0415
 
     agent = getattr(getattr(app, "state", None), "agent", None)
@@ -214,6 +234,8 @@ def _restart_stale_fleets(app: Any, store: Any) -> None:
     if reaper is None:
         return
     for key in stale_fleets(app, store.installed_records()):
+        if restarted is not None and key in restarted:
+            continue
         try:
             outcome = restart_every_fleet_at(agent, reaper, key)
         except Exception:  # noqa: BLE001 - the next store change looks again
@@ -256,7 +278,7 @@ def follow_open_sessions(app: Any, last: Any = None) -> tuple[Any, dict[str, lis
         if updated:
             moved[session_id] = updated
     if store_changed:
-        _restart_stale_fleets(app, store)
+        _restart_stale_fleets(app, store, restarted)
     return key, moved
 
 

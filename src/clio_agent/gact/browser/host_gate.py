@@ -142,6 +142,19 @@ def grant(app: Any, session_id: str, host: str, *, grantor: str) -> None:
     trace.event("BROWSER", "host granted host=%s session=%s by=%s", host, session_id, grantor)
 
 
+def _page_shown(record: "PageRecord", url: str) -> str:
+    """The card's "Page" fact: the page the request comes from, by its title or address.
+
+    The record's ``label`` names the tab (by default the conversation's title), not the page.
+    A blank tab, or one already at ``url``, has nothing to add to the card's address.
+    """
+
+    if title := record.title.strip():
+        return title
+    current = record.url()
+    return current if urlsplit(current).scheme.lower() in _WEB_SCHEMES and current != url else ""
+
+
 def _ask(app: Any, record: "PageRecord", host: str, url: str) -> bool:
     """Ask the person whether this page may load ``host``; runs in the agent call's context."""
     from clio_agent.gact import permission_timeout  # noqa: PLC0415
@@ -167,7 +180,12 @@ def _ask(app: Any, record: "PageRecord", host: str, url: str) -> bool:
         "kind": BROWSER_HOST_REQUEST_KIND,
         "tool_call": {
             "tool_name": BROWSER_HOST_REQUEST_KIND,
-            "input": {"host": host, "url": url, "page": record.id, "label": record.label},
+            "input": {
+                "host": host,
+                "url": url,
+                "page": record.id,
+                "label": _page_shown(record, url),
+            },
         },
         "summary": f"Let the browser load {host}",
         "created_at": datetime.now(timezone.utc).isoformat(),

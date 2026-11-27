@@ -79,18 +79,11 @@ def confine_stdio_server(
         cwd=cwd if cwd is not None else os.getcwd(),
         egress_root=cwd,
     )
-    # B5 #979.7 (the deferred B4 WRITER): this fleet proxy is ONE persistent confined child
-    # per (workspace, namespace). Register its ``net_child_id`` (empty on the floor → no-op)
-    # keyed by ``name`` (the namespace) + ``cwd`` (the workspace root) so the gact
-    # tool-observer can join ``call_id -> serving child`` for the egress ingest mint (#978
-    # pt 5). Runtime-layer registry (sandbox_net) so this seam never imports gact.
+    # The server's ``net_child_id`` (empty on the floor) is its own: ``transport_for``
+    # stamps it on the transport and the gateway on its namespace proxy (fleet_serving).
     net_child = str(confined.result.details.get("net_child_id") or "")
     if loopback_token:
         from clio_agent.runtime.fence_loopback import publisher  # noqa: PLC0415
 
         publisher().label(loopback_token, net_child)
-    if net_child:
-        from clio_agent.runtime.sandbox_net import register_namespace_child  # noqa: PLC0415
-
-        register_namespace_child(cwd, name, net_child)
     return confined, env

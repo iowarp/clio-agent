@@ -74,10 +74,11 @@ def resolve_workspace_executor(agent: Any) -> Any:
     server_set = get_active_tool_server_set().strip()
     # CV-D3: a conversation with its own connector values has its own fleet at this root,
     # and so does a set whose plugin keeps a person's server name (fleet_own_set). A
-    # workspace without a root folder files those under a rootless key (fleet_key).
+    # workspace without a root folder files every server set's fleet under a rootless key
+    # (fleet_key); only a session without plugin servers runs on the default executor.
     variant = fleet_variant(server_set, root)
     if not root and not variant:
-        return _rootless_executor(agent, server_set)
+        return agent.tool_executor
     key = fleet_key(root, variant)
     lock, executors, leases = agent._workspace_state()
     with _build_lock(agent, lock, key):
@@ -106,39 +107,6 @@ def resolve_workspace_executor(agent: Any) -> Any:
                 raise RuntimeError("CLIO is shutting down")
             trace.event("TOOLS", "workspace_fleet_resolve_raced root=%s key=%s", root, key)
     raise RuntimeError("CLIO's tools for this workspace kept restarting; retry the request")
-
-
-def _rootless_executor(agent: Any, server_set: str) -> Any:
-    """The default executor, carrying a rootless session's plugin server set.
-
-    A workspace without a root folder has no plain fleet of its own, so its stdio
-    servers run in the process cwd on the default executor. That executor already
-    declares the user-scope ``mcp.yaml`` servers (``fleet_server_merge.stamp_default_fleet``);
-    the session's plugin servers merge into it here, spawn-free, the same way a
-    second server set joins a workspace fleet. A set with connector values of its
-    own, or one keeping a person's server name, never reaches here: it has a rootless
-    variant fleet in the registry. The gateway refresh lock keeps the merge off an
-    executor that a configuration change is replacing.
-    """
-
-    from clio_agent.tools.fleet_server_merge import (  # noqa: PLC0415
-        _mounted_server_sets,
-        merge_server_set_namespaces,
-    )
-
-    refresh_lock = getattr(agent, "_tool_gateway_refresh_lock", None)
-    if not server_set or refresh_lock is None:
-        return agent.tool_executor
-    with refresh_lock:
-        executor = agent.tool_executor
-        if executor is not None and server_set not in _mounted_server_sets(executor):
-            merge_server_set_namespaces(
-                executor,
-                agent._build_tool_gateway(server_set=server_set),
-                server_set=server_set,
-                root="<no root folder>",
-            )
-        return executor
 
 
 def _resolve_locked(

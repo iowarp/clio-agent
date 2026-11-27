@@ -421,7 +421,7 @@ def test_a_fenced_servers_port_is_dialed_inside_its_namespace(
     """The declared port is the fence's: nothing on the host's loopback serves it."""
 
     from clio_agent.gact import mcp_app_service_dial as dial  # noqa: PLC0415
-    from clio_agent.runtime import sandbox_net  # noqa: PLC0415
+    from clio_agent.gact import session_fleet  # noqa: PLC0415
     from clio_agent.runtime.fence_service import FencedNamespace  # noqa: PLC0415
 
     declared = _free_port()  # the host's loopback has nothing here
@@ -441,31 +441,31 @@ def test_a_fenced_servers_port_is_dialed_inside_its_namespace(
     monkeypatch.setattr(dial, "find_fenced_namespace", find)
     monkeypatch.setattr(dial, "connect_in_namespace", connect)
     app, client = _client(tmp_path)
-    try:
-        with client:
-            sid = client.post("/v1/sessions", json={"title": "svc"}).json()["id"]
-            session = app.state.sessions.get(sid)
-            root = app.state.workspaces.get(session.workspace_id).root_path
-            sandbox_net.register_namespace_child(root, "svc", "child-svc")
-            record = _open(app, sid, declared)
-            prefix = f"/v1/sessions/{sid}/mcp-apps/{record.app_instance_id}"
-            body = client.get(prefix, params={"data_ref": record.data_ref}).json()
-            assert body["service_refusal"] is None
-            assert body["service_url"].endswith(f"{prefix}/service/{record.data_ref}/")
-            base = f"{prefix}/service/{record.data_ref}"
-            answer = client.get(f"{base}/state?x=1", headers={"origin": "null"})
-            assert answer.status_code == 200
-            assert answer.json() == {"path": "/state", "query": "x=1"}
-            posted = client.post(f"{base}/bump", headers={"origin": "null"}, content=b"two")
-            assert posted.json() == {"bumped": "two"}
-            with client.websocket_connect(f"{base}/ws") as socket_:
-                socket_.send_text("scene")
-                assert socket_.receive_text() == "echo:scene"
-            assert upstream.socket_messages == ["scene"]
-            assert set(searched) == {(declared, "child-svc")}
-            assert dialed and set(dialed) == {(namespace, declared)}
-    finally:
-        sandbox_net.clear_namespace_children()
+    with client:
+        sid = client.post("/v1/sessions", json={"title": "svc"}).json()["id"]
+        # The channel of the server this conversation's fleet routes ``svc`` to.
+        monkeypatch.setattr(
+            session_fleet,
+            "session_net_child",
+            lambda _app, s, ns: "child-svc" if (s, ns) == (sid, "svc") else "",
+        )
+        record = _open(app, sid, declared)
+        prefix = f"/v1/sessions/{sid}/mcp-apps/{record.app_instance_id}"
+        body = client.get(prefix, params={"data_ref": record.data_ref}).json()
+        assert body["service_refusal"] is None
+        assert body["service_url"].endswith(f"{prefix}/service/{record.data_ref}/")
+        base = f"{prefix}/service/{record.data_ref}"
+        answer = client.get(f"{base}/state?x=1", headers={"origin": "null"})
+        assert answer.status_code == 200
+        assert answer.json() == {"path": "/state", "query": "x=1"}
+        posted = client.post(f"{base}/bump", headers={"origin": "null"}, content=b"two")
+        assert posted.json() == {"bumped": "two"}
+        with client.websocket_connect(f"{base}/ws") as socket_:
+            socket_.send_text("scene")
+            assert socket_.receive_text() == "echo:scene"
+        assert upstream.socket_messages == ["scene"]
+        assert set(searched) == {(declared, "child-svc")}
+        assert dialed and set(dialed) == {(namespace, declared)}
 
 
 def test_a_fenced_service_that_does_not_answer_is_typed(

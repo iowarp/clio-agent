@@ -20,18 +20,16 @@ from fastapi.testclient import TestClient
 from clio_agent.gact.app import build_app
 from clio_agent.gact.runtime import globals as gact_globals
 from clio_agent.gact.runtime import grants
-from clio_agent.runtime import sandbox_net, sandbox_roots
+from clio_agent.runtime import sandbox_roots
 
 
 @pytest.fixture(autouse=True)
 def _clean_registries():
     sandbox_roots.clear_write_root_grants()
-    sandbox_net.clear_namespace_children()
     grants._PENDING_EGRESS.clear()
     grants.clear_egress_denials()
     yield
     sandbox_roots.clear_write_root_grants()
-    sandbox_net.clear_namespace_children()
     grants._PENDING_EGRESS.clear()
     grants.clear_egress_denials()
 
@@ -1244,8 +1242,20 @@ def test_fleet_serving_child_wired_join_mints_and_sibling_abstains(tmp_path) -> 
     ws = app.state.workspaces.create(name="p", root_path=str(root))
     sess = app.state.sessions.create(workspace_id=ws.id)
 
-    # Spawn-time registration (what mcp_config.transport_for does under an active fence).
-    sandbox_net.register_namespace_child(str(root), "geo", "child_geo")
+    # Spawn-time stamping (what transport_for + the gateway do under an active fence): the
+    # workspace's resident fleet routes ``geo`` to a server carrying its own channel.
+    from types import SimpleNamespace
+
+    from clio_agent.tools.fleet_serving import stamp_net_child
+    from clio_agent.tools.workspace_root import canonical_workspace_root
+
+    proxy = SimpleNamespace()
+    stamp_net_child(proxy, "child_geo")
+    fleet = SimpleNamespace(_namespace_servers={"geo": proxy})
+    app.state.agent = SimpleNamespace(
+        tool_executor=None,
+        _workspace_state=lambda: (None, {canonical_workspace_root(str(root)): fleet}, {}),
+    )
 
     # Observer started-phase: a call to the ``geo`` namespace joins call_id → child_geo.
     join_call_to_serving_child(app, sess.id, "geo_fetch", "call_1")

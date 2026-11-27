@@ -12,6 +12,11 @@ The test is the precedence rule itself: the set's declarations are merged with t
 person's ``mcp.yaml`` files exactly as the set's gateway will merge them, and a name
 left out (``mcp_server_name_taken_by_plugin``) means the set shadows one. The answer is
 cached until one of those files, or the workspace trust store, changes.
+
+A workspace without a root folder has no plain fleet to share: its sessions without
+plugin servers run on the default executor, and every server set gets a fleet of its
+own, filed, leased, reaped and restarted like any other (a plugin update gives the set a
+new token, so the next turn starts the new copy and the old fleet drains).
 """
 
 from __future__ import annotations
@@ -31,14 +36,14 @@ def fleet_variant(server_set: str, root: str) -> str:
     """The fleet variant of ``server_set`` at workspace ``root`` (see the module doc).
 
     The connector-values variant of the set, plus the set's own mark when it shadows a
-    person's server there. "" is the workspace's plain fleet. ``root`` "" is a workspace
-    without a root folder, whose servers declare as the default executor's do.
+    person's server there, or always without a root folder (``root`` ""). "" is the
+    workspace's plain fleet, or the default executor for a set-less rootless session.
     """
 
     from clio_agent.plugins.servers import VARIANT_MARK, server_set_variant  # noqa: PLC0415
 
     variant = server_set_variant(server_set)
-    if not server_set or not shadows_person_server(server_set, root):
+    if not server_set or (root and not shadows_person_server(server_set, root)):
         return variant
     return f"{variant}{OWN_FLEET_MARK}{server_set.partition(VARIANT_MARK)[0]}"
 

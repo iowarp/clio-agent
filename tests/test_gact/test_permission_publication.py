@@ -22,9 +22,9 @@ from tests.test_gact.task_records import active_turn_fixture, record_assignment_
 class _ImmediateAnswer(dict[str, Any]):
     """Resolve the real row at the earliest instant another reader can find it."""
 
-    def __init__(self, app: Any, action: str) -> None:
+    def __init__(self, app: Any, action: str, comment: str = "") -> None:
         super().__init__()
-        self.app, self.action = app, action
+        self.app, self.action, self.comment = app, action, comment
         self.registered: list[bool] = []
         self.published = threading.Event()
 
@@ -32,8 +32,28 @@ class _ImmediateAnswer(dict[str, Any]):
         super().__setitem__(key, value)
         if value.get("status") == "pending":
             self.registered.append(key in self.app.state.permission_events)
-            resolve_permission(self.app, key, self.action, grantor=GRANTOR_USER)
+            resolve_permission(
+                self.app, key, self.action, grantor=GRANTOR_USER, comment=self.comment
+            )
             self.published.set()
+
+
+def test_folder_decline_carries_the_persons_comment_to_the_agent(tmp_path: Path) -> None:
+    """A person's words on a folder-access Deny reach the agent with the refusal."""
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "Folder comment"}).json()["id"]
+        record_assignment_fixture(app, sid)
+        app.state.permissions = _ImmediateAnswer(app, "deny", "not now, use the copy")
+        folder = tmp_path / "additional"
+        folder.mkdir()
+        with active_turn_fixture(app, sid), _tool_session_context(sid):
+            session = app.state.sessions.get(sid)
+            decision = request_folder_access(
+                app, sid, session, "fs_read_file", {"path": str(folder / "x")}, [str(folder)]
+            )
+        assert decision == "deny"
+        assert getattr(decision, "deny_message", "").endswith("They said: not now, use the copy")
 
 
 @pytest.mark.parametrize(

@@ -56,7 +56,7 @@ class ProbeExplodingExecutor:
 def _reaper(registry, *, leases=None, closer=None, ttl=10_000.0, cap=100):
     closed_roots: list[str] = []
 
-    def _default_closer(root: str) -> int:
+    def _default_closer(root: str, _executor: object) -> int:
         closed_roots.append(root)
         return 1
 
@@ -181,7 +181,7 @@ def test_idle_reap_closes_net_channels() -> None:
 
 
 def test_channel_closer_error_never_aborts_teardown() -> None:
-    def _boom(root: str) -> int:
+    def _boom(root: str, _executor: object) -> int:
         raise RuntimeError("channel close blew up")
 
     stale = FakeExecutor(idle_s=500)
@@ -230,7 +230,7 @@ def test_agent_request_fleet_restart_evicts_then_rebuilds(monkeypatch) -> None:
     agent = _bare_agent()
     lock, executors, leases = agent._workspace_state()
     agent._workspace_reaper = WorkspaceExecutorReaper(
-        executors, lock, leases=leases, tick_s=3600, channel_closer=lambda root: 0
+        executors, lock, leases=leases, tick_s=3600, channel_closer=lambda _key, _executor: 0
     )
 
     built: list[str] = []
