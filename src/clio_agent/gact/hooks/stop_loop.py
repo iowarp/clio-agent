@@ -337,6 +337,35 @@ def run_stop_hooks(
     return result
 
 
+def dispatch_stop_for_turn(state: Any, assistant_msg: Any, outputs: Any) -> StopLoopResult | None:
+    """:func:`dispatch_stop_at_finalize` for a finalizing turn's state.
+
+    ``turn_finalize`` publishes ``message.completed`` after this decision, marked
+    ``stop_hook_redrive`` when the gate queued one more turn, so a client waiting
+    for the run's end (``clio-agent -q``) follows that turn instead of returning.
+    """
+    from clio_agent.gact.conversation_assignments import ConversationOutcome  # noqa: PLC0415
+
+    error = state.error_info
+    return dispatch_stop_at_finalize(
+        state.app,
+        session_id=state.sid,
+        turn_id=state.turn_id,
+        trace_id=state.trace_id,
+        cwd=str(getattr(state.sess, "workspace_root", "") or ""),
+        assistant_msg_id=assistant_msg.id,
+        assistant_payload=assistant_msg.model_dump(exclude_none=True),
+        agent_ref=str(state.dynamic_agent_used.metadata.get("agent_ref") or "")
+        if state.dynamic_agent_used is not None
+        else "",
+        completion=ConversationOutcome(
+            outputs=outputs,
+            context=getattr(state.pred, "clio_context_boundary", None),
+            error=error.model_dump(mode="json") if error is not None else None,
+        ),
+    )
+
+
 def dispatch_stop_at_finalize(
     app: "FastAPI",
     *,

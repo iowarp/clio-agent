@@ -111,6 +111,12 @@ system.release_manifest_url: "https://github.com/iowarp/clio-agent/releases/late
 # LM sampling/provider selection and the per-provider transport knobs
 # (Claude Code, Codex).
 
+# CLIO_LM_ACCEPTS_IMAGES  (bool)  <- src/clio_agent/lm/factory.py
+# Set false for a text-only model (ALCF's beam answers HTTP 400 'not a
+# multimodal model'): each image in a request becomes a one-line note
+# instead.
+lm.accepts_images: true
+
 # CLIO_LM_API_BASE  (str)  <- src/clio_agent/config.py
 # Overrides the LM provider's default API base URL; set to point at a non-
 # default endpoint for a provider (custom LM Studio/OpenAI host).
@@ -155,6 +161,12 @@ lm.guided_output: false
 # Requests flash attention on LM Studio model loads, cutting KV-cache memory
 # use; disable only if it itself causes a load failure.
 lm.lmstudio_flash_attention: true
+
+# CLIO_LM_MAX_REQUEST_IMAGES  (int)  <- src/clio_agent/lm/factory.py
+# Caps the images sent in one request to the newest N (older ones become a
+# one-line note), for a server that limits images per prompt (vLLM --limit-
+# mm-per-prompt; ALCF's nemotron takes 1); 0 sends them all.
+lm.max_request_images: 0
 
 # CLIO_LM_MAX_TOKENS  (int)  <- src/clio_agent/config.py
 # Overrides the per-reply output token cap (on claude_code, the CLI's

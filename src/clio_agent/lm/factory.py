@@ -160,9 +160,30 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     lm._clio_cache_history = _resolved_litellm_prefix(config) == "anthropic"
     # These stateless chat requests propose local function calls; the loop
     # executes them only after receiving a complete response. SDK/native-tool
-    # engines retain their own recovery policy.
-    lm._clio_stream_recovery = _resolved_litellm_prefix(config) == "openai"
+    # engines retain their own recovery policy. vLLM-served presets (local vLLM,
+    # the Argonne gateways) speak the same stateless chat-completions protocol.
+    lm._clio_stream_recovery = _resolved_litellm_prefix(config) in _STATELESS_CHAT_PREFIXES
+    lm._clio_max_request_images = _max_request_images()
     return _record_identity(lm, config)
+
+
+def _max_request_images() -> int | None:
+    """Images one request may carry: ``None`` = no known cap, 0 = the model takes none."""
+    from clio_agent import conf  # noqa: PLC0415 - read when the LM is built
+
+    if not conf.resolve(
+        "lm.accepts_images", env="CLIO_LM_ACCEPTS_IMAGES", default=True, cast=conf.as_bool
+    ):
+        return 0
+    cap = conf.resolve(
+        "lm.max_request_images", env="CLIO_LM_MAX_REQUEST_IMAGES", default=0, cast=conf.as_int
+    )
+    return cap if cap > 0 else None
+
+
+#: LiteLLM prefixes whose engine is a stateless OpenAI-compatible chat-completions
+#: request: a generation interrupted before any answer can be requested again.
+_STATELESS_CHAT_PREFIXES = frozenset({"openai", "hosted_vllm"})
 
 
 def _record_identity(lm: Any, config: LMProviderConfig) -> Any:

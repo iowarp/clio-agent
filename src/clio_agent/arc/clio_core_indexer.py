@@ -26,6 +26,7 @@ the typed reason every search caller and ``clio doctor`` report.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 from typing import Any
@@ -192,6 +193,30 @@ def bind_client_to_indexer(config_path: str, environ: MutableMapping[str, str]) 
     return ""
 
 
+def release_agent_binding(environ: MutableMapping[str, str]) -> None:
+    """Drop the binding CLIO set for itself from a process it starts for the model.
+
+    The server binds its own client in ``os.environ`` (:func:`bind_client_to_indexer`),
+    so a model's shell or kernel inherits ``CLIO_CTE_POOL``. Any clio-core program the
+    model runs there (a reader, ``clio-cae``, the Python bindings) that attaches to
+    another runtime with its own ``CLIO_SERVER_CONF`` would route to CLIO's indexer
+    pool, which that runtime does not compose, and hang on the first call: clio-core
+    has no "pool not found" fast fail. Without the variables such a program uses its
+    config's default pool, and a clio-agent child still binds itself on attach. An
+    operator's explicit ``CLIO_CTE_POOL`` (no CLIO marker) is kept.
+    """
+    if environ.get(BOUND_BY_ENV) == _BOUND_BY:
+        environ.pop(POOL_ENV, None)
+        environ.pop(BOUND_BY_ENV, None)
+
+
+def environ_for_model() -> dict[str, str]:
+    """``os.environ`` for a process CLIO starts for the model, without CLIO's own binding."""
+    environ = dict(os.environ)
+    release_agent_binding(environ)
+    return environ
+
+
 __all__ = [
     "BOUND_BY_ENV",
     "CLIO_CORE_SEARCH_UNAVAILABLE",
@@ -203,8 +228,10 @@ __all__ = [
     "SEARCH_REMEDY",
     "UPSTREAM_INDEXER_ISSUE",
     "bind_client_to_indexer",
+    "environ_for_model",
     "ensure_seeded_config_indexed",
     "indexer_block",
     "indexer_chimod_present",
     "indexer_pool",
+    "release_agent_binding",
 ]

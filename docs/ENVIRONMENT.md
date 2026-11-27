@@ -205,6 +205,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_LIVE_EDGE_STREAMING` | `gact.live_edge_streaming` | bool | `false` | `src/clio_agent/gact/live_edge.py` |
 | `CLIO_LM15_SSE_LIMIT` | `lm15.sse_limit` | int | `1048576` | `src/clio_agent/providers/codex/sse_wire.py` |
 | `CLIO_LMSTUDIO_FLASH_ATTENTION` | `lm.lmstudio_flash_attention` | bool | `true` | `src/clio_agent/gact/routes/providers.py` |
+| `CLIO_LM_ACCEPTS_IMAGES` | `lm.accepts_images` | bool | `true` | `src/clio_agent/lm/factory.py` |
 | `CLIO_LM_API_BASE` | `lm.api_base` | str | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_CONTEXT_SIZING_STRATEGY` | `lm.context_sizing_strategy` | str | `fit_to_gpu` | `src/clio_agent/context_sizing/strategies.py` |
 | `CLIO_LM_CONTEXT_WINDOW` | `lm.context_window` | int | `0` | `src/clio_agent/config.py` |
@@ -212,6 +213,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_LM_GUIDED_OUTPUT` | `lm.guided_output` | bool | `false` | `src/clio_agent/lm/adapters.py` |
 | `CLIO_LM_INTER_TOKEN_IDLE_S` | `limits.lm_inter_token_idle_s` | float | `120.0` | `src/clio_agent/runtime/lm_activity.py` |
 | `CLIO_LM_MAX_CONCURRENT_REQUESTS` | `limits.lm_max_concurrent_requests` | int | `8` | `src/clio_agent/lm/admission.py` |
+| `CLIO_LM_MAX_REQUEST_IMAGES` | `lm.max_request_images` | int | `0` | `src/clio_agent/lm/factory.py` |
 | `CLIO_LM_MAX_TOKENS` | `lm.max_tokens` | int | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_MIN_P` | `lm.min_p` | float | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_MODEL` | `lm.model` | str | _(unset)_ | `src/clio_agent/config.py` |

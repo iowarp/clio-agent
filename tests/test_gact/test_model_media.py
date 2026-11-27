@@ -20,7 +20,8 @@ import dspy
 import pytest
 from dspy.lm15 import ImagePart, Message, Request, TextPart, ToolCallPart, ToolResultPart
 
-from clio_agent.gact.agents.clio_react import ClioReAct, _place_tool_media
+from clio_agent.gact.agents.clio_react import ClioReAct
+from clio_agent.gact.agents.clio_react_media import _place_tool_media
 from clio_agent.gact.agents.clio_react_record import result_part
 from clio_agent.gact.agents.native_presenters_workspace_file import (
     SEEN_BY_MODEL,

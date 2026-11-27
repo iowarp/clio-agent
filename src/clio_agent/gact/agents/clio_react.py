@@ -74,7 +74,7 @@ from clio_agent.gact.agents import clio_react_stream as stream
 from clio_agent.gact.agents.clio_react_inputs import MEDIA_INPUTS as _MEDIA_INPUTS
 from clio_agent.gact.agents.clio_react_inputs import SYSTEM_INPUT as _SYSTEM_INPUT
 from clio_agent.gact.agents.clio_react_inputs import bind_task_inputs
-from clio_agent.gact.agents.clio_react_media import _media_part, _place_tool_media
+from clio_agent.gact.agents.clio_react_media import _media_part, request_messages
 from clio_agent.gact.agents.clio_react_recovery import recover_stream
 from clio_agent.gact.agents.clio_react_stream_call import call_lm as _call_lm
 from clio_agent.gact.agents.clio_react_submit import active_react_scope_safe, record_submit_audit
@@ -587,7 +587,7 @@ class _Loop:
         return Request(
             model=self.lm.model,
             system=self.system or None,  # a bare agent sends no system message
-            messages=tuple(_place_tool_media(self._context(), self.tool_media)),
+            messages=tuple(request_messages(self._context(), self.lm, self.tool_media)),
             tools=self.tools,
             config=self.config,
         )
