@@ -104,11 +104,13 @@ def _same_connection(a: Any, b: Any) -> bool:
     return all(getattr(a, name, None) == getattr(b, name, None) for name in fields)
 
 
-def live_owners(agent: Any, namespace: str, declaration: Mapping[str, Any]) -> list[Any]:
-    """The namespace proxies of resident fleets that run exactly ``declaration``'s
-    connection: their kept-alive server is the one a new server of it would duplicate."""
+def live_owners(
+    agent: Any, namespace: str, declaration: Mapping[str, Any]
+) -> list[tuple[Any, Any]]:
+    """``(executor, proxy)`` of each resident fleet that runs exactly ``declaration``'s
+    connection: its server is the one a new server of it would duplicate."""
 
-    owners: list[Any] = []
+    owners: list[tuple[Any, Any]] = []
     for _root, executor in _executors(agent):
         specs = getattr(executor, "_clio_namespace_specs", None)
         inner = getattr(executor, "_async_executor", None)
@@ -121,7 +123,7 @@ def live_owners(agent: Any, namespace: str, declaration: Mapping[str, Any]) -> l
         if proxy is not None and _same_connection(
             rebound_spec(specs[namespace], declaration, namespace), specs[namespace]
         ):
-            owners.append(proxy)
+            owners.append((executor, proxy))
     return owners
 
 

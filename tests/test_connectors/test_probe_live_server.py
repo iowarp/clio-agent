@@ -153,3 +153,51 @@ def test_a_fleet_being_built_does_not_block_the_loop(started: list[Any]) -> None
         return result
 
     assert asyncio.run(main())["tool_count"] == 2
+
+
+def test_a_plain_server_on_its_proxy_route_answers_over_its_fleet(started: list[Any]) -> None:
+    """Take openEMS: a server without tasks has no kept-alive task connection (its calls
+    reach the proxy's backend), so the check started a second server beside it.
+
+    SABOTAGE: drop the ``_fleet_tools`` read in ``_live_tools`` -> a server starts.
+    """
+    backend = SimpleNamespace(_connect_task=SimpleNamespace(done=lambda: False))
+    proxy = SimpleNamespace(_clio_backend_transport=backend)
+    app = _app(_running_spec(), None, proxy)
+    listed: list[str] = []
+
+    def list_namespace_tools(namespace: str) -> list[_Tool]:
+        listed.append(namespace)
+        return [_Tool(name="first"), _Tool(name="second"), _Tool(name="third")]
+
+    app.state.agent.tool_executor.list_namespace_tools = list_namespace_tools
+    result = asyncio.run(service.probe(app, service.entry(NAME), state.choice(NAME), force=True))
+    assert started == []
+    assert listed == [NAME]
+    assert result["tool_count"] == 3
+
+
+def test_concurrent_checks_share_one_server_start(
+    fixture_catalog: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SABOTAGE: start a check per caller in ``probe`` -> two servers start."""
+    from clio_agent.gact.routes import mcp_configuration
+
+    starts: list[Any] = []
+
+    async def probe_server(declared: Any, *, details: bool = False) -> tuple[list, None]:
+        starts.append(declared)
+        await asyncio.sleep(0.05)
+        return [{"name": "only"}], None
+
+    monkeypatch.setattr(mcp_configuration, "_probe_user_mcp_server", probe_server)
+    app = _app(_running_spec(), None, object())
+    found, choice = service.entry(NAME), state.choice(NAME)
+
+    async def main() -> list[dict[str, Any]]:
+        return list(await asyncio.gather(*(service.probe(app, found, choice) for _ in range(2))))
+
+    results = asyncio.run(main())
+    assert len(starts) == 1
+    assert [r["tool_count"] for r in results] == [1, 1]
+    assert app.state.connector_probe_flights == {}

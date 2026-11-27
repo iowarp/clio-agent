@@ -149,6 +149,13 @@ def _probes(app: Any) -> dict[str, dict[str, Any]]:
     return probes
 
 
+def _flights(app: Any) -> dict[tuple[str, str], asyncio.Future[dict[str, Any]]]:
+    flights = getattr(app.state, "connector_probe_flights", None)
+    if flights is None:
+        flights = app.state.connector_probe_flights = {}
+    return flights
+
+
 def _probe_key(found: Entry, choice: state.Choice) -> str:
     declared = materialize.resolved(found, choice.values)
     stored = secrets.values(found.id)
@@ -180,13 +187,33 @@ def unreachable_reason(found: Entry, declared: Mapping[str, Any], detail: str) -
     return f"{found.name} could not be started or reached: {detail[:300]}"
 
 
+def _fleet_tools(owners: list[tuple[Any, Any]], namespace: str) -> list[Any] | None:
+    """``namespace``'s tools read over a fleet's own connection to the server it runs
+    now (``None`` when no fleet runs one). A server without tasks has no kept-alive task
+    connection: its calls reach the proxy's backend (``mcp_plain_server_on_proxy``), and
+    this read reaches that same process."""
+
+    from clio_agent.tools import namespace_instances  # noqa: PLC0415
+
+    for executor, proxy in owners:
+        inner = getattr(executor, "_async_executor", None)
+        prepared = getattr(inner, "is_namespace_prepared", None)
+        running = namespace_instances.backend_live(proxy) or (
+            callable(prepared) and prepared(namespace)
+        )
+        if running and callable(getattr(executor, "list_namespace_tools", None)):
+            return list(executor.list_namespace_tools(namespace))
+    return None
+
+
 async def _live_tools(
     app: Any, found: Entry, declared: Mapping[str, Any]
 ) -> list[dict[str, Any]] | None:
     """The tools of the server the conversations run for ``found``'s ``declared``
     connection now, read over that same process (``None`` when none runs), so a check
-    never starts a second server beside it. Joining a start in flight has no limit of
-    its own (its connect reports stalls); the listing itself has ``PROBE_SECONDS``."""
+    never starts a second server beside it: the kept-alive task connection, else the
+    fleet's own route to it. Joining a start in flight has no limit of its own (its
+    connect reports stalls); the listing itself has ``PROBE_SECONDS``."""
 
     from clio_agent.gact.connector_rebind import live_owners  # noqa: PLC0415
 
@@ -202,7 +229,7 @@ async def _live_tools(
         return None
 
     async def read() -> list[Any] | None:
-        client = await external.live_client(found.id, owners)
+        client = await external.live_client(found.id, [proxy for _fleet, proxy in owners])
         if client is None:
             return None
         return list(await asyncio.wait_for(client.list_tools(), PROBE_SECONDS))
@@ -212,6 +239,10 @@ async def _live_tools(
         tools = await read()
     else:
         tools = await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(read(), loop))
+    if tools is None:
+        tools = await asyncio.wait_for(
+            asyncio.to_thread(_fleet_tools, owners, found.id), PROBE_SECONDS
+        )
     if tools is None:
         return None
     trace.event("TOOLS", "connector_probe_live_server connector=%s", found.id)
@@ -224,18 +255,30 @@ async def probe(app: Any, found: Entry, choice: state.Choice, *, force: bool = F
     When a conversation's server of this exact connection runs (or is starting), it
     answers: the namespace never has a second server alive beside it (one with a node
     slot or a scene would lose it). Only otherwise is a server started to check it.
+    Concurrent checks of one configuration share one check, so they start at most one.
     """
 
+    key = _probe_key(found, choice)
+    cached = _probes(app).get(found.id)
+    if cached and cached["key"] == key and not force:
+        return cached
+    flights = _flights(app)
+    flight = flights.get((found.id, key))
+    if flight is None:
+        flight = flights[(found.id, key)] = asyncio.ensure_future(_check(app, found, choice, key))
+        flight.add_done_callback(lambda _done: flights.pop((found.id, key), None))
+    else:
+        trace.event("TOOLS", "connector_probe_joined connector=%s", found.id)
+    return await asyncio.shield(flight)
+
+
+async def _check(app: Any, found: Entry, choice: state.Choice, key: str) -> dict:
     from mcp.shared.exceptions import MCPError  # noqa: PLC0415
 
     from clio_agent.gact.routes.mcp_configuration import (  # noqa: PLC0415
         _probe_user_mcp_server,
     )
 
-    key = _probe_key(found, choice)
-    cached = _probes(app).get(found.id)
-    if cached and cached["key"] == key and not force:
-        return cached
     declared = materialize.resolved(found, choice.values)
     live, error = None, None
     for attempt in range(2):
