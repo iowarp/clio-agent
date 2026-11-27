@@ -23,7 +23,10 @@ the reviewer rather than a person covers nothing under ``ask``.
 A kernel binding the script uses (``browser.open(url)``) is part of the script's code: the
 tools the binding's own source names are named by a script that references the binding,
 so the person who approved ``await browser.open(url)`` approved the ``browser_open`` call
-it makes. "Allow once" on a nested question covers the same subject (the same tool with
+it makes. A script uses a binding too when it calls through an object the binding made
+in an earlier script (``await page.goto(url)``): the kernel names the binding whose code
+made each call (:func:`uses_binding`). "Allow once" on a nested question covers the same
+subject (the same tool with
 the same arguments, the same browser host) for the rest of that script, never another
 subject; a rule set to "Ask every time" still asks every time.
 
@@ -65,6 +68,7 @@ __all__ = [
     "question",
     "reset_grant",
     "row_fields",
+    "uses_binding",
 ]
 
 #: The answer that covers the rest of one script's calls.
@@ -156,19 +160,38 @@ def binding_tools(
     known = frozenset(tool_names)
     found: set[str] = set()
     for name, binding in bindings.items():
-        if not re.search(rf"\b{re.escape(str(name))}\b", code):
-            continue
-        try:
-            tree = ast.parse(str(binding.get("source") or ""))
-        except SyntaxError:
-            continue  # the kernel refuses it too; it names nothing
-        found.update(
-            node.value
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Constant) and isinstance(node.value, str)
-            if node.value in known
-        )
+        if re.search(rf"\b{re.escape(str(name))}\b", code):
+            found.update(_named_in(binding, known))
     return frozenset(found)
+
+
+def _named_in(binding: Mapping[str, Any], known: frozenset[str]) -> set[str]:
+    """The tools of ``known`` a binding's source holds as string constants."""
+    try:
+        tree = ast.parse(str(binding.get("source") or ""))
+    except SyntaxError:
+        return set()  # the kernel refuses it too; it names nothing
+    return {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        if node.value in known
+    }
+
+
+def uses_binding(
+    grant: ScriptGrant | None,
+    name: str,
+    bindings: Mapping[str, Mapping[str, Any]],
+    tool_names: Iterable[str],
+) -> None:
+    """The script called through binding ``name`` (the kernel names the binding whose code
+    made a call): it uses that binding as surely as one its text names, such as through
+    ``page.goto(url)`` on a page an earlier script opened."""
+    binding = bindings.get(name)
+    if grant is None or binding is None:
+        return
+    grant.bound_tools = grant.bound_tools | _named_in(binding, frozenset(tool_names))
 
 
 def subject_key(kind: str, subject: Any) -> str:

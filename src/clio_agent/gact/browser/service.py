@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextlib
 import contextvars
 import itertools
 import os
@@ -514,6 +515,9 @@ class BrowserService:
                 if inflight.navigated:
                     await record.page.wait_for_load_state("load")
                 await self._settle_downloads(record)
+                # The page as it is now: the load event's retitle lands after the result.
+                with contextlib.suppress(*page_errors()):  # an action that closed the page
+                    record.title = await record.page.title()
                 return result
             except BrowserError:
                 raise

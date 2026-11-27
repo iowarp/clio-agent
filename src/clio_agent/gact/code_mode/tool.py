@@ -278,6 +278,7 @@ def execute_script(
     from clio_agent.gact.agents.tool_settings import call_refusal  # noqa: PLC0415
     from clio_agent.gact.code_mode import kernels  # noqa: PLC0415
     from clio_agent.gact.code_mode.dispatch import Dispatcher  # noqa: PLC0415
+    from clio_agent.gact.code_mode.grants import grant_in, uses_binding  # noqa: PLC0415
     from clio_agent.gact.code_mode.stubs import stub_table  # noqa: PLC0415
 
     agent, code = prepared.agent, prepared.code
@@ -300,6 +301,7 @@ def execute_script(
     finished = False
     started = time.monotonic()
     poll = poll_s()
+    all_bindings = {**dict(getattr(agent, "_clio_kernel_bindings", None) or {}), **(bindings or {})}
     try:
         with kernel.lock:
             kernel.bind(
@@ -309,7 +311,7 @@ def execute_script(
                     direct_only=prepared.direct_only,
                     code_only=prepared.code_only,
                 ),
-                {**dict(getattr(agent, "_clio_kernel_bindings", None) or {}), **(bindings or {})},
+                all_bindings,
             )
             kernel.send(
                 {"type": "exec", "id": 1, "code": code}
@@ -330,6 +332,8 @@ def execute_script(
                     break
                 if message.get("type") == "call":
                     note_progress(session)  # a working script is not a silent turn
+                    if binding := str(message.get("binding") or ""):
+                        uses_binding(grant_in(prepared.context), binding, all_bindings, agent.tools)
                     dispatcher.submit(message, kernel.send)
                 elif message.get("type") == "done":
                     finished = True

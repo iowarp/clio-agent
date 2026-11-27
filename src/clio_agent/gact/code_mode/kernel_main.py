@@ -11,7 +11,8 @@ newline-delimited JSON over stdin and the original stdout:
   ``{"type": "result", "id": k, "ok": bool, "value": ..., "error": "..."}`` answering a
   call;
 - kernel to host: ``{"type": "ready"}``, ``{"type": "bound", "failed": {name: error}}``,
-  ``{"type": "call", "id": k, "tool": name, "args": {...}}`` and ``{"type": "done", "id":
+  ``{"type": "call", "id": k, "tool": name, "args": {...}, "binding"?: name}`` (``binding``:
+  the plugin binding whose code made the call) and ``{"type": "done", "id":
   n, "ok": bool, "output": "...", "value": "...", "error": "..."}``.
 
 The script's names come from one binding registry: ``tools`` is its first entry, generated
@@ -97,9 +98,10 @@ class _Host:
             self.out.write(line + "\n")
             self.out.flush()
 
-    def call(self, tool: str, args: dict[str, Any]) -> asyncio.Future[Any]:
+    def call(self, tool: str, args: dict[str, Any], binding: str = "") -> asyncio.Future[Any]:
         """Send the call now; the future settles with its answer. A call is made when the
-        script makes it, so one it does not await still happens (and is waited for)."""
+        script makes it, so one it does not await still happens (and is waited for).
+        ``binding`` names the plugin binding whose code made the call."""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:  # a script with no await runs outside the loop; the kernel's
@@ -110,7 +112,8 @@ class _Host:
             call_id = self.next_id
             self.pending[call_id] = (loop, future)
         try:
-            self.send({"type": "call", "id": call_id, "tool": tool, "args": args})
+            message = {"type": "call", "id": call_id, "tool": tool, "args": args}
+            self.send(message | ({"binding": binding} if binding else {}))
         except TypeError:  # an argument JSON cannot hold: the script's error, nothing sent
             with self.lock:
                 self.pending.pop(call_id, None)
@@ -143,11 +146,11 @@ class _Host:
                 del self.pending[call_id]
 
 
-def _function(host: _Host, tool: str, spec: dict[str, Any]) -> Any:
+def _function(host: _Host, tool: str, spec: dict[str, Any], binding: str = "") -> Any:
     """One callable tool: ``await tools.fs.read_file(path=...)``."""
 
     def stub(**kwargs: Any) -> asyncio.Future[Any]:
-        return host.call(tool, kwargs)
+        return host.call(tool, kwargs, binding)
 
     stub.__name__ = stub.__qualname__ = str(spec.get("function") or tool)
     stub.__doc__ = f"{spec.get('signature') or tool}\n\n{spec.get('doc') or ''}".strip()
@@ -167,25 +170,31 @@ class _Namespace:
 
 
 class _Tools(_Namespace):
-    """Every tool this agent may call from a script, grouped by server."""
+    """Every tool this agent may call from a script, grouped by server.
 
-    def __init__(self, host: _Host, stubs: dict[str, Any]) -> None:
+    A plugin binding's module holds its own ``tools`` (``binding`` is its name), so the
+    host knows a call came from that binding's code: from ``page.goto(url)`` on a page an
+    earlier script opened, too, where the script's text never names the binding.
+    """
+
+    def __init__(self, host: _Host, stubs: dict[str, Any], binding: str = "") -> None:
         super().__init__("tools", "Tools callable from this script; help(tools.<group>).")
         self._host = host
+        self._binding = binding
         for group, functions in (stubs.get("groups") or {}).items():
             target: _Namespace = self if group == "" else _Namespace(group)
             for function, spec in functions.items():
-                setattr(target, function, _function(host, str(spec["tool"]), spec))
+                setattr(target, function, _function(host, str(spec["tool"]), spec, binding))
             if group:
                 setattr(self, group, target)
 
     def search(self, query: str, limit: int = 5) -> asyncio.Future[Any]:
         """Find tools by name or keywords (the same catalog as search_tools)."""
-        return self._host.call("__search__", {"query": query, "limit": limit})
+        return self._host.call("__search__", {"query": query, "limit": limit}, self._binding)
 
     def call(self, name: str, /, **args: Any) -> asyncio.Future[Any]:
         """Call a tool by its full name, for names found with tools.search."""
-        return self._host.call(name, args)
+        return self._host.call(name, args, self._binding)
 
 
 class _Bindings:
@@ -195,13 +204,11 @@ class _Bindings:
         self.host = host
         self.namespace = namespace
         self.modules: dict[str, types.ModuleType] = {}
-
-    def _tools(self, stubs: dict[str, Any]) -> Any:
-        return _Tools(self.host, stubs)
+        self.stubs: dict[str, Any] = {}
 
     def _plugin(self, name: str, spec: dict[str, Any]) -> Any:
         module = types.ModuleType(f"clio_binding_{name}")
-        module.__dict__.update(tools=self.namespace.get("tools"), ToolError=ToolError)
+        module.__dict__.update(tools=_Tools(self.host, self.stubs, name), ToolError=ToolError)
         code = compile(str(spec.get("source") or ""), f"<binding {name}>", "exec")
         exec(code, module.__dict__)  # noqa: S102 - a trusted plugin's binding (plugin check)
         if "export" not in module.__dict__:
@@ -212,9 +219,10 @@ class _Bindings:
     def bind(self, message: dict[str, Any]) -> dict[str, str]:
         """Apply one ``bind`` message; the bindings that failed, with their errors."""
         if "stubs" in message:
-            self.namespace["tools"] = self._tools(message.get("stubs") or {})
-            for module in self.modules.values():  # bindings call the current tools
-                module.__dict__["tools"] = self.namespace["tools"]
+            self.stubs = message.get("stubs") or {}
+            self.namespace["tools"] = _Tools(self.host, self.stubs)
+            for name, module in self.modules.items():  # bindings call the current tools
+                module.__dict__["tools"] = _Tools(self.host, self.stubs, name)
         for name in message.get("unbind") or ():
             self.modules.pop(str(name), None)
             self.namespace.pop(str(name), None)
