@@ -5,7 +5,8 @@ The rule. A result is shown whole when its tokens fit
     min(tools.result_share x window, window x autocompact.pct - last prompt tokens)
 
 counted with the active model's tokenizer (``_estimate_text_tokens``: the model's own
-counter where CLIO has it, else about four characters a token).
+counter where CLIO has it, else about four characters a token). A text no larger than the
+room in bytes is not counted: no count CLIO uses gives a text more tokens than bytes.
 
 - The share keeps room to work. A step may read several results and still has to
   think and answer, so no single result may take the whole window. The default 0.125 is
@@ -102,6 +103,12 @@ class ResultRoom:
             return True
         if len(text) > max(self.tokens, 1) * _MAX_CHARS_PER_TOKEN:
             return False
+        # Every count CLIO uses spends at least one UTF-8 byte a token (a byte-level BPE
+        # token, the four-characters estimate), so a text no larger than the room in
+        # bytes fits under any of them. Counting it would load the model's tokenizer:
+        # seconds in a cold process.
+        if len(text) <= self.tokens and len(text.encode("utf-8")) <= self.tokens:
+            return True
         return self.measure(text) <= self.tokens
 
 

@@ -155,7 +155,8 @@ async def _probe_user_mcp_server(
             # The probe starts the server confined; build its environment first (#1991).
             await asyncio.to_thread(mcp_prepare.provision, normalized.name, normalized)
         # FP-D3: a probed server starts in the conversations' folder, not the launch folder.
-        transport = transport_for(normalized, cwd=default_workspace_root())
+        # Off the app loop: a stdio transport composes its fence there.
+        transport = await asyncio.to_thread(transport_for, normalized, cwd=default_workspace_root())
         with probe_server_context(
             "", timeout_retries=_FIRST_START_PROBE_RETRIES if fetching else None
         ):

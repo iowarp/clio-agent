@@ -639,7 +639,10 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         try:
             # MI1: a sibling fleet's server of the same launch serves this one.
             proxy = namespace_instances.adopt(self, namespace, proxy)
-            direct_client, decision = resolve_and_build_direct_client(namespace, direct_factories)
+            # A stdio transport composes its fence: off the loop every call shares.
+            direct_client, decision = await asyncio.to_thread(
+                resolve_and_build_direct_client, namespace, direct_factories
+            )
             record_namespace_route_decision(namespace, decision)
             if direct_client is not None and not await namespace_instances.may_go_direct(
                 self, namespace, proxy
