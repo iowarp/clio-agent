@@ -245,3 +245,19 @@ def test_a_gate_error_block_grants_no_host() -> None:
         host_gate.grant = original  # type: ignore[assignment]
     assert granted == []
     assert record.navigation_blocked is not None
+
+
+def test_the_card_names_the_page_the_request_comes_from_not_the_tab() -> None:
+    """The "Page" fact is the page's title or address, never the tab's conversation label."""
+    from types import SimpleNamespace
+
+    from clio_agent.gact.browser import host_gate
+
+    def page(title: str, at: str) -> Any:
+        return SimpleNamespace(label="Open example.org", title=title, url=lambda: at)
+
+    to = "https://example.org/"
+    assert host_gate._page_shown(page("Docs", "https://a.test/"), to) == "Docs"
+    assert host_gate._page_shown(page("", "https://a.test/x"), to) == "https://a.test/x"
+    assert host_gate._page_shown(page("", "about:blank"), to) == ""
+    assert host_gate._page_shown(page("", to), to) == ""
