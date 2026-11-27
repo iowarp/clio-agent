@@ -291,7 +291,7 @@ def _spawn_capturing(monkeypatch: pytest.MonkeyPatch, state: Path) -> dict[str, 
 
     monkeypatch.setattr(
         "clio_agent.arc.storage.watch_daemon_process",
-        lambda _proc, log_path, state_dir, *, log_offset: None,
+        lambda _proc, log_path, state_dir, *, log_offset, log_drained: None,
     )
     monkeypatch.setattr("clio_agent.arc.storage._proc_create_time", lambda _pid: 1.0)
     monkeypatch.setattr(

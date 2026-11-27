@@ -32,7 +32,7 @@ notarization rejects them, sign the members before the wheels are packed in
 | Executable | Entitlements | Why |
 | --- | --- | --- |
 | `python/bin/python3.14` | [`gact-runtime.entitlements`](macos/gact-runtime.entitlements): `disable-library-validation`, `allow-unsigned-executable-memory` | Loads third-party extension modules installed under `~/Library/Caches/clio-agent`; ctypes/cffi trampolines |
-| `iowarp_core/bin/clio_run` | [`clio-run.entitlements`](macos/clio-run.entitlements): `allow-dyld-environment-variables`, `disable-library-validation` | CLIO passes `DYLD_LIBRARY_PATH` (`arc/runtime_spawn.py`); its link-time libraries already resolve via `@loader_path` |
+| `iowarp_core/bin/clio-run` (`clio_run` before iowarp-core 2.5) | [`clio-run.entitlements`](macos/clio-run.entitlements): `allow-dyld-environment-variables`, `disable-library-validation` | CLIO passes `DYLD_LIBRARY_PATH` (`arc/runtime_spawn.py`); its link-time libraries already resolve via `@loader_path` |
 | Everything else (`codex`, `uv`, `uvx`, `rg`, `gh`, libraries) | none | |
 
 `allow-jit` is not needed: CPython's JIT is off by default and the Node.js and

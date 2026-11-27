@@ -54,6 +54,8 @@ import yaml
 from clio_agent.arc import clio_core_durability as _durability
 from clio_agent.arc import clio_core_indexer as _indexer
 from clio_agent.arc import clio_core_relocate as _relocate
+from clio_agent.arc import clio_core_shm_cache as _shm_cache
+from clio_agent.arc.clio_core_child_env import force_safe_core_env
 from clio_agent.arc.clio_core_host_migration import (
     migrate_legacy_cte_store,
 )
@@ -116,8 +118,10 @@ def runtime_state_dir(*, create: bool = True) -> Path:
 
 # Default clio-core CTE config: a RAM working arena (the ``ram`` bdev, clio-core's
 # working memory, not a data tier) and ONE file data tier (score 1.0) on the OS data
-# dir, durable across daemon restarts (``restart``, the metadata log and
-# ``persistence_level``; see :mod:`clio_agent.arc.clio_core_durability`). A blob is in
+# dir, durable across daemon restarts (``durability: persistent``, ``restart``, the
+# metadata log and ``persistence_level``; see :mod:`clio_agent.arc.clio_core_durability`).
+# iowarp-core 2.5 infers a volatile core, with no WAL, from any one volatile device
+# unless ``durability`` is stated; stated, a volatile device is refused loudly (rc 16). A blob is in
 # memory by default; clio-core moves it to the file tier under memory pressure or when it
 # goes unused.
 #
@@ -154,6 +158,7 @@ compose:
     bdev_type: ram
     capacity: "{ram_budget}"
   - mod_name: clio_cte_core
+    durability: persistent
     pool_name: cte_main
     pool_query: local
     pool_id: "512.0"
@@ -178,15 +183,15 @@ compose:
 _DEFAULT_CTE_RAM_CAPACITY = "1GB"
 _DEFAULT_CTE_CORE_PORT = 9413
 
-# clio-core binds its RPC servers on every interface (0.0.0.0) unless
-# ``CLIO_BIND_ADDR`` names an address. CLIO's runtime is single-node and serves only
+# clio-core before 2.5.0 bound its RPC servers on every interface (0.0.0.0) unless
+# ``CLIO_BIND_ADDR`` named an address; 2.5.0 defaults to loopback (98bb4eb4), and
+# CLIO still pins it explicitly. CLIO's runtime is single-node and serves only
 # this machine's own processes, so it is pinned to loopback; an explicit value
 # (for a hand-authored multi-node hostfile) is respected. Only clio-core child
 # environments are pinned; the server's own ``os.environ`` is left alone.
-# Known gap: clio-core's control channel (port base+2, ``ControlChannelLoop`` in
-# ``context-runtime/src/ipc_manager.cc``) binds ``tcp://*`` and ignores this
-# variable (iowarp/clio-core#1355); ``arc.core_control_port`` keeps it off the
-# network until the upstream fix ships (removal: iowarp/clio-agent#2038).
+# From iowarp-core 2.5.0 every bind site, the control channel (port base+2)
+# included, goes through this variable (iowarp/clio-core#1355, fixed upstream in
+# 60cb3df2), so CLIO no longer holds that port itself (iowarp/clio-agent#2038).
 CORE_BIND_ADDR_ENV = "CLIO_BIND_ADDR"
 CORE_LOOPBACK_BIND_ADDR = "127.0.0.1"
 
@@ -224,8 +229,7 @@ def pin_core_child_env(env: MutableMapping[str, str]) -> None:
     pin_loopback_bind(env)
     if not env.get(CORE_STORAGE_ROOT_ENV):
         env[CORE_STORAGE_ROOT_ENV] = str(runtime_state_dir())
-    if not env.get(CORE_VIZ_ENABLE_ENV):
-        env[CORE_VIZ_ENABLE_ENV] = "0"
+    force_safe_core_env(env)  # no dashboard, no stripe layout (clio_core_child_env)
     from clio_agent.arc.home_runtime import core_user  # noqa: PLC0415 - avoid import cycle
 
     user = core_user()
@@ -529,6 +533,7 @@ def default_cte_config_path() -> str:
         from clio_agent.arc.clio_core_growth import initialize_managed_capacity  # noqa: PLC0415
 
         initialize_managed_capacity(cfg)
+    _shm_cache.apply_shm_cache(cfg)  # arc.cte.shm_cache, both ways (opt-in, 2.5)
     return str(cfg)
 
 

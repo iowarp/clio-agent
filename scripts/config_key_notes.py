@@ -330,6 +330,11 @@ KEY_NOTES: dict[str, str] = {
         "Cap on the clio-core daemon log (one rotation to .1 keeps a second capped file); "
         "raise to keep more daemon history."
     ),
+    "arc.clio_core.blob_calls": (
+        "async (default) or sync: sync uses iowarp-core 2.5's synchronous PutBlob/GetBlob/"
+        "GetBlobSize for one-blob ops (the only calls that use a shm cache); they carry no "
+        "stall bound, so a stuck daemon holds the caller. Applies on restart."
+    ),
     "arc.clio_core.liveness_ttl_s": (
         "Seconds a clio-core liveness probe is trusted before re-checking the socket; raise to cut "
         "overhead, lower to catch a dead daemon faster."
@@ -353,6 +358,12 @@ KEY_NOTES: dict[str, str] = {
     "arc.cte.dir": (
         "Directory clio-core's CTE artifacts (config, file-tier data, logs) are written under; "
         "change to relocate ARC's disk storage."
+    ),
+    "arc.cte.shm_cache": (
+        "off (default) or md_only: composes iowarp-core 2.5's shared-memory cache in "
+        "metadata-only mode between the indexer and the core in CLIO's seed (puts are still "
+        "acknowledged by the persistent core). Used only with arc.clio_core.blob_calls=sync; "
+        "applies from the daemon's next start."
     ),
     "arc.cte.metadata_disk_reserve": (
         "Free space (for example 256MB) below which CLIO refuses clio-core writes, so the "

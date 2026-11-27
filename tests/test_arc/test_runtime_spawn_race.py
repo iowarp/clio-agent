@@ -96,9 +96,6 @@ class _Race:
         monkeypatch.setattr(storage, "_runtime_alive", lambda port: port in self.listening)
         monkeypatch.setattr(storage, "_spawn_runtime_daemon", self._spawn)
         monkeypatch.setattr(storage, "_wait_for_daemon_start", self._wait)
-        monkeypatch.setattr(
-            storage.core_control_port, "hold_control_port", lambda _port: None, raising=False
-        )
 
     def _spawn(self, _core: object, cfg: str, _level: str) -> None:
         port = storage._resolve_runtime_port(cfg)

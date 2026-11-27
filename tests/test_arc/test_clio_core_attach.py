@@ -60,7 +60,8 @@ def _cfg(tmp_path: Path, port: int) -> str:
     # A durable file tier: the factory refuses a config that would forget on restart.
     path.write_text(
         f"networking:\n  port: {port}\nruntime:\n  num_threads: 4\n"
-        "compose:\n  - mod_name: clio_cte_core\n    storage:\n"
+        "compose:\n  - mod_name: clio_cte_core\n"
+        '    performance:\n      metadata_log_path: "x/metadata.log"\n    storage:\n'
         '      - path: "x/storage.bin"\n        bdev_type: "file"\n'
         '        persistence_level: "temporary"\n',
         encoding="utf-8",

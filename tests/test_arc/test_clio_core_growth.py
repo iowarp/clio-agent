@@ -53,10 +53,15 @@ class Native:
         return Future(SimpleNamespace(remaining_space=self.free))
 
     def AsyncRegisterTarget(
-        self, path: str, media: Any, size: int, query: Any, pool: Any
+        self, path: str, media: Any, size: int, query: Any, pool: Any, *, persistence_level: int
     ) -> Future:  # noqa: N802
         tiers = yaml.safe_load(self.config.read_text())["compose"][1]["storage"]
         assert str(tiers[-1]["path"]) + "_node0" == path
+        # iowarp-core 2.5 refuses an unlabelled late target on a persistent core (rc 16).
+        assert (
+            persistence_level
+            == {"volatile": 0, "temporary": 1, "long_term": 2}[tiers[-1]["persistence_level"]]
+        )
         self.registered.append((path, size, pool))
         if self.register_code == 0:
             self.free = size
@@ -206,6 +211,28 @@ def test_old_unchanged_default_seed_can_recover(store: Any) -> None:
     assert growth.recover_capacity(store, "tag", "record", 1024)
 
 
+def test_a_seed_from_before_the_stated_durability_can_recover(store: Any) -> None:
+    """A journal-less seed written before the template stated ``durability`` is CLIO's.
+
+    SABOTAGE: compare the raw documents in ``_managed_config`` and this seed is
+    treated as a person's config, so a full store never grows.
+    """
+    config = Path(store._config_path)
+    config.with_name("cte-capacity.json").unlink()
+    text = config.read_text().replace("8MB", "2GB")
+    assert "    durability: persistent\n" in text
+    config.write_text(text.replace("    durability: persistent\n", ""))
+    assert growth.recover_capacity(store, "tag", "record", 1024)
+
+
+def test_a_seed_stating_volatile_durability_is_not_enrolled(store: Any) -> None:
+    config = Path(store._config_path)
+    config.with_name("cte-capacity.json").unlink()
+    text = config.read_text().replace("8MB", "2GB")
+    config.write_text(text.replace("durability: persistent", "durability: volatile"))
+    assert not growth.recover_capacity(store, "tag", "record", 1024)
+
+
 def test_disk_reserve_is_preserved(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(growth.shutil, "disk_usage", lambda path: SimpleNamespace(free=1 << 30))
     before = Path(store._config_path).read_bytes()
@@ -325,3 +352,15 @@ def test_an_edited_indexer_entry_still_opts_out(store: Any, tmp_path: Path) -> N
     block = indexer_block((tmp_path / "index.log").as_posix()).replace("local", "dynamic", 1)
     config.write_text(config.read_text() + block)
     assert not growth.recover_capacity(store, "tag", "record", 1024)
+
+
+def test_clios_durability_statement_on_a_ram_tier_seed_keeps_growth() -> None:
+    """CLIO's ``durability: persistent`` line (a seed with a RAM data tier) is its own
+    edit, like the persistence line: removing it recovers the seed."""
+    from clio_agent.arc.clio_core_durability import _PERSISTENCE_LINE, DURABILITY_LINE
+
+    seed = "compose:\n  - mod_name: clio_cte_core\n    storage:\n" + '        bdev_type: "file"\n'
+    edited = seed.replace("clio_cte_core\n", "clio_cte_core\n" + DURABILITY_LINE).replace(
+        'bdev_type: "file"\n', 'bdev_type: "file"\n' + _PERSISTENCE_LINE
+    )
+    assert seed in growth._before_clio_upgrades(edited)

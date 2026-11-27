@@ -59,6 +59,8 @@ compose:
         capacity_limit: "8GB"
         score: 1.0
         persistence_level: "temporary"
+    performance:
+      metadata_log_path: "metadata.log"
 """
 
 
@@ -286,11 +288,12 @@ def test_spawn_path_records_version_and_config(monkeypatch, tmp_path):
         def get_lib_dir() -> str:
             return str(tmp_path)
 
-    storage._spawn_runtime_daemon(_Core(), "/cfg/cte.yaml", "error")
+    cfg = _cte_config(tmp_path / "cfg" / "cte.yaml")
+    storage._spawn_runtime_daemon(_Core(), cfg, "error")
 
     record = read_daemon_version(tmp_path)
     assert record is not None
-    assert record.config_path == "/cfg/cte.yaml"
+    assert record.config_path == cfg
     assert record.daemon_binary == "/opt/bin/clio_run"
     assert record.iowarp_core_version == installed_iowarp_core_version()
 

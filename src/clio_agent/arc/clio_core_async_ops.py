@@ -30,6 +30,7 @@ from collections.abc import Callable, Sequence
 from functools import partial
 from typing import Any
 
+from clio_agent.arc import clio_core_sync_calls as sync_calls
 from clio_agent.arc.native_threads import run_on_native_thread
 from clio_agent.arc.rpc_liveness import resolve_liveness_policy
 
@@ -240,6 +241,11 @@ class AsyncPutTag:
         """Write ``data`` to blob ``name`` and wait for the runtime's answer."""
         if self._store is not None:
             ensure_room(self._store, name)
+        if sync_calls.enabled(self._client):  # opt-in, unbounded (clio_core_sync_calls)
+            code = sync_calls.put(self._client, self._tag_id, name, data, off)
+            if code != 0:
+                raise ClioCorePutRefused(name, code)
+            return
         future = await_future(
             self._client.AsyncPutBlob(self._tag_id, name, data, off), op_name="put"
         )
@@ -285,6 +291,8 @@ def store_blob_size(store: Any, kind: str, name: str) -> int:
         RuntimeError: The runtime refused the probe with a code other than not-found.
     """
     tag_id = store._tag_ids.get(kind)
+    if sync_calls.enabled(store._client):  # opt-in, unbounded (clio_core_sync_calls)
+        return sync_calls.blob_size(store._client, tag_id, name)
     future = await_future(store._client.AsyncGetBlobSize(tag_id, name), op_name="get")
     code = future.wait(0)
     if code == _BLOB_NOT_FOUND:
@@ -321,6 +329,8 @@ def store_read(store: Any, kind: str, name: str, length: int, offset: int = 0) -
             ``Tag.GetBlob`` did.
     """
     tag_id = store._tag_ids.get(kind)
+    if sync_calls.enabled(store._client):  # opt-in, unbounded (clio_core_sync_calls)
+        return sync_calls.read(store._client, tag_id, name, length, offset)
     future = await_future(store._client.AsyncGetBlob(tag_id, name, length, offset), op_name="get")
     code = future.wait(0)
     if code:

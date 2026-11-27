@@ -32,6 +32,8 @@ ARC_INIT_DEGRADE_REASONS = (
     "clio_core_daemon_spawn_failed",  # launcher missing, or the daemon crashed or stalled at start
     "clio_core_daemon_start_ceiling",  # still starting at the ceiling: left running, not killed
     "clio_core_ipc_dir_unavailable",  # the IPC folder (under TEMP or CLIO_MEMFD_DIR) can't be made
+    "clio_core_ipc_path_too_long",  # the daemon's IPC socket path cannot fit sun_path
+    "clio_core_memfd_dir_unsafe",  # the per-user IPC dir is not this user's private dir
     CLIO_CORE_FILE_CAPACITY_UNAVAILABLE,  # configured file bdev cannot fit safely
     CLIO_CORE_CLIENT_ATTACH_FAILED,  # daemon listening, native client handshake failed
     CLIO_CORE_CLIENT_ATTACH_TIMEOUT,  # the handshake got no answer within the bound

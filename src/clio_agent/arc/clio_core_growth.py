@@ -27,7 +27,7 @@ from clio_agent.arc.clio_core_config import (
     _default_cte_dir,
     parse_capacity_bytes,
 )
-from clio_agent.arc.clio_core_durability import _PERSISTENCE_LINE
+from clio_agent.arc.clio_core_durability import _PERSISTENCE_LINE, DURABILITY_LINE
 from clio_agent.arc.clio_core_indexer import indexer_block
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,10 @@ _GIB = 1 << 30
 _RESERVE = _GIB
 _MAX_TARGETS = 8
 _MAX_TOTAL = 500 * _GIB
+
+
+#: clio-core's ``persistence_level`` labels and their native values (core_bindings.cc).
+_PERSISTENCE_LEVELS = {"volatile": 0, "temporary": 1, "long_term": 2}
 
 
 def _digest(text: str) -> str:
@@ -84,7 +88,23 @@ def _managed_config(config: Path, text: str) -> dict[str, Any] | None:
         )
     except (KeyError, TypeError, ValueError):
         return None
-    return document if document == yaml.safe_load(expected) else None
+    same = _without_stated_durability(document) == _without_stated_durability(
+        yaml.safe_load(expected)
+    )
+    return document if same else None
+
+
+def _without_stated_durability(document: dict[str, Any]) -> dict[str, Any]:
+    """``document`` with the core's ``durability: persistent`` taken out.
+
+    The seed states it since iowarp-core 2.5 (a seed from before has the same, inferred,
+    durability), so both shapes are CLIO's unchanged seed.
+    """
+    compose = [dict(m) if isinstance(m, dict) else m for m in document.get("compose", [])]
+    for module in compose:
+        if isinstance(module, dict) and module.get("durability") == "persistent":
+            del module["durability"]
+    return {**document, "compose": compose}
 
 
 def _future_result(future: Any, operation: str) -> Any:
@@ -104,6 +124,20 @@ def _additional_bytes(store: Any, tag_id: Any, name: str, payload_bytes: int) ->
     return max(0, payload_bytes - int(future.result(0)))
 
 
+def _planned_persistence(plan: dict[str, Any]) -> int:
+    """Native persistence level of the planned tier (a copy of the config's first tier).
+
+    iowarp-core 2.5 resolves an unlabelled target only against the devices in the
+    config the daemon loaded at start, so a target added later counts as volatile and
+    a persistent core refuses it (rc 16). The level is passed explicitly instead.
+    """
+    tiers = yaml.safe_load(plan["config_text"])["compose"][1]["storage"]
+    label = str(tiers[int(plan["index"])].get("persistence_level", "temporary"))
+    if label not in _PERSISTENCE_LEVELS:
+        raise ValueError(f"unknown clio-core persistence_level {label!r} in the growth plan")
+    return _PERSISTENCE_LEVELS[label]
+
+
 def _register(store: Any, plan: dict[str, Any]) -> None:
     index = int(plan["index"])
     future = await_future(
@@ -113,6 +147,7 @@ def _register(store: Any, plan: dict[str, Any]) -> None:
             int(plan["capacity"]),
             store._cte.PoolQuery.Local(),
             store._cte.PoolId(512 + index, 1),
+            persistence_level=_planned_persistence(plan),
         ),
         op_name="capacity_register",
     )
@@ -284,18 +319,27 @@ def _growth_enabled(config: Path) -> bool:
 def _before_clio_upgrades(text: str) -> list[str]:
     """``text`` without each combination of CLIO's own in-place additions to its seed.
 
-    The durability line (``ensure_seeded_config_durable``) and the indexer entry
+    The durability lines (``ensure_seeded_config_durable``: the file tier's
+    ``persistence_level`` and, for a seed with a RAM data tier, the core's
+    ``durability: persistent``) and the indexer entry
     (``ensure_seeded_config_indexed``), each removed only when it is exactly what CLIO
     adds, so a person's edit is never mistaken for one.
     """
-    without_line = text.replace(_PERSISTENCE_LINE, "", 1)
-    variants = [without_line] if without_line != text else []
+
+    def without_durability(base: str) -> list[str]:
+        # Every combination of the two durability lines CLIO may have added.
+        out = []
+        for line in (_PERSISTENCE_LINE, DURABILITY_LINE):
+            out += [v.replace(line, "", 1) for v in [base, *out] if line in v]
+        return out
+
+    variants = without_durability(text)
     marker = "  - mod_name: clio_cte_indexer\n"
     if marker in text:
         start = text.index(marker)
         log = re.search(r'index_log_path: "([^"]*)"', text[start:])
         if log and text[start:] == indexer_block(log.group(1)):
-            variants += [text[:start], text[:start].replace(_PERSISTENCE_LINE, "", 1)]
+            variants += [text[:start], *without_durability(text[:start])]
     return variants
 
 

@@ -932,7 +932,7 @@ requires-dist = [
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
     { name = "httpx2", specifier = ">=2.9.1" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6" },
-    { name = "iowarp-core", specifier = "~=2.4.0" },
+    { name = "iowarp-core", specifier = "~=2.5.0" },
     { name = "jinja2", specifier = ">=3.1.6,<4" },
     { name = "jsonschema", specifier = ">=4.23" },
     { name = "litellm", specifier = "==1.110.2" },
@@ -2469,25 +2469,29 @@ wheels = [
 
 [[package]]
 name = "iowarp-core"
-version = "2.4.1"
+version = "2.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "msgpack" },
     { name = "pyyaml" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b6/06/de534b9175867bacf987091bc7f20b7742dfc989b633765569d892bae2fc/iowarp_core-2.4.1-cp312-cp312-macosx_15_0_arm64.whl", hash = "sha256:1576afd01c5978b7bc29979572c4d3aa9221ee2bf1246abb7dca2aef78e4e949", size = 7271946, upload-time = "2026-11-11T20:16:24.409Z" },
-    { url = "https://files.pythonhosted.org/packages/bd/82/d827affd699ea726aeeaa8c02232346e93800fb683404d331d088b3de1bc/iowarp_core-2.4.1-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:ca877825ea254a4e0ab7f53514760bb21514eddb9d9f4cd1771221d82c640024", size = 11072519, upload-time = "2026-11-11T20:16:26.189Z" },
-    { url = "https://files.pythonhosted.org/packages/ce/12/f1ac81c5ff6153e4f8e988c793ab8845b130cabec895dacb3d4eb02c0f6c/iowarp_core-2.4.1-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:30c2c5b62f089ef86f5ebb51daf856d9b9425b4ff2cd005df3c80d9da1011b43", size = 12202129, upload-time = "2026-11-11T20:16:28.56Z" },
-    { url = "https://files.pythonhosted.org/packages/9e/5f/7cdf836e4939c0752a64100c1b5f0dcc957257300c0430dc4ad96d83e2d9/iowarp_core-2.4.1-cp312-cp312-win_amd64.whl", hash = "sha256:6b6c4313cb38caaec02914f9560eaf2d23995fee3f7893290cdb06876b693eb7", size = 26563744, upload-time = "2026-11-11T20:16:31.099Z" },
-    { url = "https://files.pythonhosted.org/packages/de/ab/a3fc7026ae1dc50eb79a3362a3cb3a225b09394830fe90882081ba085fdb/iowarp_core-2.4.1-cp313-cp313-macosx_15_0_arm64.whl", hash = "sha256:80e8ae176a23071a458e1c5fb4bee38d8ddc0f43a3a2c312d68acee6562f9def", size = 7271855, upload-time = "2026-11-11T20:16:33.921Z" },
-    { url = "https://files.pythonhosted.org/packages/71/0e/09f176c1aa61e190fcafa65c501be6f1c6b88f3742164ea38eef0219d311/iowarp_core-2.4.1-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:4fbbc4992ae91a0b66d1a83e6ef50d1acc4f0f6d992baf8cf6f0251166f50e10", size = 11072400, upload-time = "2026-11-11T20:16:35.844Z" },
-    { url = "https://files.pythonhosted.org/packages/c7/91/7743d74a914c273c651d35077f7847f88f53b11b76392c30c5afa82b013b/iowarp_core-2.4.1-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:886e1cc53fe745647f1cae1a60c1850eb898a8dbc1dacadda80703e105012201", size = 12202124, upload-time = "2026-11-11T20:16:38.039Z" },
-    { url = "https://files.pythonhosted.org/packages/c1/84/0d06e5689dbcf14fd30858d2269849e6ef534d1ae7014cce73a4de2d4947/iowarp_core-2.4.1-cp313-cp313-win_amd64.whl", hash = "sha256:8042aa2d849d5c308cdaeac4a9bacf1cadaed90a593ebaef657f1ed402498dc5", size = 26563629, upload-time = "2026-11-11T20:16:40.743Z" },
-    { url = "https://files.pythonhosted.org/packages/59/29/610191fffc52e3fbd78c1d72f8a119fbb4df23a28903c9b498790932aa8e/iowarp_core-2.4.1-cp314-cp314-macosx_15_0_arm64.whl", hash = "sha256:4a4ead71c8d5d14924d7d1301c706b4fff9f9bae16556d85db34bf50dfe36782", size = 7271788, upload-time = "2026-11-11T20:16:43.749Z" },
-    { url = "https://files.pythonhosted.org/packages/54/3f/fe81bbf2a856576c6547cf77c2d65040774e70cf57a6c4dfd05a4db1b1b1/iowarp_core-2.4.1-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:ff02fcf1bbf803b8be7dbc477152c747d05a0c77bbfb5ad672f8585c7346ce5d", size = 11072656, upload-time = "2026-11-11T20:16:46.434Z" },
-    { url = "https://files.pythonhosted.org/packages/e5/08/52f9efe9917773db4bc4ef39998b29b8b13aec678571785d0c130e8e0b77/iowarp_core-2.4.1-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:f50c227b1205a5fbac36ca3cc5955841a4a8bacfac4c7fefe50195ec1f5ea299", size = 12202018, upload-time = "2026-11-11T20:16:48.93Z" },
-    { url = "https://files.pythonhosted.org/packages/ef/2b/811d0290eef8eb7f3313ac159727af0310232440dcccec645c7c2322ae3d/iowarp_core-2.4.1-cp314-cp314-win_amd64.whl", hash = "sha256:00fe27507c55d5a96152191ff033923312c8ae5e4c9a88188d2c262e12b15a63", size = 26905664, upload-time = "2026-11-11T20:16:52.047Z" },
+    { url = "https://files.pythonhosted.org/packages/8a/0f/1664987f5e4b5d8e919b9c2d5400408355cb982efe5d43321de3bc760302/iowarp_core-2.5.0-cp312-cp312-macosx_15_0_arm64.whl", hash = "sha256:d745d7b20bfc3e9befd1cd532b054140d56a18d814eaad13363e4a7b0fcee5a3", size = 14361733, upload-time = "2026-11-21T19:54:48.784Z" },
+    { url = "https://files.pythonhosted.org/packages/67/0d/e6d132279480717e34517a249b6de7c3b83319f320c9b5cf222a37d38d5b/iowarp_core-2.5.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:4a4c0bbe714ec66c960a95308d8a62406bd8a39eb821eeed5b455d936f794c9a", size = 15379739, upload-time = "2026-11-21T19:54:51.001Z" },
+    { url = "https://files.pythonhosted.org/packages/4c/eb/4629b1c20bfe5adc2759ee569a3c0b625ab0e59f0fc7c9af2c63856da442/iowarp_core-2.5.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:508b599fec1f52062abccf512c30b25acc59f687082a3d7fe56e59b2157ffdb1", size = 16698126, upload-time = "2026-11-21T19:54:53.613Z" },
+    { url = "https://files.pythonhosted.org/packages/db/aa/5769b44651295d594f267ab489525add84a5e766997894514b02b72a93b6/iowarp_core-2.5.0-cp312-cp312-win_amd64.whl", hash = "sha256:5d80d951a50d0d0a80c728cabc6f3314f7203539b86973183b185d674d9f197e", size = 31843511, upload-time = "2026-11-21T19:54:55.9Z" },
+    { url = "https://files.pythonhosted.org/packages/ad/f5/11517d1618c5bb3ad645deea0c388cbf517c238668e110e55767424800df/iowarp_core-2.5.0-cp313-cp313-macosx_15_0_arm64.whl", hash = "sha256:44243ffa1f617fa4a30688dfd42e840adc9683d5d5183194939be29074fff21c", size = 14361737, upload-time = "2026-11-21T19:54:58.583Z" },
+    { url = "https://files.pythonhosted.org/packages/19/39/26ef7f43f64c0b9b0f82e7ae5cc7da97c06095b325a7504047d319b98b2c/iowarp_core-2.5.0-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:b0f85f4743ffdb51d6b318181c3d6f430f695c07ef3aa9f02b2c7d85ebe00aa3", size = 15379710, upload-time = "2026-11-21T19:55:01.146Z" },
+    { url = "https://files.pythonhosted.org/packages/e9/53/e02c968de79048f4a280d782fdfe5e919a3da5581ea60dc92cc219b55e31/iowarp_core-2.5.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:f5acb9a56d7a370d610648a6655c3616480ec25ee181d7ffc53895428540294c", size = 16698096, upload-time = "2026-11-21T19:55:03.456Z" },
+    { url = "https://files.pythonhosted.org/packages/6d/00/e81456dcfb1b62947e450c652dc414766eb009ec1f99331fb3bed550083d/iowarp_core-2.5.0-cp313-cp313-win_amd64.whl", hash = "sha256:b3d97b889e546a7ac05d8a2c350608adba187acbc91c465560dbe9df1a5d4a01", size = 31843354, upload-time = "2026-11-21T19:55:06.305Z" },
+    { url = "https://files.pythonhosted.org/packages/ea/7b/d54e441de1a13c161603ad606179a907ef762a29bbde993a88acda816e06/iowarp_core-2.5.0-cp314-cp314-macosx_15_0_arm64.whl", hash = "sha256:593b7d9d174a26beb777b6bf1b5134c9f6f40272ba3e575e42e80a6329934970", size = 14361721, upload-time = "2026-11-21T19:55:09.066Z" },
+    { url = "https://files.pythonhosted.org/packages/33/d7/6f82b75002b96a37b5a4b81f02f36b85be9c439af2322f9cfe78fe408374/iowarp_core-2.5.0-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:644b0065711397decfa82fb5d3ad1d62c68f3a40ba54f2f91d59e577a9fb0cad", size = 15379987, upload-time = "2026-11-21T19:55:11.277Z" },
+    { url = "https://files.pythonhosted.org/packages/30/81/4551bd9d6f6b237d970e8d7ec65bc07f16dfa6f0cec1eefaf1256ee1c4bd/iowarp_core-2.5.0-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:2d887506cb6f7650f97e88769cf5420665d7ad3c4dd1f0db471d5a337fe0b90c", size = 16698041, upload-time = "2026-11-21T19:55:13.474Z" },
+    { url = "https://files.pythonhosted.org/packages/91/df/f180244ce7bbe9ecaef332ce530aa68dde78929ace766a6a2256b7c7c2c0/iowarp_core-2.5.0-cp314-cp314-win_amd64.whl", hash = "sha256:29ce6bd7636a831f7a1437c2048ba791f48e01f54e6067df94f04bd4354ec3f6", size = 32205266, upload-time = "2026-11-21T19:55:16.189Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/f6/23d61bde2ca6feb7fea99c92bce57296bf819d540ad8f3a44ce06ac0b6bb/iowarp_core-2.5.0-cp315-cp315-macosx_15_0_arm64.whl", hash = "sha256:64a4fb90d3013b23835dc68f4c5c8b461cad05efa9e40e672201c21d8ea1aeb3", size = 14361744, upload-time = "2026-11-21T19:55:18.44Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/44/a49cd35d910cde9293ebe15dd680fef1d7ed57d5e7a518d2100340b4fb1f/iowarp_core-2.5.0-cp315-cp315-manylinux_2_28_aarch64.whl", hash = "sha256:679c13c99dcc22e0da3e6f7b4a677f3f8884ebaa45c930a961455dac16205cb5", size = 15379994, upload-time = "2026-11-21T19:55:20.835Z" },
+    { url = "https://files.pythonhosted.org/packages/a6/b5/32626196699c614cc72012b996491dbb01b5b702c8357c53740ae58d45a7/iowarp_core-2.5.0-cp315-cp315-manylinux_2_28_x86_64.whl", hash = "sha256:603c62aa9c4df9996ad3e2f4f13912ba65f58eace55d3b50e451da88d3f723f1", size = 16698049, upload-time = "2026-11-21T19:55:23.087Z" },
+    { url = "https://files.pythonhosted.org/packages/20/9f/c7c3a55ec025bddc918d8a8f44d6bccde7f2ec0c012024157342b9eb406f/iowarp_core-2.5.0-cp315-cp315-win_amd64.whl", hash = "sha256:6148a86211da3f91757efdcd70f15f794dfc6f7758f5f12c817c0736350a2c03", size = 32205232, upload-time = "2026-11-21T19:55:25.754Z" },
 ]
 
 [[package]]

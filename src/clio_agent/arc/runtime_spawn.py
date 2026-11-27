@@ -27,7 +27,11 @@ def _dynamic_library_env_var() -> str:
 def _runtime_launcher_path(iowarp_core: object) -> Optional[str]:
     """Absolute path to the ``clio_run`` launcher (``.exe`` on Windows), or None."""
     bin_dir = iowarp_core.get_bin_dir()  # type: ignore[attr-defined]
-    names = ("clio_run.exe", "clio_run") if sys.platform.startswith("win") else ("clio_run",)
+    names = (
+        ("clio-run.exe", "clio_run.exe", "clio-run", "clio_run")
+        if sys.platform.startswith("win")
+        else ("clio-run", "clio_run")
+    )
     for name in names:
         candidate = os.path.join(bin_dir, name)
         if os.path.exists(candidate):

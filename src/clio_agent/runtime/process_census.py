@@ -192,6 +192,7 @@ _CLIO_CMDLINE_MARKERS: tuple[str, ...] = (
     "clio-kit",
     "clio_kit",
     "clio_run",
+    "clio-run",
     "clio-agent-gact",
     "clio_agent.gact",
     "clio-agent serve",

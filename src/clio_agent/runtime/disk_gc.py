@@ -66,6 +66,7 @@ _CLIO_MARKERS = (
     "clio-agent serve",  # front-door serve verb (console script form)
     "clio_agent.ui.cli serve",  # front-door serve verb (module form)
     "clio_run",  # clio-core daemon
+    "clio-run",  # clio-core daemon (iowarp-core 2.5+)
     "clio-kit",  # clio-kit MCP fleet launcher/children
     "clio_kit",
 )

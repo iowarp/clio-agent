@@ -30,7 +30,6 @@ from clio_agent import paths
 from clio_agent.arc import (
     clio_core_attach,
     clio_core_wal_repair,
-    core_control_port,
     crashed_clients,
     home_runtime,
     runtime_log,
@@ -80,6 +79,7 @@ from clio_agent.arc.clio_core_liveness import (  # noqa: F401 - re-exported for 
     _resolve_runtime_port,
     _runtime_alive,
 )
+from clio_agent.arc.clio_core_spawn_preflight import require_spawnable
 from clio_agent.arc.clio_core_writes import SEARCH_SUFFIX, ClioCoreWrites
 from clio_agent.arc.companion_write import companion_sizes
 from clio_agent.arc.native_threads import run_on_native_thread
@@ -170,7 +170,7 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
     exe = _runtime_launcher_path(iowarp_core)
     if exe is None:
         raise RuntimeError(
-            f"clio-core runtime launcher (clio_run) not found in "
+            f"clio-core runtime launcher (clio-run) not found in "
             f"{iowarp_core.get_bin_dir()!r}; cannot spawn the shared clio-core daemon "  # type: ignore[attr-defined]
             "(reinstall the iowarp-core package; run clio doctor)."
         )
@@ -183,6 +183,7 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
         env["CLIO_SERVER_CONF"] = config_path
     pin_core_child_env(env)
     ensure_core_memfd_dir(env)
+    require_spawnable(env, config_path, _resolve_runtime_port(config_path))
     state_dir = runtime_state_dir()
     log_path = state_dir / "clio-runtime.log"
     clear_crash_record(state_dir)  # fresh spawn, fresh slate (#1148)
@@ -224,7 +225,13 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
     # The daemon must die loudly in OUR channels (#1148): on abnormal exit the
     # watcher writes a typed crash record that the liveness gate folds into its
     # ClioCoreRuntimeLostError, so a crash is never misread as an env flake.
-    watch_daemon_process(proc, log_path=log_path, state_dir=state_dir, log_offset=log_offset)
+    watch_daemon_process(
+        proc,
+        log_path=log_path,
+        state_dir=state_dir,
+        log_offset=log_offset,
+        log_drained=log_sink.pump_exited,
+    )
     proc_pid = proc.pid
     ctime = _proc_create_time(proc_pid)
     _daemon_pidfile().write_text(
@@ -391,8 +398,6 @@ def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str
         starting = pidfile_live_pid(_daemon_pidfile())
 
         def spawn(at: int) -> None:
-            # Stopgap for clio-core#1355; removal tracked in iowarp/clio-agent#2038.
-            core_control_port.hold_control_port(at)
             _spawn_runtime_daemon(iowarp_core, config_path, log_level)
 
         with runtime_stop.kill_spawned_daemon_on_failure():
@@ -683,7 +688,7 @@ class ClioCoreStore(ClioCoreWrites):
                 if not name_re and not limit:
                     return list(self._cte.Tag(tag).GetContainedBlobs())
                 pool = self._cte.PoolQuery.Dynamic()
-                rows = self._client.BlobQuery(re.escape(tag), name_re or ".*", limit, pool)
+                rows = self._client.BlobQuery(f"^{re.escape(tag)}$", name_re or ".*", limit, pool)
                 return [blob for _tag, blob in rows]
             except UnicodeDecodeError as exc:
                 raise BlobNameDecodeError(tag, exc) from exc

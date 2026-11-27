@@ -19,6 +19,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ALLOW_SYSTEM_TEMP` | `paths.allow_system_temp` | bool | `true` | `src/clio_agent/runtime/session_scratch.py` |
 | `CLIO_API_BASE` | `runtime.api_base` | str | _(unset)_ | `src/clio_agent/runtime/status.py` |
 | `CLIO_ARC_CACHE_CAPACITY` | `arc.cache_capacity` | int | `1000` | `src/clio_agent/arc/memory.py` |
+| `CLIO_ARC_CLIO_CORE_BLOB_CALLS` | `arc.clio_core.blob_calls` | str | `async` | `src/clio_agent/arc/clio_core_sync_calls.py` |
 | `CLIO_ARC_CLIO_CORE_DAEMON_RECYCLE` | `arc.clio_core.daemon_recycle_enabled` | bool | `false` | `src/clio_agent/arc/clio_core_daemon.py` |
 | `CLIO_ARC_CLIO_CORE_DAEMON_RSS_CRITICAL` | `arc.clio_core.daemon_rss_critical_bytes` | int | `4294967296` | `src/clio_agent/arc/clio_core_daemon.py` |
 | `CLIO_ARC_CLIO_CORE_DAEMON_RSS_WARN` | `arc.clio_core.daemon_rss_warn_bytes` | int | `1073741824` | `src/clio_agent/arc/clio_core_daemon.py` |
@@ -38,6 +39,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARC_CTE_HOME_SEGMENT_SIZE` | `arc.cte.home_segment_size` | str | `64MB` | `src/clio_agent/arc/home_runtime.py` |
 | `CLIO_ARC_CTE_METADATA_DISK_RESERVE` | `arc.cte.metadata_disk_reserve` | str | `256MB` | `src/clio_agent/arc/clio_core_disk_guard.py` |
 | `CLIO_ARC_CTE_RAM_CAPACITY` | `arc.cte.ram_capacity` | str | `1GB` | `src/clio_agent/arc/clio_core_config.py` |
+| `CLIO_ARC_CTE_SHM_CACHE` | `arc.cte.shm_cache` | str | `off` | `src/clio_agent/arc/clio_core_shm_cache.py` |
 | `CLIO_ARC_EVENTS_CHUNK_SEGMENTS` | `arc.events_chunk_segments` | int | `512` | `src/clio_agent/arc/memory.py` |
 | `CLIO_ARC_HIGHWAY_DEFERRED` | `arc.highway_deferred` | bool | `true` | `src/clio_agent/gact/highway_writer.py` |
 | `CLIO_ARC_LIVENESS_BACKOFF_INITIAL_S` | `arc.liveness.backoff_initial_s` | float | `2.0` | `src/clio_agent/arc/rpc_liveness.py` |
@@ -423,7 +425,6 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_AGENT_PACKAGE_OVERLAY` | unmigrated | `src/clio_agent/runtime/package_overlay.py` |
 | `CLIO_ARGONNE_TOKEN` | secret | `src/clio_agent/providers/argonne_auth.py`, `src/clio_agent/providers/credentials.py` |
 | `CLIO_AUTH_TOKEN` | secret | `src/clio_agent/gact/auth.py`, `src/clio_agent/gact/desktop_boot.py` |
-| `CLIO_BIND_ADDR` | unmigrated | `src/clio_agent/arc/core_control_port.py` |
 | `CLIO_BIN_DIR` | unmigrated | `src/clio_agent/gact/infrastructure/native_service_platform.py`, `src/clio_agent/gact/infrastructure/node_models.py` |
 | `CLIO_BOOTSTRAP_SYNC_SECONDS` | unmigrated | `src/clio_agent/runtime/office_bootstrap.py` |
 | `CLIO_CODEX_RELEASE_TOKEN` | unmigrated | `src/clio_agent/runtime/codex_windows_helpers.py` |

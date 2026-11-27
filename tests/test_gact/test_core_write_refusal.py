@@ -142,3 +142,23 @@ def test_a_change_the_full_store_did_not_take_is_typed_after_a_restart(client) -
     response = test_client.post("/v1/sessions/sess_a/lane")
     assert response.json()["error"]["error"] == core_write_refusal.CORE_WRITES_REFUSED
     assert len(events) == 1
+
+
+class _DeviceFull(RuntimeError):
+    native_code = 28
+
+
+def test_a_device_full_refusal_names_the_disk_typed(client) -> None:
+    """iowarp-core 2.5 answers a put its device refused with ENOSPC with rc 28.
+
+    SABOTAGE: drop the rc 28 branch from ``_cause`` and the person reads the generic
+    "refusing writes" message with an empty cause.
+    """
+    test_client, _events = client
+    error = _DeviceFull("clio-core AsyncPutBlob('x') returned code 28")
+    retry._record_lost_write(name="sess_a___events~m~3", payload=b"x" * 64, exc=error)
+    body = test_client.post("/v1/sessions/sess_a/messages").json()["error"]
+    assert body["error"] == core_write_refusal.CORE_WRITES_REFUSED
+    assert body["details"]["cause"] == core_write_refusal.DEVICE_FULL == "clio_core_device_full"
+    assert body["details"]["native_code"] == 28
+    assert body["message"].startswith("The disk that holds CLIO's conversation store is full")
