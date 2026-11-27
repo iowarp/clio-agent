@@ -66,11 +66,11 @@ def test_powershell_commands_cross_the_pipe_as_utf8(
 
 
 @pytest.mark.skipif(os.name != "nt", reason="PowerShell backend is Windows-only")
-def test_powershell_aliases_give_way_to_a_real_executable(
+def test_powershell_drops_only_the_aliases_current_powershell_dropped(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``wget`` (a removable alias in Windows PowerShell 5.1) runs the ``wget.cmd`` on PATH,
-    while ``where`` (a ReadOnly alias) stays PowerShell's ``Where-Object``."""
+    """``wget`` (dropped by PowerShell 6) runs the ``wget.cmd`` on PATH, while ``ls`` stays
+    ``Get-ChildItem`` even with an ``ls.cmd`` on PATH, as in current PowerShell."""
 
     import shutil
     import subprocess
@@ -79,18 +79,19 @@ def test_powershell_aliases_give_way_to_a_real_executable(
         pytest.skip("no PowerShell")
     monkeypatch.setenv("CLIO_WINDOWS_SHELL_BACKEND", "powershell")
     (tmp_path / "wget.cmd").write_text("@echo native wget %*\r\n", encoding="ascii")
-    (tmp_path / "where.cmd").write_text("@echo native where\r\n", encoding="ascii")
-    command = "wget -sS x; 1,2 | where { $_ -gt 1 }"
+    (tmp_path / "ls.cmd").write_text("@echo native ls\r\n", encoding="ascii")
+    command = "wget -sS x; (ls | Where-Object Name -like 'w*').Name"
     result = subprocess.run(
         _shell_argv(command),
         capture_output=True,
         text=True,
+        cwd=tmp_path,
         env={**os.environ, "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"},
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         timeout=60,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.split() == ["native", "wget", "-sS", "x", "2"]
+    assert result.stdout.split() == ["native", "wget", "-sS", "x", "wget.cmd"]
 
 
 def test_shell_bash_declares_open_world_destructive_annotations() -> None:

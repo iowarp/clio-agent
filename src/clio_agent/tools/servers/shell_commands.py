@@ -126,29 +126,22 @@ POWERSHELL_PROXY_PREAMBLE = (
     "New-Object System.Net.WebProxy($p,$true)}catch{}}};"
 )
 
-#: A command line names a program the way the person's other shells resolve it: an alias
-#: PowerShell itself lets go of (not ``ReadOnly``) gives way to a real executable of the
-#: same name on this process's ``PATH`` (``PATHEXT`` extensions). Windows PowerShell 5.1
-#: aliases ``curl`` and ``wget`` to ``Invoke-WebRequest``, so ``curl -sS URL`` failed on a
-#: parameter binding although ``curl.exe`` is installed; PowerShell 7 dropped those aliases
-#: for the same reason. ``ReadOnly`` aliases (``where``, ``sort``, ``sc``, ``gc``, ...) are
-#: the language's own pipeline vocabulary and stay. The names are found in a child scope, so
-#: none of its variables reach the command, reading each ``PATH`` folder once; they are
-#: removed in the command's own scope, because removing an ``AllScope`` alias from a child
-#: scope only drops that scope's copy.
+#: Windows PowerShell 5.1 resolves a command the way current PowerShell does. PowerShell 6
+#: dropped exactly the default aliases that shadowed native Windows programs: ``curl`` and
+#: ``wget`` (``Invoke-WebRequest``; PowerShell/PowerShell#1901, never shipped in PowerShell
+#: Core) and ``sc`` (``Set-Content`` over ``sc.exe``, #5827). They sit in the
+#: ``#if !CORECLR`` block of ``InitialSessionState.cs`` ("not appropriate for PSCore6 due to
+#: conflicts"). In 5.1, ``curl -sS URL`` therefore failed on a parameter binding although
+#: ``curl.exe`` is installed. Every other alias (``ls``, ``rm``, ``cat``, ``where``, ...) is
+#: kept, as in current PowerShell, so ``ls | Where-Object ...`` and ``rm -Recurse`` keep
+#: meaning the cmdlets. The aliases are removed in the command's own scope, because removing
+#: an ``AllScope`` alias from a child scope only drops that scope's copy, and through the
+#: provider API rather than ``Remove-Item``, whose first call in a fresh process costs ~50 ms.
 POWERSHELL_ALIAS_PREAMBLE = (
-    "& {$w=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase);"
-    "$r=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase);"
-    "$x=@($env:PATHEXT -split ';'|?{$_});"
-    "foreach($a in $ExecutionContext.SessionState.InvokeProvider.Item.Get('alias:\\*')){"
-    "if(-not($a.Options -band [Management.Automation.ScopedItemOptions]::ReadOnly))"
-    "{foreach($e in $x){[void]$w.Add($a.Name+$e)}}};"
-    "foreach($p in $env:PATH -split ';'){if(-not $p){continue};"
-    "try{$g=[IO.Directory]::GetFiles($p)}catch{continue};"
-    "$f=[Collections.Generic.HashSet[string]]::new([string[]]($g -replace '^.*\\\\',''),"
-    "[StringComparer]::OrdinalIgnoreCase);$f.IntersectWith($w);"
-    "foreach($h in $f){[void]$r.Add([IO.Path]::GetFileNameWithoutExtension($h))}};$r}"
-    "|%{Remove-Item -LiteralPath ('alias:\\'+$_) -Force};"
+    "if($PSVersionTable.PSEdition -eq 'Desktop'){foreach($a in 'curl','wget','sc'){"
+    "try{$ExecutionContext.SessionState.InvokeProvider.Item.Remove("
+    '[string[]]"alias:\\$a",$false,$true,$true)}catch{}};'
+    "$ExecutionContext.SessionState.PSVariable.Remove('a')};"
 )
 
 #: Everything CLIO prefixes to a PowerShell command, in order.
