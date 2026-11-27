@@ -27,6 +27,8 @@ def normalize_question_bundle(questions: list[dict[str, Any]]) -> dict[str, Any]
             options.append(option.model_dump(exclude={"schema_version"}))
         if len({item["value"] for item in options}) != len(options):
             raise ValueError("Bundle option values must be unique")
+        if sum(bool(item.get("recommended")) for item in options) > 1:
+            raise ValueError("Mark at most one bundle option recommended")
         return options
 
     def _validated_question(value: Any) -> str:
