@@ -126,10 +126,44 @@ def connector_name(namespace: str | None) -> str:
     return entry.name if entry is not None else ""
 
 
-def view_label(namespace: str | None, tool: Any, arguments: Mapping[str, Any] | None) -> str:
-    """``"<connector>: <subject>"``, or as much of it as is known."""
+#: Leading words of an opening tool's name that say "show" rather than what is shown.
+_OPENING_VERBS = frozenset({"view", "open", "show", "display"})
 
-    name = connector_name(namespace) or tool_title(tool) or (namespace or "")
+
+def tool_subject(namespace: str | None, tool_name: str) -> str:
+    """What an opening tool shows, from its name: ``kicad_view_board`` → ``board``.
+
+    Used only when the call's arguments name nothing, so that two views of one connector
+    (a board and its BOM) are not both called by the connector's name alone.
+    """
+
+    name = tool_name.strip()
+    if namespace and name.startswith(f"{namespace}_"):
+        name = name[len(namespace) + 1 :]
+    words = [word for word in name.split("_") if word]
+    if words and words[0].lower() in _OPENING_VERBS:
+        words = words[1:]
+    return " ".join(words)
+
+
+def view_label(
+    namespace: str | None,
+    tool: Any,
+    arguments: Mapping[str, Any] | None,
+    *,
+    tool_name: str = "",
+) -> str:
+    """``"<connector>: <subject>"``, or as much of it as is known.
+
+    The subject comes from the call's arguments; when they name nothing and the name is
+    the connector's, it comes from the opening tool's name (``tool_name``).
+    """
+
+    connector = connector_name(namespace)
+    name = connector or tool_title(tool) or (namespace or "")
     subject = call_subject(tool, arguments)
+    if not subject and connector:
+        bare = tool_name or str(getattr(tool, "name", "") or _mapping(tool).get("name") or "")
+        subject = tool_subject(namespace, bare)
     label = f"{name}: {subject}" if name and subject else name or subject
     return label[:LABEL_MAX]

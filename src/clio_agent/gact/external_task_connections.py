@@ -17,7 +17,12 @@ from fastmcp_tasks.client_models import ClientGetTaskResult
 from mcp.shared.exceptions import MCPError
 
 from clio_agent.arc.task_types import BackendReference
-from clio_agent.gact import external_task_records, view_call_cancel, view_call_ledger
+from clio_agent.gact import (
+    external_plain_calls,
+    external_task_records,
+    view_call_cancel,
+    view_call_ledger,
+)
 from clio_agent.gact.native_work import now
 from clio_agent.runtime import net_refusals
 from clio_agent.tools import fleet_close_listeners, namespace_instances, shared_direct_connections
@@ -774,3 +779,11 @@ async def close_connections(self: ExternalTasks) -> None:
         await asyncio.shield(asyncio.gather(*tuple(self._retiring)))
     for host in tuple(self.connections.values()):
         await retire_connection(self, host, shutdown=True)
+
+
+async def plain_call_started(self: ExternalTasks, handle: str, written_ahead: bool) -> None:
+    """A plain call is being sent, from inside its own (shielded) task: running, and
+    cancellable by its handle (external_plain_calls)."""
+    rpc = asyncio.current_task()
+    assert rpc is not None
+    await external_plain_calls.started(self, handle, rpc, written_ahead=written_ahead)

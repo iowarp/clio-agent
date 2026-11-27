@@ -618,7 +618,9 @@ def _make_mcp_app_observer(app: FastAPI):
                 data_ref=record.data_ref,
                 mime_type=MCP_APP_MIME_TYPE,
                 display_mode=record.display_mode,
-                title=view_label(record.source_namespace, tool, record.tool_input),
+                title=view_label(
+                    record.source_namespace, tool, record.tool_input, tool_name=record.tool_name
+                ),
                 metadata={"stream_source": "live", "protocol": MCP_APPS_PROTOCOL_REVISION},
             ),
         )

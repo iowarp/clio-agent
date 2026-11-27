@@ -14,6 +14,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from clio_agent.gact import conversation_stop_hold
 from clio_agent.gact.events import Event
 from clio_agent.gact.human_controls import intervene
 
@@ -72,10 +73,11 @@ async def _stop_children(app: Any, sid: str, assignment: Any) -> dict[str, Any]:
         if assignment is not None
         else None
     )
-    if current is not None and current.terminal_at is None:
-        targets = [current.handle] if scope else []  # nothing open: the turn stop is all
-    else:
-        targets = [row["handle"] for row in scope]
+    # Everything open, each by its own handle: a turn's cancel does not reach a tool call
+    # the turn is waiting on (that call outlives the reply on "Stop reply only").
+    targets = [row["handle"] for row in scope]
+    if current is not None and current.terminal_at is None and scope:
+        targets.insert(0, current.handle)
     requests: list[dict[str, Any]] = []
     for handle in targets:
         try:
@@ -167,6 +169,7 @@ async def cancel_session_state_async(
     )
     effect = {**effect, "composer_autostart": composer, "children": children}
     if children == "stop":
+        await app.state.task_history.io.run(conversation_stop_hold.stop, app.state.sessions, sid)
         effect.update(await _stop_children(app, sid, assignment), accepted_tasks_continue=False)
     await app.state.task_history.io.run(app.state.sessions.update, sid, status=effect["status"])
     app.state.bus.publish(

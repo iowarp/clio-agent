@@ -162,3 +162,57 @@ def test_a_view_the_browser_is_not_drawing_is_still_answered(style: str, expect:
     not_drawing = "view_not_drawing" in reasons and result["painted"]["canvas"] == 0
     # Chromium may or may not draw a frame clipped to nothing: either way it is answered.
     assert {"drawn": drew, "not_drawing": not_drawing, "either": drew or not_drawing}[expect]
+
+
+_SHADOW_PAGE = """<!doctype html><html><body style="margin:0;background:#fff">
+<board-view></board-view>
+<script>
+customElements.define('board-view', class extends HTMLElement {
+  connectedCallback() {
+    const root = this.attachShadow({mode: 'open'});
+    root.innerHTML = '<div style="font:16px sans-serif">Layer F.Cu</div>' +
+      '<canvas width=200 height=100 style="width:200px;height:100px"></canvas>';
+    const g = root.querySelector('canvas').getContext('2d');
+    g.fillStyle = 'rgb(200, 30, 40)';
+    g.fillRect(0, 0, 200, 100);
+  }
+});
+</script></body></html>"""
+
+
+def test_a_canvas_inside_a_web_components_shadow_root_is_painted() -> None:
+    """Found live (KiCad board view): ecad-viewer draws the board on a canvas inside its
+    shadow root; the snapshot painted no canvas and said nothing, so every look at the
+    board came back blank under the view's toolbar."""
+    executable = _chromium()
+    if executable is None:
+        pytest.skip("no Chromium for the snapshot script")
+    with sync_api.sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            executable_path=executable, env={**os.environ, "TMPDIR": "/tmp"}
+        )
+        try:
+            page = browser.new_page(viewport={"width": 300, "height": 200})
+            page.set_content(_SHADOW_PAGE)
+            page.add_script_tag(content=SNAPSHOT_SCRIPT + "\nwindow.__snap = clioViewSnapshot;")
+            result = page.evaluate(
+                """async () => {
+                  const r = await window.__snap(window, {});
+                  const img = new Image();
+                  img.src = r.image;
+                  await img.decode();
+                  const c = document.createElement('canvas');
+                  c.width = img.width; c.height = img.height;
+                  const g = c.getContext('2d');
+                  g.drawImage(img, 0, 0);
+                  const canvasTop = document.querySelector('board-view').shadowRoot
+                    .querySelector('canvas').getBoundingClientRect().top;
+                  return {painted: r.painted,
+                          pixel: Array.from(g.getImageData(50, canvasTop + 50, 1, 1).data)};
+                }"""
+            )
+            assert result["painted"]["canvas"] == 1
+            assert result["painted"]["text"] == 1
+            assert result["pixel"][:3] == [200, 30, 40]
+        finally:
+            browser.close()

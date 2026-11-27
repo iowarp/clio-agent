@@ -1,0 +1,3 @@
+kicad-routed-board.png: The routed sensor-node board (USB-C, ESP32-C3, temperature sensor, LED) in KiCad's board view inside CLIO, while the agent runs DRC and finishes the board.
+kicad-board-3d.png: The same board in 3D in CLIO's viewer, from the plain request "Show me this board in 3D."; the agent captured and described it.
+kicad-case-see-through.png: A 3D-printable case the agent designed around the measured board, shown see-through with the board inside, then exploded below.

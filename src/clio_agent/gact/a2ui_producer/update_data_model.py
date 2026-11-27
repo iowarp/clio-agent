@@ -8,6 +8,7 @@ from clio_agent.gact.a2ui_producer import _bound_files, _common
 from clio_agent.gact.a2ui_producer._presentation import surface_presentation
 from clio_agent.gact.a2ui_producer._refusal import refusal
 from clio_agent.gact.agents.tool_instrumentation import native_tool
+from clio_agent.gact.cancellation_check import make_cancellation_checker
 from clio_agent.gact.protocol_v3 import A2UI_V091_WIRE
 
 
@@ -191,6 +192,7 @@ def _control_saved_view(
             view_revision=view_revision,
             path=path,
             value=value,
+            stopped=make_cancellation_checker(app),  # no time limit; Stop ends the wait
         )
     except (ValueError, VisualFeedbackError) as exc:
         return refusal(getattr(exc, "reason", "a2ui_view_control_unavailable"), detail=str(exc))

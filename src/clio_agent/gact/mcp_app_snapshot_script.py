@@ -10,7 +10,7 @@ PNG and what it could and could not paint. Nothing is changed in the view, and t
 is not asked.
 
 What it paints, in order: element backgrounds, then every visible ``canvas``, ``img``,
-``video`` and ``svg`` (``svg`` with its computed presentation styles), then HTML text (a
+``video`` and ``svg`` (inside open shadow roots too: a web component draws there) (``svg`` with its computed presentation styles), then HTML text (a
 wrapped run word by word, each at its line box), each clipped to its frame and to every
 ancestor that clips its overflow; an element that is hidden, fully transparent or clipped
 away entirely is not painted, as the person does not see it. A WebGL canvas that keeps
@@ -52,6 +52,17 @@ const clioViewSnapshot = (() => {
   });
   const wait = (ms) => new Promise((done) => setTimeout(done, ms));
   const px = (value) => parseFloat(value) || 0;
+  // A web component draws inside its open shadow root (the KiCad board view's ecad-viewer
+  // keeps its WebGL canvas there): every query reaches into open shadow roots, and an
+  // element's ancestors continue through its shadow root's host.
+  function deepAll(root, selector) {
+    const found = Array.from(root.querySelectorAll(selector));
+    for (const host of root.querySelectorAll('*')) {
+      if (host.shadowRoot) found.push(...deepAll(host.shadowRoot, selector));
+    }
+    return found;
+  }
+  const up = (el) => el.parentElement || (el.parentNode && el.parentNode.host) || null;
 
   // Every window of the view this document may read, with its offset in the view.
   function windows(win, x, y, out, skipped) {
@@ -194,7 +205,7 @@ const clioViewSnapshot = (() => {
       !element.checkVisibility({ opacityProperty: true, visibilityProperty: true })) return null;
     let left = box.left, top = box.top, right = box.right, bottom = box.bottom;
     let mode = win.getComputedStyle(element).position;
-    for (let el = element.parentElement; el && mode !== 'fixed'; el = el.parentElement) {
+    for (let el = up(element); el && mode !== 'fixed'; el = up(el)) {
       const style = win.getComputedStyle(el);
       const contains = mode !== 'absolute' || style.position !== 'static' || style.transform !== 'none';
       if (!contains || style.display === 'contents') continue;
@@ -210,7 +221,7 @@ const clioViewSnapshot = (() => {
   function paintBackgrounds(context, frames, media) {
     let count = 0;
     for (const { win, x, y } of frames) {
-      const all = win.document.body ? win.document.body.querySelectorAll('*') : [];
+      const all = win.document.body ? deepAll(win.document.body, '*') : [];
       context.save();
       context.beginPath();
       context.rect(x, y, win.innerWidth, win.innerHeight);
@@ -247,7 +258,9 @@ const clioViewSnapshot = (() => {
       context.beginPath();
       context.rect(x, y, win.innerWidth, win.innerHeight);
       context.clip();
-      const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+      const roots = [doc.body, ...deepAll(doc.body, '*').filter((e) => e.shadowRoot).map((e) => e.shadowRoot)];
+      for (const root of roots) {
+      const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
       for (let node = walker.nextNode(); node && drawn + missed < 4000; node = walker.nextNode()) {
         const text = node.nodeValue ? node.nodeValue.replace(/\s+/g, ' ').trim() : '';
         const parent = node.parentElement;
@@ -289,6 +302,7 @@ const clioViewSnapshot = (() => {
         }
         if (painted) drawn += 1;
       }
+      }
       context.restore();
     }
     return { drawn, missed };
@@ -304,7 +318,7 @@ const clioViewSnapshot = (() => {
     const items = [];
     const live = [];
     for (const { win, x, y } of frames) {
-      for (const element of win.document.querySelectorAll('canvas, img, video, svg')) {
+      for (const element of deepAll(win.document, 'canvas, img, video, svg')) {
         if (element.tagName.toLowerCase() === 'svg' && element.parentElement?.closest('svg')) continue;
         const box = element.getBoundingClientRect();
         if (box.width < 1 || box.height < 1) continue;

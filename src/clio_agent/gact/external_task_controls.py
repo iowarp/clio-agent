@@ -7,6 +7,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from clio_agent.gact import external_plain_calls
 from clio_agent.gact.external_task_inputs import close_input_questions
 from clio_agent.gact.native_work import now
 from clio_agent.gact.task_access import TaskAccess, TaskCaller
@@ -131,6 +132,9 @@ async def cancel(
             or owner.recovery.is_pending("external-cancel-inputs:" + handle)
             else "confirmed",
         }
+    plain = await external_plain_calls.cancel(owner, handle)  # a call with no MCP task
+    if plain is not None:
+        return plain
     return {
         "handle": handle,
         "cancellation_requested": True,

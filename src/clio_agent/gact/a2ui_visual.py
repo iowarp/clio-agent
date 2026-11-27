@@ -10,8 +10,10 @@ import base64
 import binascii
 import io
 import json
+import math
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from threading import Condition
 from typing import Any
@@ -217,10 +219,6 @@ class A2UIVisualFeedback:
                 raise VisualFeedbackError(
                     "a2ui_capture_wrong_viewer", "Another viewer owns this request."
                 )
-            if time.monotonic() >= request.deadline:
-                raise VisualFeedbackError(
-                    "a2ui_capture_timeout", "Capture arrived after its deadline."
-                )
             control = request.data_model_update is not None
             self._assert_current(request, allow_epoch_change=control)
             if control:
@@ -313,6 +311,7 @@ class A2UIVisualFeedback:
         view_revision: int,
         path: str,
         value: Any,
+        stopped: Callable[[], bool] = lambda: False,
     ) -> dict[str, Any]:
         """Apply one declared local binding to a pinned saved view, with an epoch guard."""
         if len(json.dumps(value)) > 4096:
@@ -347,7 +346,7 @@ class A2UIVisualFeedback:
                 sid,
                 row.report.model_copy(deep=True),
                 "",
-                time.monotonic() + 15,
+                math.inf,  # waits for the viewer's answer, its absence, or a stop; no limit
                 data_model_update={"path": path, "value": value},
             )
             request_id = uuid.uuid4().hex
@@ -355,13 +354,8 @@ class A2UIVisualFeedback:
             try:
                 while request.reply is None:
                     self._assert_current(request, allow_epoch_change=True)
-                    remaining = request.deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise VisualFeedbackError(
-                            "a2ui_view_control_timeout",
-                            "The viewer did not acknowledge the control; inspect its state before retrying.",
-                        )
-                    self._condition.wait(min(remaining, 0.25))
+                    _raise_if_stopped(stopped)
+                    self._condition.wait(0.25)
                 self._assert_current(request, allow_epoch_change=True)
                 reply = request.reply
                 if reply.error:
@@ -392,21 +386,21 @@ class A2UIVisualFeedback:
         viewer_id: str = "",
         view_revision: int | None = None,
         artifact_id: str = "",
-        timeout: float = 15,
         conversation_open: bool | None = None,
+        stopped: Callable[[], bool] = lambda: False,
     ) -> tuple[bytes, dict[str, Any]]:
         """Wait for an eligible mounted renderer and its matching fresh PNG.
+
+        There is no time limit: the wait ends when the viewer answers, when the viewer is
+        gone (its lease lapses or its view changes, a typed refusal), or when ``stopped``
+        says the call was stopped (``a2ui_capture_stopped``).
 
         ``conversation_open`` says whether a CLIO window follows the session's events.
         While one does, a surface it has not mounted yet (one just created) gets up to
         ``MOUNT_WAIT`` to appear before the capture says why it cannot be taken.
         """
-        if not 0 < timeout <= 20:
-            raise VisualFeedbackError(
-                "a2ui_capture_timeout_invalid", "Timeout must be in (0, 20] seconds."
-            )
         with self._condition:
-            deadline = time.monotonic() + timeout
+            deadline = math.inf
             self._prune()
             eligible = [
                 row
@@ -450,10 +444,8 @@ class A2UIVisualFeedback:
                 (not matched and any(row.report.revision < revision for row in eligible))
                 or (matched and not any(row.report.ready for row in matched))
             ):
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                self._condition.wait(min(remaining, 0.25))
+                _raise_if_stopped(stopped)
+                self._condition.wait(0.25)
                 self._prune()
                 eligible = [
                     row
@@ -468,8 +460,7 @@ class A2UIVisualFeedback:
             if matched and not any(row.report.ready for row in matched):
                 raise VisualFeedbackError(
                     "a2ui_render_not_ready",
-                    "Required data or rendering did not become ready within the capture budget"
-                    + _viewer_reasons(matched),
+                    "Required data or rendering is not ready" + _viewer_reasons(matched),
                 )
             matched = [row for row in matched if row.report.ready]
             if not matched:
@@ -500,13 +491,8 @@ class A2UIVisualFeedback:
             try:
                 while request.reply is None:
                     self._assert_current(request)
-                    remaining = request.deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise VisualFeedbackError(
-                            "a2ui_capture_timeout",
-                            "The viewer did not deliver pixels within the capture budget.",
-                        )
-                    self._condition.wait(min(remaining, 0.5))
+                    _raise_if_stopped(stopped)
+                    self._condition.wait(0.5)
                 self._assert_current(request)
                 reply = request.reply
                 if reply.error:
@@ -554,3 +540,9 @@ def decode_png(encoded: str) -> tuple[bytes, dict[str, int]]:
     except (ValueError, OSError, binascii.Error, Image.DecompressionBombError) as exc:
         raise VisualFeedbackError("a2ui_capture_invalid_image", str(exc)) from exc
     return data, {"width": width, "height": height}
+
+
+def _raise_if_stopped(stopped: Callable[[], bool]) -> None:
+    """End a wait the calling tool was stopped in, with its typed reason."""
+    if stopped():
+        raise VisualFeedbackError("a2ui_capture_stopped", "The call was stopped.")

@@ -29,6 +29,7 @@ from clio_agent.gact import (
     conversation_assignments,
     conversation_controls,
     conversation_recovery,
+    conversation_stop_hold,
 )
 from clio_agent.gact.agent_task_limits import max_inference_concurrency
 from clio_agent.gact.conversation_assignments import ConversationOutcome, ConversationSegment
@@ -153,6 +154,8 @@ class Conversations:
         session = self.sessions.get(sid)
         if session is None or self.model_paused(sid):
             return False
+        if conversation_stop_hold.holds(self.sessions, self.history, sid, item):
+            return False  # stopped by the person: waits for their next message
         if item.kind == "delegation" and item.handle:
             delegated = self.history.task_snapshot(item.handle)
             if delegated is None or delegated.terminal_at is not None:

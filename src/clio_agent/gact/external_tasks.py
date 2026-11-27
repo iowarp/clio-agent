@@ -470,6 +470,7 @@ class ExternalTasks:
                 with client.submission(binding):
                     # The calling session, for per-branch state, and the person's locale.
                     meta = with_locale(caller_meta())
+                    await external_task_connections.plain_call_started(self, handle, lazy is None)
                     return await client.call_tool(
                         name,
                         public,
