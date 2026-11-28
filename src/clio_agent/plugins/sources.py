@@ -1,7 +1,9 @@
 """Fetch plugin sources: local folders and git repositories pinned by commit.
 
 A source is a local path, a git URL (``https://...git``, ``github:owner/repo``)
-with an optional ref, or a git URL pinned to a commit. Pinned fetches are
+with an optional ref, or a git URL pinned to a commit. A source not written as a git
+address is a folder even when it is not there, so a missing folder is reported as
+missing rather than fetched with git. Pinned fetches are
 content-addressed by ``(url, commit)`` so two marketplace entries that point
 into the same commit (federated ``git-subdir`` entries) share one checkout.
 
@@ -77,9 +79,21 @@ def normalize_git_url(value: str) -> str:
     return text
 
 
+#: A source written as a git address: ``scheme://``, ``user@host:path`` or ``host.domain:path``.
+_GIT_ADDRESS = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://|[\w.-]+@[\w.-]+:|[\w-]+(?:\.[\w-]+)+:")
+
+
 def is_local(value: str) -> bool:
-    candidate = Path(value).expanduser()
-    return candidate.exists()
+    """Whether ``value`` names a folder on this machine rather than a git repository.
+
+    An existing path is local. A missing one is local too unless it is written as a git
+    address (:data:`_GIT_ADDRESS`, ``github:owner/repo`` or ``owner/repo``), so a folder
+    that is not there is reported as missing instead of being fetched with git.
+    """
+    text = value.strip()
+    if Path(text).expanduser().exists():
+        return True
+    return not _GIT_ADDRESS.match(text) and normalize_git_url(text) == text
 
 
 def cache_key(url: str, revision: str) -> str:
@@ -182,9 +196,13 @@ def fetch(
     """
 
     _check_revision(source, ref, commit)
+    local = not declared and is_local(source)
     if declared:
         _check_declared(normalize_git_url(source))
-    elif is_local(source) and not commit:
+    elif local and not Path(source).expanduser().exists():
+        missing = Path(source).expanduser().resolve()
+        raise SourceError(f"the marketplace folder {missing} doesn't exist")
+    elif local and not commit:
         path = Path(source).expanduser().resolve()
         head = ""
         if (path / ".git").exists():
@@ -211,7 +229,6 @@ def fetch(
             local=True,
             commit_reason="" if head else "local_folder_not_git",
         )
-    local = not declared and is_local(source)
     url = str(Path(source).expanduser().resolve()) if local else normalize_git_url(source)
     if url.startswith("-"):
         raise SourceError(f"{url!r} is not a git URL")

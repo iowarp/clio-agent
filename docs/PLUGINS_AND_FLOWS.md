@@ -442,6 +442,9 @@ is degraded with it); other marketplaces stay usable. `POST
 `{"ready": ..., "default_marketplace_error": ...}`. A state write or snapshot
 rename that another process's open handle blocks (a virus scan, an indexer)
 waits for it, with a warning after about a second, instead of failing the install.
+A marketplace source not written as a git address (`scheme://`, `user@host:path`,
+`github:owner/repo`, `owner/repo`) is a folder; a folder that is not there fails as
+"the marketplace folder <path> doesn't exist", never as a git fetch.
 
 ### Built-in plugins
 

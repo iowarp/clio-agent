@@ -92,6 +92,22 @@ def test_a_folder_the_person_names_still_installs(tmp_path: Path) -> None:
     assert fetched.local and fetched.path == folder.resolve()
 
 
+def test_a_folder_that_is_not_there_is_reported_missing_not_fetched_with_git(
+    tmp_path: Path,
+) -> None:
+    missing = tmp_path / "no-such-marketplace"
+    with pytest.raises(SourceError, match="the marketplace folder .* doesn't exist"):
+        fetch(str(missing), cache=tmp_path / "cache")
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["https://github.com/o/r.git", "git@github.com:o/r.git", "github:o/r", "o/r", "host.xz:r"],
+)
+def test_a_git_address_is_never_taken_for_a_missing_folder(source: str) -> None:
+    assert not sources.is_local(source)
+
+
 # ---------------------------------------------------- remove, then add again
 
 
