@@ -19,6 +19,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+_MIN_SECRET_LENGTH = 6
+
 
 def redact_mcp_error(error: Exception, spec: Mapping[str, Any]) -> str:
     """Keep a bounded diagnostic without reprinting saved credentials or endpoint URLs."""
@@ -33,7 +35,9 @@ def redact_mcp_text(detail: str, spec: Mapping[str, Any]) -> str:
         if isinstance(values, Mapping):
             private.extend(str(value) for value in values.values())
     for value in sorted(set(private), key=len, reverse=True):
-        if value:
+        # A flag such as ``KICAD_MCP_ENABLE_APPS=1`` is no credential; masking it would
+        # garble every digit of a version, hash or line number in the server's output.
+        if len(value) >= _MIN_SECRET_LENGTH:
             detail = detail.replace(value, "[redacted]")
     return detail
 

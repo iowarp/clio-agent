@@ -199,7 +199,9 @@ def unreachable_reason(found: Entry, declared: Mapping[str, Any], detail: str) -
         return f"Nothing answered at {where}: the connection was refused."
     if "name or service not known" in detail.lower() or "nodename" in detail.lower():
         return f"The address {where} could not be found."
-    return f"{found.name} could not be started or reached: {detail[:800]}"
+    if len(detail) > 800:  # a server's own error ends its output: keep what failed and why
+        detail = f"{detail[:240]} … {detail[-560:]}"
+    return f"{found.name} could not be started or reached: {detail}"
 
 
 def _fleet_tools(owners: list[tuple[Any, Any]], namespace: str) -> list[Any] | None:
