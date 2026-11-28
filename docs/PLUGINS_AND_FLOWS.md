@@ -436,7 +436,12 @@ marketplace `clio` is installed or refreshed on first use from
 `external/clio-agent-marketplace` checkout, else
 `https://github.com/iowarp/clio-agent-marketplace.git`. A failure is reported
 as `default_marketplace_unavailable` (`GET /v1/plugins` returns it as
-`default_marketplace_error`); other marketplaces stay usable.
+`default_marketplace_error`, and the `default_marketplace` row of `GET /v1/health`
+is degraded with it); other marketplaces stay usable. `POST
+/v1/plugins/marketplaces/default/retry` runs the install again and returns
+`{"ready": ..., "default_marketplace_error": ...}`. A state write or snapshot
+rename that another process's open handle blocks (a virus scan, an indexer)
+waits for it, with a warning after about a second, instead of failing the install.
 
 ### Built-in plugins
 

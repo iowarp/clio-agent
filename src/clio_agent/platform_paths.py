@@ -61,6 +61,11 @@ _RETRYABLE_WINERRORS = (5, 32)
 #: reported instead of hanging the write.
 _MAX_RETRY_DELAY_S = 0.5
 
+#: :func:`_replace_with_backoff` warns once a move has waited this long, then every
+#: ``_REPLACE_STALL_REPEAT_S`` while it still waits.
+_REPLACE_STALL_WARNING_S = 1.0
+_REPLACE_STALL_REPEAT_S = 10.0
+
 logger = logging.getLogger(__name__)
 
 
@@ -327,9 +332,61 @@ def remove_tree(path: str | Path, *, attempts: int = 5) -> None:
     raise TreeRemovalError(f"cannot delete {path}: {last}") from last
 
 
+def _replace_with_backoff(
+    source: str | Path, target: str | Path, *, overwrite: bool = True
+) -> None:
+    """Move ``source`` onto ``target``, waiting as long as another handle blocks it.
+
+    On Windows a file or folder that a virus scanner, an indexer or a concurrent reader
+    has open cannot be replaced or renamed (``PermissionError``), and the scan lasts as
+    long as it lasts. So a ``PermissionError`` is retried on every OS, with a backoff
+    capped at ``_MAX_RETRY_DELAY_S`` and no attempt limit; after about
+    ``_REPLACE_STALL_WARNING_S`` a warning names the target, then again every
+    ``_REPLACE_STALL_REPEAT_S``, so a stall is visible rather than silent.
+
+    ``overwrite`` is ``os.replace``; without it the move is ``os.rename`` (a staged folder
+    moved to a name that must not exist yet), and a ``target`` that exists is raised.
+    Any other ``OSError`` is raised at once.
+    """
+    move = os.replace if overwrite else os.rename
+    source_text, target_text = _extended_absolute(source), _extended_absolute(target)
+    started = time.monotonic()
+    warn_at = started + _REPLACE_STALL_WARNING_S
+    warned = False
+    delay = 0.005
+    while True:
+        try:
+            move(source_text, target_text)
+        except PermissionError as exc:
+            if not overwrite and os.path.lexists(target_text):
+                raise
+            now = time.monotonic()
+            if now >= warn_at:
+                logger.warning(
+                    "replace waiting reason=%s target=%s waited=%.1fs: %s",
+                    ReplaceBlockedError.reason,
+                    target,
+                    now - started,
+                    exc,
+                )
+                warn_at, warned = now + _REPLACE_STALL_REPEAT_S, True
+            time.sleep(delay)
+            delay = min(delay * 2, _MAX_RETRY_DELAY_S)
+            continue
+        if warned:
+            logger.warning(
+                "replace done target=%s waited=%.1fs", target, time.monotonic() - started
+            )
+        return
+
+
 def rename_extended(source: str | Path, destination: str | Path) -> None:
-    """``os.rename`` with both paths in extended-length form."""
-    os.rename(_extended_absolute(source), _extended_absolute(destination))
+    """``os.rename`` with both paths in extended-length form, waiting out an open handle.
+
+    See :func:`_replace_with_backoff`: a scan of the fresh files under a staged folder
+    blocks its rename until the scan ends.
+    """
+    _replace_with_backoff(source, destination, overwrite=False)
 
 
 def tree_files(

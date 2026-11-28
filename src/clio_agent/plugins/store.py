@@ -41,7 +41,12 @@ from typing import Any
 
 from filelock import FileLock
 
-from clio_agent.platform_paths import rename_extended, rmtree_extended, win_extended_path
+from clio_agent.platform_paths import (
+    _replace_with_backoff,
+    rename_extended,
+    rmtree_extended,
+    win_extended_path,
+)
 from clio_agent.plugins.builtin_records import BUILTIN_MARKETPLACE, builtin_records
 from clio_agent.plugins.claude_code import import_claude_plugin
 from clio_agent.plugins.loader import (
@@ -222,12 +227,15 @@ class PluginStore:
         }
 
     def read_state(self) -> dict[str, Any]:
-        if not self.state_path.is_file():
-            return self._empty()
-        try:
-            data = json.loads(self.state_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise StoreError("plugin_state_unreadable", f"{self.state_path}: {exc}") from exc
+        # Under the lock: on Windows a read that opens state.json while _write_state
+        # replaces it fails with EACCES, and its open handle blocks that replace.
+        with self.lock:
+            if not self.state_path.is_file():
+                return self._empty()
+            try:
+                data = json.loads(self.state_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise StoreError("plugin_state_unreadable", f"{self.state_path}: {exc}") from exc
         if data.get("version") != STATE_VERSION:
             raise StoreError(
                 "plugin_state_version", f"{self.state_path}: unsupported state version"
@@ -237,7 +245,7 @@ class PluginStore:
     def _write_state(self, state: dict[str, Any]) -> None:
         temporary = self.state_path.with_suffix(".tmp")
         temporary.write_text(json.dumps(state, indent=1, sort_keys=True), encoding="utf-8")
-        os.replace(temporary, self.state_path)
+        _replace_with_backoff(temporary, self.state_path)
 
     def revision(self) -> tuple[int, int, int]:
         """An identity of the stored state that changes on every write.

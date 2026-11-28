@@ -254,3 +254,43 @@ def test_atomic_replace_never_retries_off_win32(
         platform_paths.atomic_replace(tmp_path / "source.tmp", tmp_path / "target.json", retries=5)
 
     assert len(calls) == 1
+
+
+def test_replace_with_backoff_waits_out_an_open_handle_and_says_so(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A scan holding the target longer than any fixed budget delays the write, never fails it."""
+    clock = iter(range(1000))
+    monkeypatch.setattr(platform_paths.time, "monotonic", lambda: float(next(clock)))
+    monkeypatch.setattr(platform_paths.time, "sleep", lambda _seconds: None)
+    source = tmp_path / "state.tmp"
+    target = tmp_path / "state.json"
+    source.write_text("new", encoding="utf-8")
+    calls: list[int] = []
+    real_replace = platform_paths.os.replace
+
+    def held(src: str, dst: str) -> None:
+        calls.append(1)
+        if len(calls) < 40:
+            raise PermissionError(13, "Permission denied")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(platform_paths.os, "replace", held)
+
+    with caplog.at_level("WARNING", logger=platform_paths.__name__):
+        platform_paths._replace_with_backoff(source, target)
+
+    assert len(calls) == 40
+    assert target.read_text(encoding="utf-8") == "new"
+    assert any("replace waiting" in record.message for record in caplog.records)
+
+
+def test_rename_extended_raises_when_the_target_already_exists(tmp_path: Path) -> None:
+    """Another install that named the folder first is reported, not waited on."""
+    staging = tmp_path / "copy.partial"
+    target = tmp_path / "copy"
+    staging.mkdir()
+    (target / "inner").mkdir(parents=True)
+
+    with pytest.raises(OSError):
+        platform_paths.rename_extended(staging, target)

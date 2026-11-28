@@ -220,6 +220,18 @@ class PluginService:
                 )
             self._ready = True
 
+    def retry_ready(self) -> None:
+        """Run :meth:`ready` again after its default-marketplace install failed.
+
+        The person's retry from the boot status (``POST
+        /v1/plugins/marketplaces/default/retry``); a no-op once the install succeeded.
+        """
+
+        with self._ready_lock:
+            if self.ready_error is not None:
+                self._ready = False
+        self.ready()
+
     def _migrate_authored(self) -> None:
         """Move plugins an older CLIO wrote (``<store>/authored``) into ``private-local``."""
 

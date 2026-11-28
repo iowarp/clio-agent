@@ -272,6 +272,24 @@ def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         return {"marketplaces": await _call(rows)}
 
+    @app.post("/v1/plugins/marketplaces/default/retry")
+    async def retry_default_marketplace() -> dict[str, Any]:
+        """Install the default marketplace again after the boot install failed.
+
+        The retry the ``default_marketplace`` health row offers. ``ready`` is whether the
+        default agents are now installed; ``default_marketplace_error`` is the failure
+        (``reason``, ``source``, ``message``) when they are still not, else ``None``.
+        """
+        service = plugin_service(app)
+        failed = service.ready_error is not None
+        await _call(service.retry_ready)
+        if failed and service.ready_error is None:
+            installed_changed()
+        return {
+            "ready": service.ready_error is None,
+            "default_marketplace_error": service.ready_error,
+        }
+
     @app.post("/v1/plugins/marketplaces", status_code=201)
     async def install_marketplace(request: Request) -> dict[str, Any]:
         body = await json_body(request, route="POST /v1/plugins/marketplaces")

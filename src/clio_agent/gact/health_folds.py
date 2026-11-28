@@ -13,6 +13,9 @@ from clio_agent.gact import store_format_boot, store_migrations
 from clio_agent.gact.agent_initialization import AGENT_INIT_FAILED_REASON
 from clio_agent.runtime.status import IntegrationState, IntegrationStatus
 
+#: The retry the failed ``default_marketplace`` row offers (``routes/plugins.py``).
+DEFAULT_MARKETPLACE_RETRY_PATH = "/v1/plugins/marketplaces/default/retry"
+
 
 def folded_rows(app: Any) -> list[IntegrationStatus]:
     """The rows ``GET /v1/health`` adds to the doctor collection."""
@@ -68,8 +71,8 @@ def default_marketplace_rows(app: Any) -> list[IntegrationStatus]:
                 summary="CLIO's default agents are not installed, so conversations cannot "
                 f"start with them: {error.get('message', '')}",
                 config_source=str(error.get("source", "")),
-                next_action="Fix the cause above, then restart CLIO: it installs the default "
-                "agents when it starts.",
+                next_action="Fix the cause above, then retry the install (POST "
+                f"{DEFAULT_MARKETPLACE_RETRY_PATH}); restarting CLIO retries it too.",
                 details=dict(error),
             )
         ]
