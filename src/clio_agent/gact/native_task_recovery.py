@@ -29,6 +29,10 @@ from clio_agent.tools.task_client import (
 if TYPE_CHECKING:
     from clio_agent.gact.native_tools import NativeTools
 
+_RUNTIME_GONE = (
+    "The previous memory-backed runtime is gone. Inspect effects before deliberately retrying."
+)
+
 
 async def restore(self: NativeTools, handles: tuple[str, ...] | None = None) -> None:
     """Reattach persistent native identities; never replay a recorded submission."""
@@ -118,7 +122,7 @@ async def restore(self: NativeTools, handles: tuple[str, ...] | None = None) -> 
                         {
                             "error": "native_runtime_interrupted",
                             "effects": "uncertain",
-                            "message": "The previous memory-backed runtime is gone. Inspect effects before deliberately retrying.",
+                            "message": _RUNTIME_GONE,
                             "resubmitted": False,
                             "backend": task.backend.model_dump(mode="json")
                             if task.backend
@@ -132,6 +136,7 @@ async def restore(self: NativeTools, handles: tuple[str, ...] | None = None) -> 
                             "activity": "",
                             "connection_freshness": "lost",
                             "settlement": "unknown",
+                            "progress": task.progress.model_copy(update={"message": _RUNTIME_GONE}),
                             "result": result,
                             "terminal_at": stamp,
                             "updated_at": stamp,

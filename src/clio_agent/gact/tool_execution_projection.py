@@ -49,6 +49,10 @@ _STATES = {
     "unknown": "unknown",
 }
 
+#: Terminal statuses an owner reports in a tasks/get reply. Any other terminal status
+#: (``interrupted``) is CLIO's own record of lost custody, so no reply exists to decode.
+_REPLY_STATUSES = frozenset({"completed", "failed", "cancelled"})
+
 
 def own_execution_tasks(
     app: Any, session_id: str, invocation_ids: set[str]
@@ -175,7 +179,7 @@ def project_execution(
     error: str | None = None
     if task.status == "completed" and (task.terminal_at is None or task.result is None):
         state, error = "unknown", "The completed task has no recorded terminal result."
-    if task.terminal_at is not None and task.result is not None:
+    if task.terminal_at is not None and task.result is not None and task.status in _REPLY_STATUSES:
         try:
             result, presentation = _result_presentation(history, task, tool)
         except (ValueError, TypeError, ValidationError) as problem:
