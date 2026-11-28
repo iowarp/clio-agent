@@ -122,10 +122,10 @@ restart with a recorded `restart` outcome `not_started` and its reason.
 
 | What | After Stop or cancel | After a server crash |
 | --- | --- | --- |
-| Child agent task | Restart opens a linked assignment in the same child conversation with a control notice: inspect the last confirmed operations, do not replay accepted operations. | Recovery resumes the interrupted assignment in place (no new handle) with the "service restarted" notice. |
-| Flow (`run_flow`) | Restart resumes every earlier run of that flow in the session (`_earlier_runs`). Calls whose tasks completed return their stored results; cancelled or failed calls run again under new occurrence ids; nothing finished runs twice. | The flow's assignment resumes; `forward()` re-runs from the top and each call re-attaches to its handle by invocation id. A call whose acceptance is uncertain raises `TaskStateUncertain` to the flow. |
+| Child agent task | Restart opens a linked assignment in the same child conversation with a control notice: inspect the last confirmed operations, do not replay accepted operations. | Not resumed: its parent decides. Recovery records the assignment `stopped` with the "service restarted" notice, holds its undelivered input as a Stop does, and notifies the parent, which can message it to continue, restart it or cancel it. |
+| Flow (`run_flow`) | Restart resumes every earlier run of that flow in the session (`_earlier_runs`). Calls whose tasks completed return their stored results; cancelled or failed calls run again under new occurrence ids; nothing finished runs twice. | A flow is a child task: it is stopped and its parent decides. Restarting it resumes its earlier runs as after a Stop. |
 | Workflow (`run_workflow`) | Same as a flow: finished steps keep their handles, the rest run. | Same as a flow. |
-| The conversation itself | Restart of its assignment opens a linked assignment; the model sees the cancelled tasks and decides what to restart. | Resumes in place. |
+| The conversation itself | Restart of its assignment opens a linked assignment; the model sees the cancelled tasks and decides what to restart. | Resumes in place, with the notices of its stopped children. |
 | A child of a stopped conversation | Stop everything cancelled the conversation's assignment, which closes admission below it. Restarting the child first opens a linked successor for the stopped conversation (`restart-child:<handle>`, no input of its own), so the child's result reaches a live conversation and wakes it. Stopped ancestors are resumed the same way, top down. | Not applicable. |
 
 **Restarting a running target.** Restart of an assignment that has not ended
@@ -174,9 +174,10 @@ Who can invoke it:
    titled `<flow id> flow` unless a name was given, so its task label and
    `query_tasks(query=...)` find it.
 4. **Nothing stays active without progress.** Recovery settles each
-   interrupted assignment: it resumes, settles with `startup_retirement_error`
-   as `task_state_uncertain`, or continues cancellation that was requested
-   before the crash. MCP calls in flight at the crash become
+   interrupted assignment: a top-level conversation resumes, a child task is
+   recorded `stopped` for its parent to decide on, an unconfirmed startup settles
+   with `startup_retirement_error` as `task_state_uncertain`, and cancellation
+   requested before the crash continues. MCP calls in flight at the crash become
    `task_state_uncertain`, which counts as settled for a flow's call
    (`run_view._SETTLED`) and for its wait. An uncertain call whose owning
    assignment has settled no longer counts as an ancestor's pending work
@@ -190,8 +191,8 @@ Who can invoke it:
    is stopping, such a turn reads `cancelled` with `reason: server_shutdown`
    (`stream_failures.forward_error_info`) and its assignment is left open like a
    drained one (`turn_cancellation_info.ended_by_shutdown`) and retired as
-   `interrupted`, not `stopped`, so the restart resumes it in place, a child task
-   included. A tool call it stops tells the model the service was shutting down, not
+   `interrupted`, not `stopped`, so the restart resumes it in place (a child task is
+   recorded `stopped` for its parent instead, section 2). A tool call it stops tells the model the service was shutting down, not
    that the client cancelled it. The reply the recovery produces carries
    `resumes_turn`, the turn it continues, so the client shows the interrupted reply
    with "Show where it continued" instead of Retry. A transcript the restart closes says why in

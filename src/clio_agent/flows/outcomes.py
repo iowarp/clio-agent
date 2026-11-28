@@ -166,30 +166,22 @@ STATUS_OUTCOMES: dict[str, type[FlowOutcome]] = {
     "stopped": CallStopped,
 }
 
-#: How much of an unexpected error's message a run record keeps.
-FLOW_ERROR_MESSAGE_CHARS = 2000
-
 
 def run_ending(error: Exception) -> tuple[str, dict[str, Any]]:
     """How a run that raised ``error`` ended: its record's status and result.
 
     A typed outcome ends it by its reason (a cancellation is not a fault in it); any
-    other error is ``flow_error`` with its reason, type and message, so the record never
-    stays "running" after its task failed. A message past the record's bound keeps its
-    head and says how much was cut (live, a parse error's whole reply read as broken JSON).
+    other error is ``flow_error`` with its reason, type and whole message, so the record
+    never stays "running" after its task failed and its parent reads the failure as it was.
     """
 
     if isinstance(error, FlowOutcome):
         return ("cancelled" if isinstance(error, CallCancelled) else error.reason), error.to_dict()
-    message = str(error)
-    ending: dict[str, Any] = {
+    return "flow_error", {
         "reason": "flow_error",
         "error": type(error).__name__,
-        "message": message[:FLOW_ERROR_MESSAGE_CHARS],
+        "message": str(error),
     }
-    if len(message) > FLOW_ERROR_MESSAGE_CHARS:
-        ending["message_truncated_chars"] = len(message) - FLOW_ERROR_MESSAGE_CHARS
-    return "flow_error", ending
 
 
 __all__ = [

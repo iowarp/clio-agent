@@ -1,12 +1,12 @@
-"""Start a session's MCP servers in the background, before its first message.
+"""Have a session's MCP tool listings and environments ready before its first message.
 
-Owner, 2026-09-30: the first message must not pay for starting the session's
-servers. When a session is created or opened (and again as each turn starts), CLIO starts
-the servers the session will use -- the session agent's plugin servers and
-any always-load service -- concurrently, off the request path: each is listed and
-connected. Nothing waits on the warm-up. A turn that arrives first builds its model
-request from the listings (joining an in-flight listing), and a tool call waits only
-for its own server: the executor's per-namespace connect joins the warm-up's.
+When a session is created or opened, CLIO prepares the servers the session will use --
+the session agent's plugin servers and any always-load service -- concurrently, off the
+request path. A server process starts only when something needs it: a server whose
+tools are already listed only has its environment built, and starts at its first call;
+a server with no listing is started once to list its tools, which the first model
+request needs. Nothing waits on the warm-up. A turn that arrives first builds its model
+request from the listings (joining an in-flight listing).
 
 A server that fails to start is reported typed (logged, and as the session's
 ``infrastructure.dependency.changed`` state) and is tried again when a call needs
@@ -30,8 +30,10 @@ from clio_agent.runtime import trace
 logger = logging.getLogger(__name__)
 
 READY = "ready"
-# The namespaces a warm-up started on an executor (a fleet): while all are still up,
-# a later warm-up has nothing to do and skips the server re-read.
+#: A server's tools are known and its environment is built; it is not started.
+LISTED = "listed"
+# The namespaces a warm-up covered on an executor (a fleet): while all their tools are
+# known, a later warm-up has nothing to do and skips the server re-read.
 _WARMED_ATTR = "_clio_warmed_namespaces"
 
 # Sessions whose warm-up is running: one at a time per session.
@@ -66,7 +68,7 @@ def start_session_warmup(
         app: The GACT app (its ``state.agent`` owns the workspace fleets).
         sid: The session whose servers to start.
         trigger: What asked for it (``session_created`` / ``conversation_opened`` /
-            ``agent_changed`` / ``turn_started`` / ``page_prestart``), for the log.
+            ``agent_changed`` / ``page_prestart``), for the log.
     """
 
     if not session_warmup_enabled():
@@ -139,33 +141,41 @@ def _warm(app: Any, sid: str, trigger: str) -> None:
 
 
 def warm_session_servers(agent: Any, *, retry_failed: bool = True) -> dict[str, str]:
-    """Prepare the bound workspace's plugin servers concurrently.
+    """Know the bound workspace's plugin server tools, and build their environments.
 
-    Runs inside a session or draft tool context (workspace root, server set). Each cold
-    server is provisioned and started once (:mod:`clio_agent.gact.mcp_background_prepare`).
+    Runs inside a session or draft tool context (workspace root, server set). A server
+    whose tools are already known (listed by this fleet, or persisted by an earlier
+    listing) is not started: only its environment is provisioned, and the server starts
+    when a call needs it. A server with no listing is started once to list its tools --
+    the same preparation a turn would otherwise join
+    (:func:`clio_agent.gact.mcp_background_prepare.prepare_in_background`).
     ``retry_failed=False`` leaves a server whose last preparation failed as it is.
 
     Returns:
-        ``{namespace: "ready" | <typed failure reason>}``.
+        ``{namespace: "listed" | "ready" | <typed failure reason>}``: ``listed`` is
+        known and provisioned but not started, ``ready`` was started to list it.
     """
 
+    import contextvars  # noqa: PLC0415
+    from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
+    from clio_agent.gact import mcp_background_prepare as background  # noqa: PLC0415
     from clio_agent.gact import mcp_readiness  # noqa: PLC0415
+    from clio_agent.tools import mcp_prepare  # noqa: PLC0415
     from clio_agent.tools.execution import (  # noqa: PLC0415
         get_active_tool_server_set,
     )
 
     executor = agent._active_tool_executor()
     specs = getattr(executor, "_clio_namespace_specs", None) or {}
-    prepared = getattr(executor, "is_namespace_prepared", None)
     warmed = getattr(executor, _WARMED_ATTR, None)
     server_set = get_active_tool_server_set()
     if (
         warmed is not None
         and getattr(executor, "_clio_warmed_server_set", "") == server_set
-        and callable(prepared)
-        and all(prepared(ns) for ns in warmed)
+        and all(background.has_definitions(executor, ns) for ns in warmed)
     ):
-        return {}  # its servers are all up: no re-read beside the turn
+        return {}  # every server's tools are known: nothing to do
     declared = {
         name for servers in agent._discover_plugin_servers(server_set).values() for name in servers
     }
@@ -177,23 +187,54 @@ def warm_session_servers(agent: Any, *, retry_failed: bool = True) -> dict[str, 
     if not namespaces:
         return {}
 
-    from clio_agent.tools import mcp_prepare  # noqa: PLC0415
+    def _failed(ns: str) -> str:
+        row = mcp_prepare.preparation_state(ns) or {}
+        return str(row.get("reason") or "") if row.get("state") == mcp_prepare.FAILED else ""
 
-    def _failed(ns: str) -> bool:
-        return (mcp_prepare.preparation_state(ns) or {}).get("state") == mcp_prepare.FAILED
-
-    cold = {
-        ns: specs[ns]
+    known = [
+        ns
         for ns in namespaces
-        if not (callable(prepared) and prepared(ns)) and (retry_failed or not _failed(ns))
-    }
-    _mounted, failures = mcp_readiness.mount_namespaces_for_session(executor, cold, connect=True)
+        if background.has_definitions(executor, ns)
+        or background.adopt_cached_listing(executor, ns, specs[ns])
+    ]
+    report = {ns: _failed(ns) for ns in namespaces if ns not in known and not retry_failed}
+    report = {ns: reason for ns, reason in report.items() if reason}
+    unlisted = {ns: specs[ns] for ns in namespaces if ns not in known and ns not in report}
+    with ThreadPoolExecutor(
+        max_workers=max(1, len(known)), thread_name_prefix="clio-provision-ahead"
+    ) as pool:
+        provisions = {
+            ns: pool.submit(contextvars.copy_context().run, _provision_ahead, ns, specs[ns])
+            for ns in known
+        }
+        mounted, failures = mcp_readiness.mount_namespaces_for_session(
+            executor, unlisted, connect=True
+        )
+        report.update({ns: future.result() for ns, future in provisions.items()})
+    report.update(dict.fromkeys(mounted, READY))
+    report.update(failures)
     setattr(executor, _WARMED_ATTR, frozenset(namespaces))
     executor._clio_warmed_server_set = server_set
-    for ns in namespaces:
-        if ns not in cold and ns not in failures and _failed(ns):
-            failures[ns] = str((mcp_prepare.preparation_state(ns) or {}).get("reason") or "")
-    return {ns: failures.get(ns, READY) for ns in namespaces}
+    return {ns: report[ns] for ns in namespaces}
+
+
+def _provision_ahead(namespace: str, spec: Any) -> str:
+    """Build ``namespace``'s environment without starting its server."""
+
+    from clio_agent.tools import mcp_prepare  # noqa: PLC0415
+
+    try:
+        mcp_prepare.provision(namespace, spec)
+    except Exception as exc:  # noqa: BLE001 - the server's first start builds it again
+        reason = mcp_prepare.classify(exc, mcp_prepare.PHASE_PROVISION)
+        logger.warning(
+            "session_warmup_provision_failed namespace=%s reason=%s error=%s",
+            namespace,
+            reason,
+            exc,
+        )
+        return reason
+    return LISTED
 
 
 # --------------------------------------------------------------------------- #

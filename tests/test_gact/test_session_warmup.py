@@ -1,10 +1,9 @@
-"""A session's MCP servers start in the background, before its first message.
+"""A session's MCP tool listings are ready in the background, before its first message.
 
-Owner, 2026-09-30: the first message must not pay for starting the session's
-servers. When a session is created or an Agent Blueprint is activated, CLIO starts
-the declared servers concurrently in the background; a turn that arrives first
-waits only for the listings it needs (cached or joined), and a tool call waits only
-for its own server (the executor's per-namespace connect joins the warm-up).
+When a session is created or an Agent Blueprint is activated, CLIO lists the declared
+servers it has no listing for, concurrently in the background, and only builds the
+environments of servers already listed: a server process starts when a call needs it.
+A turn that arrives first waits only for the listings it needs (cached or joined).
 """
 
 from __future__ import annotations
@@ -36,8 +35,12 @@ def _isolate_preparation_state() -> Any:
 
 
 class _Executor:
-    def __init__(self, specs: dict[str, Any]) -> None:
+    def __init__(self, specs: dict[str, Any], listed: tuple[str, ...] = ()) -> None:
         self._clio_namespace_specs = specs
+        self.listed = listed  # namespaces whose tools the fleet already offers
+
+    def to_dspy_tools(self) -> list[Any]:
+        return [SimpleNamespace(name=f"{ns}_tool") for ns in self.listed]
 
 
 class _Agent:
@@ -131,8 +134,10 @@ def test_changing_the_session_agent_starts_its_warmup(
     assert starts == [(sid, "session_created"), (sid, "agent_changed")]
 
 
-def test_connected_servers_are_not_started_again(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_listed_server_is_provisioned_but_not_started(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A server process starts only when a call needs it; its env may be built ahead."""
     mounted: list[str] = []
+    provisioned: list[str] = []
 
     def mount(executor: Any, namespace: str, spec: Any, *, connect: bool = True) -> dict:
         del executor, spec, connect
@@ -140,13 +145,17 @@ def test_connected_servers_are_not_started_again(monkeypatch: pytest.MonkeyPatch
         return {}
 
     monkeypatch.setattr("clio_agent.gact.mcp_readiness.mount_namespace_for_session", mount)
-    executor = _Executor(_specs("geo", "ndp"))
-    executor.is_namespace_prepared = lambda ns: ns == "geo"  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        "clio_agent.tools.mcp_prepare.provision",
+        lambda namespace, spec, **_: provisioned.append(namespace) or "provisioned",
+    )
+    executor = _Executor(_specs("geo", "ndp"), listed=("geo",))
 
     report = session_warmup.warm_session_servers(_Agent(executor, pack={"geo": {}, "ndp": {}}))
 
-    assert mounted == ["ndp"]
-    assert report == {"geo": "ready", "ndp": "ready"}
+    assert mounted == ["ndp"], "only the server with no listing starts, to list its tools"
+    assert provisioned == ["geo"]
+    assert report == {"geo": "listed", "ndp": "ready"}
 
 
 def test_one_warmup_per_session_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -162,17 +171,17 @@ def test_one_warmup_per_session_at_a_time(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(session_warmup, "_warm_and_release", _wrap(warm))
     app = SimpleNamespace(state=SimpleNamespace(agent=_Agent(_Executor({}), pack={})))
     first = session_warmup.start_session_warmup(app, "s1", trigger="session_created")
-    second = session_warmup.start_session_warmup(app, "s1", trigger="turn_started")
-    other = session_warmup.start_session_warmup(app, "s2", trigger="turn_started")
+    second = session_warmup.start_session_warmup(app, "s1", trigger="conversation_opened")
+    other = session_warmup.start_session_warmup(app, "s2", trigger="conversation_opened")
     release.set()
     for thread in (first, other):
         assert isinstance(thread, threading.Thread)
         thread.join(5)
 
     assert second is None, "a session already warming is not warmed twice"
-    assert sorted(runs) == ["session_created", "turn_started"]
-    third = session_warmup.start_session_warmup(app, "s1", trigger="turn_started")
-    assert third is not None, "once done, the next turn may warm again"
+    assert sorted(runs) == ["conversation_opened", "session_created"]
+    third = session_warmup.start_session_warmup(app, "s1", trigger="conversation_opened")
+    assert third is not None, "once done, the next opening may warm again"
     assert isinstance(third, threading.Thread)
     third.join(5)
 
@@ -187,10 +196,8 @@ def _wrap(warm: Any) -> Any:
     return run
 
 
-def test_a_turn_starts_the_warmup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A turn builds its request from listings and never waits for a server; the
-    servers it may call start alongside it (after an answered question too, when the
-    idle reaper has closed them)."""
+def test_a_turn_starts_no_warmup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A turn builds its request from listings; a server it calls starts at that call."""
     from .conftest import complete_turn
 
     starts = _recorded_starts(monkeypatch)
@@ -200,7 +207,7 @@ def test_a_turn_starts_the_warmup(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     with TestClient(app) as c:
         sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
         complete_turn(c, sid, "hi")
-    assert (sid, "turn_started") in starts
+    assert starts == [(sid, "session_created")]
 
 
 class _LeasingAgent:
@@ -259,17 +266,16 @@ def test_a_hold_ends_by_itself_when_nobody_answers(monkeypatch: pytest.MonkeyPat
     assert agent.leases == []
 
 
-def test_a_turn_with_every_server_connected_does_no_discovery() -> None:
-    """The warm-up a turn starts must cost nothing when the servers are up: it
-    runs beside the turn's own prologue, so it may not re-read plugin servers then."""
+def test_a_warmup_with_every_server_listed_does_no_discovery() -> None:
+    """A repeated warm-up costs nothing once its servers' tools are known: it may
+    not re-read plugin servers then."""
 
     class _NoDiscovery(_Agent):
         def _discover_plugin_servers(self, server_set: str = "") -> Any:
-            raise AssertionError("discovery ran although every server was connected")
+            raise AssertionError("discovery ran although every server was listed")
 
-    # "user_only" is a configured service this session does not use: never connected.
-    executor = _Executor(_specs("geo", "ndp", "user_only"))
-    executor.is_namespace_prepared = lambda ns: ns != "user_only"  # type: ignore[attr-defined]
+    # "user_only" is a configured service this session does not use: never listed.
+    executor = _Executor(_specs("geo", "ndp", "user_only"), listed=("geo", "ndp"))
     executor._clio_warmed_namespaces = frozenset({"geo", "ndp"})  # type: ignore[attr-defined]
 
     assert session_warmup.warm_session_servers(_NoDiscovery(executor, pack={})) == {}
@@ -286,13 +292,12 @@ def test_a_changed_server_set_still_warms_its_new_servers(monkeypatch: pytest.Mo
         return {}
 
     monkeypatch.setattr("clio_agent.gact.mcp_readiness.mount_namespace_for_session", mount)
-    executor = _Executor(_specs("web", "science", always_load=("web",)))
-    executor.is_namespace_prepared = lambda ns: ns == "web"  # type: ignore[attr-defined]
+    executor = _Executor(_specs("web", "science", always_load=("web",)), listed=("web",))
     executor._clio_warmed_namespaces = frozenset({"web"})  # type: ignore[attr-defined]
     with tool_server_set_context("servers-science"):
         report = session_warmup.warm_session_servers(_Agent(executor, pack={"science": {}}))
     assert mounted == ["science"]
-    assert report == {"science": "ready", "web": "ready"}
+    assert report == {"science": "ready", "web": "listed"}
 
 
 def test_opening_a_conversation_starts_its_warmup(

@@ -71,6 +71,38 @@ def _default_allowed_roots() -> tuple[Path, ...]:
     return (Path.cwd(), *system_temp_roots())
 
 
+def workspace_allowed_roots(workspace_root: str) -> tuple[Path, ...]:
+    """The roots a tool working in ``workspace_root`` has, read from that workspace alone.
+
+    The same roots :meth:`FileAccessPolicy.from_env` gives while that workspace is bound
+    (the workspace, its state and cache folders, its recorded folders, then the configured
+    roots or the temp folders), but from no ambient context: neither the process cwd nor
+    whichever session happens to be bound. One workspace always yields one territory.
+    """
+    from clio_agent import conf, paths  # noqa: PLC0415 - avoid import cycle at module load
+    from clio_agent.runtime.session_scratch import system_temp_roots  # noqa: PLC0415
+
+    workspace = _resolve_root(Path(workspace_root).expanduser())
+    configured = conf.resolve(
+        "tools.file_policy.allowed_roots",
+        env="CLIO_ALLOWED_ROOTS",
+        default=(),
+        cast=_parse_roots,
+    )
+    roots: list[Path] = [
+        workspace,
+        paths.workspace_state_dir(workspace).resolve(),
+        paths.workspace_cache_dir(workspace).resolve(),
+    ]
+    for root in (
+        *_granted_roots_for(workspace),
+        *(_resolve_root(root) for root in configured or system_temp_roots()),
+    ):
+        if root not in roots:
+            roots.append(root)
+    return tuple(roots)
+
+
 def _active_workspace_root() -> Path | None:
     """The active session's workspace root, when a tool is executing within one.
 
@@ -664,17 +696,18 @@ def _resolve_root(root: Path) -> Path:
         return root.absolute()
 
 
+def _parse_roots(value: Any) -> tuple[Path, ...]:
+    """Parse YAML/env allowed-root declarations (possibly none)."""
+    if isinstance(value, (list, tuple)):
+        return tuple(Path(str(item)).expanduser() for item in value if str(item).strip())
+    raw = str(value).strip()
+    sep = os.pathsep if os.pathsep in raw else ","
+    return tuple(Path(item.strip()).expanduser() for item in raw.split(sep) if item.strip())
+
+
 def _coerce_roots(value: Any) -> tuple[Path, ...]:
     """Coerce YAML/env allowed-root declarations to non-empty paths."""
-    if isinstance(value, (list, tuple)):
-        roots = [Path(str(item)).expanduser() for item in value if str(item).strip()]
-    else:
-        raw = str(value).strip()
-        sep = os.pathsep if os.pathsep in raw else ","
-        roots = [Path(item.strip()).expanduser() for item in raw.split(sep) if item.strip()]
-    if not roots:
-        return _default_allowed_roots()
-    return tuple(roots)
+    return _parse_roots(value) or _default_allowed_roots()
 
 
 def _coerce_size_bytes(field: str) -> Callable[[Any], int]:

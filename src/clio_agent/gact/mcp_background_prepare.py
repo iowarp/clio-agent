@@ -1,12 +1,12 @@
-"""Start MCP servers early and obtain definitions before composing a model request.
+"""Obtain MCP tool definitions before composing a model request.
 
-Opening a conversation, creating a session, changing its agent and starting a turn all
-ask for the agent's MCP servers here (:mod:`clio_agent.gact.session_warmup`). Each
-server is prepared once per workspace fleet at a time -- provisioned, started once,
-listed over that connection (:func:`clio_agent.gact.mcp_readiness.
-mount_namespace_for_session`) -- and every caller joins the one preparation in flight.
+A server with no known listing is prepared here -- provisioned, started once, listed
+over that connection (:func:`clio_agent.gact.mcp_readiness.mount_namespace_for_session`)
+-- once per workspace fleet at a time, and every caller joins the one preparation in
+flight. The session warm-up (:mod:`clio_agent.gact.session_warmup`) asks only for
+servers with no listing; a listed server starts when a call needs it.
 
-The service also prepares the default agent's servers when the agent becomes ready and
+The service also lists the default agent's servers when the agent becomes ready and
 when a workspace is created (:mod:`clio_agent.gact.workspace_warmup`). Those listings
 persist in the listing cache, so the first turn's fleet already has every definition.
 
@@ -15,9 +15,8 @@ after its fleet was built is adopted at once. Otherwise it joins the preparation
 running, including its real tools/list, before building the first request. A
 preparation of the same server for another fleet (the launch warm-up) is joined, never
 repeated: its persisted listing then serves this fleet too. Valid cached definitions need
-no wait; the conversation warm-up starts their execution servers independently. The
-existing transport owns launch, connection, authentication and progress limits for every
-server type.
+no wait and start no server. The existing transport owns launch, connection,
+authentication and progress limits for every server type.
 """
 
 from __future__ import annotations
@@ -208,12 +207,14 @@ def prepare_for_turn(tool_executor: Any, specs: Mapping[str, Any]) -> dict[str, 
             continue  # definitions adopted; its connection is still starting
         # exception() joins the same connection/listing as the conversation warm-up.
         exc = future.exception()
-        if exc is not None and not _has_definitions(tool_executor, namespace):
+        if exc is not None and not has_definitions(tool_executor, namespace):
             failures[namespace] = failure_reason(namespace, exc)
     return failures
 
 
-def _has_definitions(tool_executor: Any, namespace: str) -> bool:
+def has_definitions(tool_executor: Any, namespace: str) -> bool:
+    """Whether ``tool_executor`` already offers tools of ``namespace``."""
+
     prefix = f"{namespace}_"
     lister = getattr(tool_executor, "to_dspy_tools", None)
     if not callable(lister):
@@ -224,6 +225,7 @@ def _has_definitions(tool_executor: Any, namespace: str) -> bool:
 __all__ = [
     "adopt_cached_listing",
     "failure_reason",
+    "has_definitions",
     "prepare_for_turn",
     "prepare_in_background",
 ]

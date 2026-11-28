@@ -177,7 +177,6 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
 
     cancel_cb = partial(cancel_requested, state)
     session_warmup.release_session_fleet(state.sid)  # the lease below holds it now
-    session_warmup.start_session_warmup(state.app, state.sid, trigger="turn_started")
     bringup_timing.timer_for_session(state.app, state.sid).start_phase("agent.resolve")
     session_agent_id = _session_agent_id(state.sess)
     timer = bringup_timing.timer_for_session(state.app, state.sid)

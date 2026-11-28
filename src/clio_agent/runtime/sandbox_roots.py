@@ -272,24 +272,40 @@ def effective_write_roots(
     advisory base (defaults to :meth:`FileAccessPolicy.from_mapping` when ``env`` given, else
     ``from_env``); ``workspace_root`` includes an explicit root (shell computes it per
     invocation). Returns a deduped, order-stable tuple (advisory roots first).
+
+    A :data:`PROFILE_FLEET` call with a ``workspace_root`` and no ``policy`` or ``env``
+    takes its base from that workspace alone
+    (:func:`clio_agent.tools.file_policy.workspace_allowed_roots`), so a workspace's fleet
+    has the same territory whichever session, or none, is bound when a server spawns.
     """
     from clio_agent.runtime.session_scratch import (  # noqa: PLC0415 - avoid cycle
         active_scratch_dir,
         system_temp_roots,
     )
-    from clio_agent.tools.file_policy import FileAccessPolicy  # noqa: PLC0415 - avoid cycle
+    from clio_agent.tools.file_policy import (  # noqa: PLC0415 - avoid cycle
+        FileAccessPolicy,
+        workspace_allowed_roots,
+    )
     from clio_agent.tools.write_scope import active_tool_read_only  # noqa: PLC0415
 
     if profile == PROFILE_SHELL and active_tool_read_only():
         # A read-only session's shell (an explore child): reads anything, writes only
         # its scratch and temp, as a plan-mode run_code kernel.
         return read_only_write_roots()
-    if policy is None:
-        policy = (
-            FileAccessPolicy.from_mapping(env) if env is not None else FileAccessPolicy.from_env()
-        )
-    roots: list[Path] = list(policy.allowed_roots)
     scratch = active_scratch_dir()
+    if profile == PROFILE_FLEET and policy is None and env is None and workspace_root:
+        # A workspace's fleet is shared by all of its sessions, so its territory comes from
+        # that workspace alone, never from the process cwd or the session bound at spawn:
+        # one workspace gives one fence, and so one launch its servers can share.
+        roots: list[Path] = list(workspace_allowed_roots(workspace_root))
+    else:
+        if policy is None:
+            policy = (
+                FileAccessPolicy.from_mapping(env)
+                if env is not None
+                else FileAccessPolicy.from_env()
+            )
+        roots = list(policy.allowed_roots)
     if profile == PROFILE_FLEET and scratch is not None:
         # The fleet is shared by every session of the workspace: one session's own scratch
         # folder (TD56), which the advisory policy carries for that session, stays out.

@@ -23,18 +23,21 @@ available yet. Unknown workspaces return 404; unavailable roots return 409.
 
 The connected agent resolves its registered workspace root and the persisted
 session-default agent (the session defaults' `agent_ref`, else `clio/standard`),
-without pinning a session. It lists and connects that agent's plugin MCP servers
-and always-load services concurrently, using the same workspace fleet as later
-sessions. No user turn or model request runs. Calls for the same app, root and
-plugin server set coalesce while preparation is in flight. Failures are logged and may
-be retried by subsequent preparation or normal tool use.
+without pinning a session. It prepares that agent's plugin MCP servers and
+always-load services concurrently, using the same workspace fleet as later
+sessions: a server with no listing is started once to list its tools, and a
+server already listed only has its environment built. A server process otherwise
+starts when a call needs it. No user turn or model request runs. Calls for the
+same app, root and plugin server set coalesce while preparation is in flight.
+Failures are logged and may be retried by subsequent preparation or normal tool
+use.
 
 Desktop requests preparation when entering a supported draft and once per
-minute while it remains visible. This keeps the fleet active while the user
-composes, including against a remote agent; Desktop never resolves the remote
-root as a local path. Sending does not wait on the preparation request. After
-leaving, the ordinary workspace fleet idle reaper controls connection lifetime.
-Older agents without the capability continue preparing tools at session creation.
+minute while it remains visible. Sending does not wait on the preparation
+request; Desktop never resolves the remote root as a local path. After leaving,
+the ordinary workspace fleet idle reaper controls the lifetime of any connection
+a listing opened. Older agents without the capability continue preparing tools
+at session creation.
 
 ## Preparation without a client request
 
@@ -43,10 +46,10 @@ request path:
 
 - **When the agent becomes ready** (launch, or a model change that rebuilds it), and
   when `PATCH /v1/session-defaults` changes `agent_ref`: a fleet rooted in a
-  CLIO-owned folder (`launch-warmup` under the user state directory) provisions,
-  starts and lists every plugin server and always-load service of the default
-  agent. The listing is stored in the listing cache, and then that fleet is
-  closed.
+  CLIO-owned folder (`launch-warmup` under the user state directory) provisions
+  every plugin server and always-load service of the default agent, and starts
+  and lists each one that has no listing yet. The listing is stored in the
+  listing cache, and then that fleet is closed.
 - **When a workspace is created** (`POST /v1/workspaces`): the new root's fleet is
   prepared the same way. The ordinary idle reaper brings it down.
 

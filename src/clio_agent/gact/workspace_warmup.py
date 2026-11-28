@@ -1,14 +1,18 @@
 """Prepare a workspace fleet without allocating a conversation.
 
 The default agent's plugin MCP servers and always-load MCP services use the same
-workspace executor that a later session will use. Leaving the composer needs no
-session cleanup: the ordinary fleet idle reaper owns the warmed connections.
+workspace executor that a later session will use, through the session warm-up's rule
+(:func:`clio_agent.gact.session_warmup.warm_session_servers`): a server with no listing
+is started once to list it, a listed one only has its environment built. Leaving the
+composer needs no session cleanup: the ordinary fleet idle reaper owns any connection
+a listing opened.
 
 Three moments start this preparation, all off the request path:
 
 * the agent becoming ready (:func:`start_launch_warmup`): a CLIO-owned root's fleet
-  provisions every default server, lists it, persists the listing and is then closed,
-  so the first turn of any workspace already has the definitions;
+  provisions every default server, lists each one with no listing, persists the
+  listing and is then closed, so the first turn of any workspace already has the
+  definitions;
 * a workspace being created (``POST /v1/workspaces``) and the default agent changing;
 * the composer's explicit ``POST /v1/workspaces/{wid}/warmup``.
 """

@@ -103,8 +103,15 @@ def _restore_input_projections(self: Conversations) -> None:
 
 
 _ASSIGNMENT_KINDS = frozenset({"Session", "Subagent"})
-#: Activities of an assignment the restart's recovery continues (:func:`_restore_assignment`).
+#: Activities of an assignment a restart interrupted (:func:`_restore_assignment`).
 _RESUMED_ACTIVITIES = frozenset({"busy", "executing", "stopping", "interrupted", "recovering"})
+#: What a subagent the restart interrupted reads as, to its parent and in its own record.
+RESTART_STOPPED_MESSAGE = (
+    "The service restarted while this subagent was working, and nothing resumed it: its "
+    "parent decides what happens next. Its retained context and confirmed input are kept. "
+    "Earlier operations may have affected the environment. Message it to continue, restart "
+    "it, or cancel it."
+)
 
 
 def resumes_after_restart(app: Any, session_id: str) -> bool:
@@ -112,7 +119,8 @@ def resumes_after_restart(app: Any, session_id: str) -> bool:
 
     The same conditions :func:`_restore_assignment` acts on, read from the records
     alone, so the interrupted turn's row says it is continuing instead of offering a
-    Retry that would ask for the same work again (CC-O1). ``False`` when unsure.
+    Retry that would ask for the same work again (CC-O1). A subagent is never continued:
+    its parent decides. ``False`` when unsure.
     """
     history = getattr(app.state, "task_history", None)
     sessions = getattr(app.state, "sessions", None)
@@ -122,7 +130,7 @@ def resumes_after_restart(app: Any, session_id: str) -> bool:
         task = history.latest_assignment(session_id)
         if (
             task is None
-            or task.kind not in _ASSIGNMENT_KINDS
+            or task.kind != "Session"
             or task.terminal_at is not None
             or task.cancellation_requested_at is not None
             or task.activity == "paused"
@@ -272,7 +280,11 @@ async def restore_session(self: Conversations, session_id: str) -> None:
 
 
 async def _restore_assignment(self: Conversations, handle: str) -> None:
-    """Replay one assignment owner's retained observations, never operations."""
+    """Replay one assignment owner's retained observations, never operations.
+
+    A top-level session the restart interrupted is continued with a recovery notice; a
+    subagent is not (:func:`_stop_interrupted_subagent`): its parent decides.
+    """
     task = await self.history.io.run(self.history.task_snapshot, handle)
     if task is None or task.kind not in {"Session", "Subagent"}:
         return
@@ -338,7 +350,7 @@ async def _restore_assignment(self: Conversations, handle: str) -> None:
     ):
         self._paused[task.owner.session_id] = task.handle
         return
-    if task.activity not in {"busy", "executing", "stopping", "interrupted", "recovering"}:
+    if task.activity not in _RESUMED_ACTIVITIES:
         return
     startup_error = await self.history.io.run(
         self.sessions.startup_retirement_error, task.owner.session_id
@@ -346,6 +358,9 @@ async def _restore_assignment(self: Conversations, handle: str) -> None:
     if startup_error:
         # Admission never runs this session again: settle with the typed outcome now.
         await self.history.io.run(_startup_unconfirmed, self, task.handle, startup_error)
+        return
+    if task.kind == "Subagent":
+        await self.history.io.run(_stop_interrupted_subagent, self, task.handle)
         return
     if task.activity == "recovering":
         return
@@ -413,6 +428,58 @@ async def _restore_assignment(self: Conversations, handle: str) -> None:
             )
 
     await self.history.io.run(recover)
+
+
+def _stop_interrupted_subagent(self: Conversations, handle: str) -> None:
+    """Record that the restart interrupted a subagent; its parent decides what follows.
+
+    Nothing resumes it. Its undelivered input is held as a Stop holds it, so it is
+    delivered with the next message the subagent receives; the assignment reads
+    ``stopped`` with :data:`RESTART_STOPPED_MESSAGE`, and that notice reaches the parent.
+    """
+    with self.history.serialized():
+        current = self.history.task_snapshot(handle)
+        if (
+            current is None
+            or current.terminal_at is not None
+            or current.activity not in _RESUMED_ACTIVITIES
+        ):
+            return
+        sid = current.owner.session_id
+        acknowledged = self.history.acknowledged_notifications(sid)
+        for item in self.history.pending_mail(sid):
+            if (
+                item.delivery == "eligible"
+                and item.id not in acknowledged
+                and not self.history.mail_withdrawn(sid, item.id)
+            ):
+                self.history.update_mail(
+                    input_delivery(item, held=True, reason="stopped_before_input_commit"),
+                    expected_revision=item.revision,
+                )
+        episode = "restart:" + uuid4().hex
+        observed = current.model_copy(
+            update={
+                "activity": "stopped",
+                "progress": current.progress.model_copy(
+                    update={"message": RESTART_STOPPED_MESSAGE}
+                ),
+                "attention_episode": episode,
+                "updated_at": now(),
+            }
+        )
+        self.history.record_snapshot(observed, observation_id=uuid4().hex)
+        notice = self.history.write_content(
+            sid,
+            {
+                "handle": observed.handle,
+                "status": observed.status,
+                "activity": observed.activity,
+                "episode": episode,
+                "message": RESTART_STOPPED_MESSAGE,
+            },
+        )
+        publish_task_notice(self.history, observed, episode=episode, attention_content=notice)
 
 
 def _startup_unconfirmed(self: Conversations, handle: str, message: str) -> None:

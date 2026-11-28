@@ -96,16 +96,16 @@ def _disowned(error: BaseException) -> str | None:
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         if getattr(current, "code", None) in {mcp_types.INVALID_PARAMS, mcp_types.METHOD_NOT_FOUND}:
-            return (str(current) or type(current).__name__)[:300]
+            return str(current) or type(current).__name__
         current = current.__cause__ or current.__context__
     return None
 
 
 def _reply_text(reply: Any) -> str:
-    """The text of an error reply, bounded, for the typed reason."""
+    """The text of an error reply, whole, for the typed reason."""
     parts = getattr(reply, "content", None) or ()
     text = " ".join(str(getattr(part, "text", "") or "") for part in parts).strip()
-    return text[:300] or "no reply"
+    return text or "no reply"
 
 
 @dataclass

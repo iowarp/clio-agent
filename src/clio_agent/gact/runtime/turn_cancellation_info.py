@@ -57,7 +57,7 @@ def shutdown_error_info(sid: str, exc: BaseException, *, app: Any | None = None)
     if not turn_cancelled_by_shutdown(app):
         return None
     info = _cancelled_error_info(sid, execution_cancellation="best_effort", app=app)
-    info.details["diagnostic"] = f"{type(exc).__name__}: {exc}"[:500]
+    info.details["diagnostic"] = f"{type(exc).__name__}: {exc}"
     return info
 
 
@@ -74,11 +74,11 @@ def stopped_error_info(sid: str, info: Any, *, stop_requested: bool, app: Any | 
         return None
     out = _cancelled_error_info(sid, execution_cancellation="best_effort", app=app)
     message = str(getattr(info, "message", "") or "")
-    out.details["diagnostic"] = f"{info.error}: {message}"[:500]
+    out.details["diagnostic"] = f"{info.error}: {message}"
     reason = (getattr(info, "details", None) or {}).get("reason")
     out.details["error_after_stop"] = {
         "error": info.error,
-        "message": message[:500],
+        "message": message,
         **({"reason": reason} if reason else {}),
     }
     return out
