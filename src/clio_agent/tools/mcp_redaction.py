@@ -22,7 +22,11 @@ from typing import Any
 
 def redact_mcp_error(error: Exception, spec: Mapping[str, Any]) -> str:
     """Keep a bounded diagnostic without reprinting saved credentials or endpoint URLs."""
-    detail = f"{type(error).__name__}: {error}"[:2000]
+    return redact_mcp_text(f"{type(error).__name__}: {error}"[:2000], spec)
+
+
+def redact_mcp_text(detail: str, spec: Mapping[str, Any]) -> str:
+    """``detail`` (an error, a server's own output) without the spec's credentials or URL."""
     private: list[str] = [str(spec.get("url") or "")]
     for key in ("headers", "env"):
         values = spec.get(key)
@@ -34,7 +38,7 @@ def redact_mcp_error(error: Exception, spec: Mapping[str, Any]) -> str:
     return detail
 
 
-__all__ = ["redact_mcp_spec", "redact_mcp_error"]
+__all__ = ["redact_mcp_spec", "redact_mcp_error", "redact_mcp_text"]
 
 
 def redact_mcp_spec(spec: Mapping[str, Any]) -> dict[str, Any]:

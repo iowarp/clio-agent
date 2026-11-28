@@ -70,10 +70,10 @@ def test_conversations_run_the_entry_and_the_refresh_brings_the_copy_along(enabl
 def test_the_extensions_listing_refreshes_an_enabled_connectors_copy(
     enabled: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def no_probe(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        return {}
+    def no_check(*_args: Any, **_kwargs: Any) -> None:
+        return None
 
-    monkeypatch.setattr(service, "probe", no_probe)
+    monkeypatch.setattr(service, "check_soon", no_check)
     app = SimpleNamespace(state=SimpleNamespace(bus=None, sessions=None))
     asyncio.run(service.rows(app))
     assert get_user_mcp_server("fixture-secret")["args"] == materialize.declaration(enabled)["args"]

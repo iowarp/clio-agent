@@ -5,8 +5,11 @@ A connector's state for the person is one of (CN3):
 * ``needs``: a required value or secret is empty, or its sign-in has no account;
   ``state.needs`` names the missing keys. An optional empty need never holds a
   connector here.
-* ``unreachable``: CLIO started or called its server and it did not answer;
-  ``state.reason`` says why, in words.
+* ``starting``: CLIO is checking its server now (a first start can fetch and build it
+  for minutes); ``state.reason`` says for how long, and whether the server has stalled
+  (no work and no answer for a whole window). A check has no time limit of its own.
+* ``unreachable``: CLIO started or called its server and it failed (it exited, or
+  answered with an error); ``state.reason`` is that failure, in words.
 * ``ready``: nothing is missing and, when enabled, its server listed its tools.
 
 A disabled connector is not started: its state says only what is missing.
@@ -30,7 +33,9 @@ import functools
 import hashlib
 import json
 import re
+import time
 from collections.abc import Coroutine, Mapping
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -41,8 +46,6 @@ from clio_agent.connectors.entries import Entry, Need
 from clio_agent.connectors.overlay import value_problem
 from clio_agent.gact.events import Event
 from clio_agent.runtime import trace
-
-PROBE_SECONDS = 90.0
 
 
 class ConnectorError(ValueError):
@@ -149,7 +152,17 @@ def _probes(app: Any) -> dict[str, dict[str, Any]]:
     return probes
 
 
-def _flights(app: Any) -> dict[tuple[str, str], asyncio.Future[dict[str, Any]]]:
+@dataclass
+class _Check:
+    """A check in flight: never a verdict, it reads as ``starting`` until it ends."""
+
+    task: asyncio.Future[dict[str, Any]] = field(init=False)
+    started: float = field(default_factory=time.monotonic)
+    #: When its server last went a whole window with no work and no answer.
+    stalled_at: float | None = None
+
+
+def _flights(app: Any) -> dict[tuple[str, str], _Check]:
     flights = getattr(app.state, "connector_probe_flights", None)
     if flights is None:
         flights = app.state.connector_probe_flights = {}
@@ -180,11 +193,9 @@ def unreachable_reason(found: Entry, declared: Mapping[str, Any], detail: str) -
         where = f"{parts.scheme}://{parts.netloc}{parts.path}"
     if _REFUSED.search(detail):
         return f"Nothing answered at {where}: the connection was refused."
-    if "timed out" in detail.lower() or "timeout" in detail.lower():
-        return f"{where} did not answer in time."
     if "name or service not known" in detail.lower() or "nodename" in detail.lower():
         return f"The address {where} could not be found."
-    return f"{found.name} could not be started or reached: {detail[:300]}"
+    return f"{found.name} could not be started or reached: {detail[:800]}"
 
 
 def _fleet_tools(owners: list[tuple[Any, Any]], namespace: str) -> list[Any] | None:
@@ -212,8 +223,9 @@ async def _live_tools(
     """The tools of the server the conversations run for ``found``'s ``declared``
     connection now, read over that same process (``None`` when none runs), so a check
     never starts a second server beside it: the kept-alive task connection, else the
-    fleet's own route to it. Joining a start in flight has no limit of its own (its
-    connect reports stalls); the listing itself has ``PROBE_SECONDS``."""
+    fleet's own route to it. Like the check that starts a server, it has no time limit
+    of its own: joining a start in flight waits on that start, whose connect reports
+    stalls."""
 
     from clio_agent.gact.connector_rebind import live_owners  # noqa: PLC0415
 
@@ -232,7 +244,7 @@ async def _live_tools(
         client = await external.live_client(found.id, [proxy for _fleet, proxy in owners])
         if client is None:
             return None
-        return list(await asyncio.wait_for(client.list_tools(), PROBE_SECONDS))
+        return list(await client.list_tools())
 
     loop = getattr(app_state, "mcp_app_loop", None)
     if loop is None or asyncio.get_running_loop() is loop:
@@ -240,9 +252,7 @@ async def _live_tools(
     else:
         tools = await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(read(), loop))
     if tools is None:
-        tools = await asyncio.wait_for(
-            asyncio.to_thread(_fleet_tools, owners, found.id), PROBE_SECONDS
-        )
+        tools = await asyncio.to_thread(_fleet_tools, owners, found.id)
     if tools is None:
         return None
     trace.event("TOOLS", "connector_probe_live_server connector=%s", found.id)
@@ -256,27 +266,83 @@ async def probe(app: Any, found: Entry, choice: state.Choice, *, force: bool = F
     answers: the namespace never has a second server alive beside it (one with a node
     slot or a scene would lose it). Only otherwise is a server started to check it.
     Concurrent checks of one configuration share one check, so they start at most one.
+    A check has no time limit; while it runs the connector reads as ``starting``
+    (:func:`row`), and only its end is cached. Turning the connector off stops it.
     """
 
     key = _probe_key(found, choice)
     cached = _probes(app).get(found.id)
     if cached and cached["key"] == key and not force:
         return cached
+    task = start_check(app, found, choice, key).task
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        current = asyncio.current_task()
+        if not task.cancelled() or (current is not None and current.cancelling()):
+            raise
+        return {"key": key, "tool_count": None, "status": "stopped", "reason": None}
+
+
+def start_check(app: Any, found: Entry, choice: state.Choice, key: str) -> _Check:
+    """The check of ``key`` in flight, started now when none is."""
+
     flights = _flights(app)
-    flight = flights.get((found.id, key))
-    if flight is None:
-        flight = flights[(found.id, key)] = asyncio.ensure_future(_check(app, found, choice, key))
-        flight.add_done_callback(lambda _done: flights.pop((found.id, key), None))
-    else:
+    check = flights.get((found.id, key))
+    if check is not None:
         trace.event("TOOLS", "connector_probe_joined connector=%s", found.id)
-    return await asyncio.shield(flight)
+        return check
+    check = flights[(found.id, key)] = _Check()
+    task = check.task = asyncio.ensure_future(_check(app, found, choice, key, check))
+
+    def ended(done: asyncio.Future[dict[str, Any]]) -> None:
+        flights.pop((found.id, key), None)
+        if done.cancelled() or done.exception() is None:
+            return
+        # A check that broke is a verdict too, or every list read would start another.
+        _probes(app)[found.id] = {
+            "key": key,
+            "tool_count": None,
+            "status": "unreachable",
+            "reason": f"Checking its server failed: {done.exception()}",
+        }
+        publish_changed(app, found.id, [])
+
+    task.add_done_callback(ended)
+    publish_changed(app, found.id, [])
+    return check
 
 
-async def _check(app: Any, found: Entry, choice: state.Choice, key: str) -> dict:
+def _pending(app: Any, found: Entry, key: str) -> dict[str, Any] | None:
+    """The ``starting`` state of a check of ``key`` in flight, in words."""
+
+    from clio_agent.tools.mcp_server_progress import mcp_no_progress_s  # noqa: PLC0415
+
+    check = _flights(app).get((found.id, key))
+    if check is None:
+        return None
+    now = time.monotonic()
+    elapsed = int(now - check.started)
+    window = mcp_no_progress_s()
+    stalled = check.stalled_at is not None and now - check.stalled_at < 2 * window
+    reason = (
+        f"Its server has done no work and answered nothing for {window:g} s; "
+        f"CLIO keeps waiting on it ({elapsed} s so far)."
+        if stalled
+        else f"Starting its server and listing its tools ({elapsed} s so far)."
+    )
+    return {"status": "starting", "reason": reason, "elapsed_s": elapsed, "stalled": stalled}
+
+
+async def _check(app: Any, found: Entry, choice: state.Choice, key: str, check: _Check) -> dict:
     from mcp.shared.exceptions import MCPError  # noqa: PLC0415
 
     from clio_agent.gact.routes.mcp_configuration import (  # noqa: PLC0415
         _probe_user_mcp_server,
+    )
+    from clio_agent.tools.mcp_server_progress import (  # noqa: PLC0415
+        NoProgressTimeout,
+        wait_while_server_works,
     )
 
     declared = materialize.resolved(found, choice.values)
@@ -284,9 +350,6 @@ async def _check(app: Any, found: Entry, choice: state.Choice, key: str) -> dict
     for attempt in range(2):
         try:
             live = await _live_tools(app, found, declared)
-        except TimeoutError:
-            live, error = None, f"timed out after {int(PROBE_SECONDS)} s"
-            break
         except (MCPError, OSError, RuntimeError, ValueError, LookupError) as exc:
             # The running server's own failure is the check's outcome. But a read whose
             # kept-alive connection was retired under it (the server's calls moved to its
@@ -304,12 +367,22 @@ async def _check(app: Any, found: Entry, choice: state.Choice, key: str) -> dict
     elif error is not None:
         tools = []
     else:
-        try:
-            tools, error = await asyncio.wait_for(
-                _probe_user_mcp_server(declared, details=True), PROBE_SECONDS
+
+        def stalled(waited: float, _roots: tuple[int, ...]) -> None:
+            check.stalled_at = time.monotonic()
+            trace.event(
+                "TOOLS", "connector_check_stalled connector=%s waited_s=%.0f", found.id, waited
             )
-        except TimeoutError:
-            tools, error = [], f"timed out after {int(PROBE_SECONDS)} s"
+            publish_changed(app, found.id, [])
+
+        try:
+            tools, error = await wait_while_server_works(
+                _probe_user_mcp_server(declared, details=True),
+                op_name="connector check",
+                on_stall=stalled,
+            )
+        except NoProgressTimeout as exc:  # no process of it is alive: it never started
+            tools, error = [], str(exc)
     result: dict[str, Any] = {"key": key, "tool_count": None, "status": "ready", "reason": None}
     if error is None:
         result["tool_count"] = len(listing.offered(found.id, list(tools)))
@@ -321,6 +394,7 @@ async def _check(app: Any, found: Entry, choice: state.Choice, key: str) -> dict
         result["reason"] = unreachable_reason(found, declared, error)
         trace.event("TOOLS", "connector_unreachable connector=%s", found.id)
     _probes(app)[found.id] = result
+    publish_changed(app, found.id, [])  # a list read while it ran showed ``starting``
     return result
 
 
@@ -350,12 +424,18 @@ def row(app: Any, found: Entry, choice: state.Choice | None = None) -> dict[str,
 
     choice = choice or state.choice(found.id)
     absent = missing(found, choice)
+    key = _probe_key(found, choice)
     cached = _probes(app).get(found.id) if choice.enabled else None
-    if cached and cached["key"] != _probe_key(found, choice):
+    if cached and cached["key"] != key:
         cached = None  # checked under another configuration (a sign-in since, a new value)
+    pending = _pending(app, found, key) if choice.enabled else None
     status, needs, reason = "ready", [need.key for need in absent], None
+    extra: dict[str, Any] = {}
     if absent and not any(need.kind == "sign-in" for need in absent):
         status = "needs"
+    elif pending:
+        status, reason = pending.pop("status"), pending.pop("reason")
+        extra, cached = pending, None
     elif cached and cached["status"] == "unreachable":
         status, reason = "unreachable", cached["reason"]
     elif absent:
@@ -388,27 +468,39 @@ def row(app: Any, found: Entry, choice: state.Choice | None = None) -> dict[str,
         # What a conversation's plugin picker adds for this connector (CN9 *Amended*).
         "plugin_ref": plugin_refs(found.id, records)[0],
         "tool_count": cached.get("tool_count") if cached and status == "ready" else None,
-        "state": {"status": status, "needs": needs if status == "needs" else [], "reason": reason},
+        "state": {
+            "status": status,
+            "needs": needs if status == "needs" else [],
+            "reason": reason,
+            **extra,
+        },
         "needs": [need_row(found, choice, need) for need in found.needs],
     }
+
+
+def check_soon(app: Any, found: Entry, choice: state.Choice, *, force: bool = False) -> None:
+    """Start checking an enabled connector not yet checked under ``choice``; never wait.
+
+    Its row reads ``starting`` until the check ends and publishes ``connector.changed``.
+    """
+
+    if not choice.enabled or any(n.kind != "sign-in" for n in missing(found, choice)):
+        return
+    key = _probe_key(found, choice)
+    cached = _probes(app).get(found.id)
+    if force or not cached or cached["key"] != key:
+        start_check(app, found, choice, key)
 
 
 async def rows(app: Any, *, refresh: bool = False) -> list[dict[str, Any]]:
     found_all = state.all_entries()
     choices = state.choices()
-    stale = []
     for connector_id, found in found_all.items():
         choice = choices.get(connector_id, state.Choice())
         if choice.enabled:  # the saved copy follows an entry a release changed
             saved = saved_connection(connector_id)
             saved_copy.refresh(found, saved, functools.partial(save_connection, found, choice))
-        if not choice.enabled or any(n.kind != "sign-in" for n in missing(found, choice)):
-            continue
-        cached = _probes(app).get(connector_id)
-        if refresh or not cached or cached["key"] != _probe_key(found, choice):
-            stale.append(probe(app, found, choice, force=refresh))
-    if stale:
-        await asyncio.gather(*stale)
+        check_soon(app, found, choice, force=refresh)
     return [row(app, found, choices.get(cid, state.Choice())) for cid, found in found_all.items()]
 
 
@@ -595,6 +687,9 @@ async def disable(app: Any, connector_id: str) -> dict[str, Any]:
     found = entry(connector_id)
     await asyncio.to_thread(state.update, found.id, enabled=False)
     _probes(app).pop(found.id, None)
+    for (connector_id, _key), check in list(_flights(app).items()):
+        if connector_id == found.id:
+            check.task.cancel()
     return await apply(app, found)
 
 

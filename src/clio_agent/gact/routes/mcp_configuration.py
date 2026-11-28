@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Mapping
 from pathlib import Path
@@ -24,7 +25,7 @@ from clio_agent.tools.mcp_config import (
 )
 from clio_agent.tools.mcp_oauth_storage import DurableFileTokenStorage
 from clio_agent.tools.mcp_probe_hardening import probe_server_context
-from clio_agent.tools.mcp_redaction import redact_mcp_error, redact_mcp_spec
+from clio_agent.tools.mcp_redaction import redact_mcp_error, redact_mcp_spec, redact_mcp_text
 from clio_agent.tools.mcp_runtime import make_mcp_client
 
 logger = logging.getLogger(__name__)
@@ -130,6 +131,8 @@ async def _probe_user_mcp_server(
     """Return live tools and a degraded detail for one saved spec."""
 
     transport_spec = dict(spec)
+    said: tuple[Path, int, bool] | None = None
+    transport: Any = None
     # A read-only check may discover that sign-in is required, but must never
     # register an OAuth client or start consent merely because a list was opened.
     if (
@@ -157,6 +160,7 @@ async def _probe_user_mcp_server(
         # FP-D3: a probed server starts in the conversations' folder, not the launch folder.
         # Off the app loop: a stdio transport composes its fence there.
         transport = await asyncio.to_thread(transport_for, normalized, cwd=default_workspace_root())
+        said = _stderr_sink(transport)
         with probe_server_context(
             "", timeout_retries=_FIRST_START_PROBE_RETRIES if fetching else None
         ):
@@ -220,21 +224,72 @@ async def _probe_user_mcp_server(
                 pending.append(error.__cause__)
             elif error.__context__ is not None:
                 pending.append(error.__context__)
-        detail = redact_mcp_error(
-            exc,
+        private = (
             {
                 "url": normalized.url,
                 "headers": normalized.headers,
                 "env": normalized.env,
             }
             if normalized is not None
-            else spec,
+            else spec
         )
+        detail = redact_mcp_error(exc, private)
+        output = _stderr_tail(said)
+        if output:  # an exited server's own words, not just "Connection closed"
+            detail += f"; its server wrote: {redact_mcp_text(output, private)}"
         if fetching and "timed out" in str(exc):
             detail += f" ({launcher} may still be preparing the server on its first start; retry)"
         return [], detail
+    finally:
+        # A kept-alive stdio transport outlives its client; the probe's server is its own.
+        if callable(getattr(transport, "close", None)):
+            with contextlib.suppress(Exception):
+                await transport.close()
+        if said is not None and said[2]:
+            with contextlib.suppress(OSError):
+                said[0].unlink()
 
     return tool_names, None
+
+
+#: How much of a failed server's own error output its failure carries.
+_STDERR_TAIL_CHARS = 400
+
+
+def _stderr_sink(transport: Any) -> tuple[Path, int, bool] | None:
+    """Send a probed stdio server's error output to a file: ``(file, offset, owned)``.
+
+    A server that exits answers the client only "Connection closed"; what it wrote on
+    the way out is why. A sink already set (the desktop's log) is read from its end.
+    """
+
+    if not hasattr(transport, "log_file"):
+        return None
+    current = transport.log_file
+    if isinstance(current, Path):
+        return current, current.stat().st_size if current.exists() else 0, False
+    if current is not None:
+        return None
+    from uuid import uuid4  # noqa: PLC0415
+
+    from clio_agent import paths  # noqa: PLC0415
+
+    sink = paths.user_cache_dir() / "mcp-stdio" / f"probe-{uuid4().hex}.log"
+    sink.parent.mkdir(parents=True, exist_ok=True)
+    transport.log_file = sink
+    return sink, 0, True
+
+
+def _stderr_tail(said: tuple[Path, int, bool] | None) -> str:
+    if said is None:
+        return ""
+    try:
+        with said[0].open("rb") as handle:
+            handle.seek(said[1])
+            text = handle.read().decode("utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+    return text[-_STDERR_TAIL_CHARS:]
 
 
 def _forget_ephemeral_duplicates(app: FastAPI, name: str) -> None:

@@ -78,10 +78,7 @@ def register_connector_routes(app: FastAPI) -> None:
                 raise HTTPException(404, "No such conversation")
             return await asyncio.to_thread(session_row, app, session_id, found)
         choice = service.state.choice(connector_id)
-        if choice.enabled and not any(
-            need.kind != "sign-in" for need in service.missing(found, choice)
-        ):
-            await service.probe(app, found, choice, force=refresh)
+        service.check_soon(app, found, choice, force=refresh)
         return service.row(app, found, choice)
 
     @app.get("/v1/connectors/{connector_id}/logo")

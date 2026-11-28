@@ -201,3 +201,40 @@ def test_concurrent_checks_share_one_server_start(
     assert len(starts) == 1
     assert [r["tool_count"] for r in results] == [1, 1]
     assert app.state.connector_probe_flights == {}
+
+
+def test_a_check_in_flight_reads_as_starting_and_only_its_end_is_kept(
+    fixture_catalog: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """KiCad: a first ``uvx`` start that took longer than a fixed limit was kept as
+    "did not answer in time" though its server came up.
+
+    SABOTAGE: cache the pending check in ``_check`` -> the row is a verdict too early.
+    """
+    from clio_agent.gact.routes import mcp_configuration
+
+    gate: dict[str, asyncio.Event] = {}
+
+    async def probe_server(declared: Any, *, details: bool = False) -> tuple[list, str]:
+        await gate["release"].wait()
+        return [], "McpError: Connection closed: kicad-mcp-pro: error: no such board"
+
+    monkeypatch.setattr(mcp_configuration, "_probe_user_mcp_server", probe_server)
+    state.update(NAME, enabled=True)
+    app = _app(_running_spec(), None, object())
+    found, choice = service.entry(NAME), state.choice(NAME)
+
+    async def main() -> tuple[dict[str, Any], dict[str, Any]]:
+        gate["release"] = asyncio.Event()
+        service.check_soon(app, found, choice)
+        await asyncio.sleep(0)
+        pending = service.row(app, found, choice)["state"]
+        assert found.id not in service._probes(app)
+        gate["release"].set()
+        await service.probe(app, found, choice)  # joins the check in flight
+        return pending, service.row(app, found, choice)["state"]
+
+    pending, ended = asyncio.run(main())
+    assert pending["status"] == "starting" and "so far" in pending["reason"]
+    assert ended["status"] == "unreachable"
+    assert "no such board" in ended["reason"]
