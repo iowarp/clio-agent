@@ -14,6 +14,8 @@ from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
+from fastmcp_tasks.client_models import ClientGetTaskResult
+
 from clio_agent.arc.task_types import TaskProgress
 from clio_agent.gact.native_work import now
 from clio_agent.gact.task_publication import publish_task_notice
@@ -132,8 +134,19 @@ def disowned(history: Any, handle: str, text: str) -> None:
         current = history.task_snapshot(handle)
         if current is None or current.terminal_at is not None:
             return
-        result = history.write_content(current.owner.session_id, {"error": text})
         stamp = now()
+        # The result is read back as a tasks/get reply, so it is written in that shape.
+        reply = ClientGetTaskResult.model_validate(
+            {
+                "taskId": current.backend.task_id,
+                "status": "cancelled",
+                "createdAt": current.created_at,
+                "lastUpdatedAt": stamp,
+                "statusMessage": text,
+                "resultType": "complete",
+            }
+        )
+        result = history.write_content(current.owner.session_id, reply.model_dump(mode="json"))
         history.record_snapshot(
             current.model_copy(
                 update={
