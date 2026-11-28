@@ -49,6 +49,8 @@ def connector_brief(app: Any, connector_id: str) -> dict[str, Any] | None:
             "state": {"status": "unknown", "reason": f"connector_state_unreadable: {exc}"},
         }
     status = row.get("state") or {}
+    # A check in flight carries when it started and whether it stalled, as on the row.
+    pending = {key: status[key] for key in ("started_at", "elapsed_s", "stalled") if key in status}
     return {
         "id": found.id,
         "name": found.name,
@@ -58,6 +60,7 @@ def connector_brief(app: Any, connector_id: str) -> dict[str, Any] | None:
         "needs": list(status.get("needs") or ()),
         "reason": status.get("reason"),
         "tool_count": row.get("tool_count"),
+        **pending,
     }
 
 

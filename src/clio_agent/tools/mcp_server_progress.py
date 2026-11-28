@@ -231,6 +231,7 @@ async def wait_while_server_works(
     op_name: str = "connect",
     slice_s: float | None = None,
     on_stall: Callable[[float, tuple[int, ...]], None] | None = None,
+    on_work: Callable[[float], None] | None = None,
 ) -> Any:
     """Await ``awaitable`` while the MCP server it starts is alive.
 
@@ -271,6 +272,8 @@ async def wait_while_server_works(
                     tree.roots,
                 )
                 last = work
+                if on_work is not None:
+                    on_work(waited)
                 continue
             if _QUEUED.get(tree):
                 logger.info(
@@ -279,6 +282,8 @@ async def wait_while_server_works(
                     waited,
                 )
                 last = work
+                if on_work is not None:
+                    on_work(waited)
                 continue
             build = await run_preparation_step(_provision_work, builds)
             if progressed(build, last_build):
@@ -290,6 +295,8 @@ async def wait_while_server_works(
                     builds.roots,
                 )
                 last, last_build = work, build
+                if on_work is not None:
+                    on_work(waited)
                 continue
             if not await run_preparation_step(tree.alive):
                 raise NoProgressTimeout(op_name, NO_PROGRESS, waited, window)

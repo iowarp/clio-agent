@@ -235,6 +235,7 @@ def test_a_check_in_flight_reads_as_starting_and_only_its_end_is_kept(
         return pending, service.row(app, found, choice)["state"]
 
     pending, ended = asyncio.run(main())
-    assert pending["status"] == "starting" and "so far" in pending["reason"]
+    assert pending["status"] == "starting" and pending["reason"].startswith("Starting")
+    assert pending["started_at"] and isinstance(pending["elapsed_s"], int)
     assert ended["status"] == "unreachable"
     assert "no such board" in ended["reason"]

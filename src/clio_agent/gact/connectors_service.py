@@ -36,6 +36,7 @@ import re
 import time
 from collections.abc import Coroutine, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -158,7 +159,10 @@ class _Check:
 
     task: asyncio.Future[dict[str, Any]] = field(init=False)
     started: float = field(default_factory=time.monotonic)
-    #: When its server last went a whole window with no work and no answer.
+    #: The same start on the wall clock, so a client counts the time itself.
+    started_wall: float = field(default_factory=time.time)
+    #: When its server last went a whole window with no work and no answer; cleared
+    #: when it works again.
     stalled_at: float | None = None
 
 
@@ -325,13 +329,22 @@ def _pending(app: Any, found: Entry, key: str) -> dict[str, Any] | None:
     elapsed = int(now - check.started)
     window = mcp_no_progress_s()
     stalled = check.stalled_at is not None and now - check.stalled_at < 2 * window
+    # The time so far is in ``started_at``/``elapsed_s``, not the words: a client counts
+    # it up between ``connector.changed`` events and the reason never goes stale.
     reason = (
         f"Its server has done no work and answered nothing for {window:g} s; "
-        f"CLIO keeps waiting on it ({elapsed} s so far)."
+        "CLIO keeps waiting on it."
         if stalled
-        else f"Starting its server and listing its tools ({elapsed} s so far)."
+        else "Starting its server and listing its tools."
     )
-    return {"status": "starting", "reason": reason, "elapsed_s": elapsed, "stalled": stalled}
+    started_at = datetime.fromtimestamp(check.started_wall, UTC).isoformat()
+    return {
+        "status": "starting",
+        "reason": reason,
+        "started_at": started_at,
+        "elapsed_s": elapsed,
+        "stalled": stalled,
+    }
 
 
 async def _check(app: Any, found: Entry, choice: state.Choice, key: str, check: _Check) -> dict:
@@ -375,11 +388,17 @@ async def _check(app: Any, found: Entry, choice: state.Choice, key: str, check: 
             )
             publish_changed(app, found.id, [])
 
+        def working(_waited: float) -> None:
+            if check.stalled_at is not None:
+                check.stalled_at = None
+                publish_changed(app, found.id, [])
+
         try:
             tools, error = await wait_while_server_works(
                 _probe_user_mcp_server(declared, details=True),
                 op_name="connector check",
                 on_stall=stalled,
+                on_work=working,
             )
         except NoProgressTimeout as exc:  # no process of it is alive: it never started
             tools, error = [], str(exc)
